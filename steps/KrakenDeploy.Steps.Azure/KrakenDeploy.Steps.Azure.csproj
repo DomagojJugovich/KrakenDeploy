@@ -6,13 +6,21 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>octopus.azure</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Azure</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.AzureWebApp,Octopus.AzureAppService,Octopus.AzurePowerShell,Octopus.AzureResourceGroup,deploy-a-bicep-template</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.Azure.AzureStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes objects. -->
+  <ItemGroup>
+    <KrakenStepType Include="Octopus.AzureWebApp" DisplayName="Deploy to Azure Web App" Category="azure" Description="Deploy a package to an Azure App Service (Web App)." />
+    <KrakenStepType Include="Octopus.AzureAppService" DisplayName="Deploy to Azure App Service" Category="azure" Description="Deploy a package to an Azure App Service (alias for AzureWebApp)." />
+    <KrakenStepType Include="Octopus.AzurePowerShell" DisplayName="Run an Azure PowerShell Script" Category="azure" Description="Run a PowerShell script with Azure credentials set as environment variables." />
+    <KrakenStepType Include="Octopus.AzureResourceGroup" DisplayName="Deploy an Azure ARM Template" Category="azure" Description="Deploy an Azure Resource Manager (ARM) template to a resource group." />
+    <KrakenStepType Include="deploy-a-bicep-template" DisplayName="Deploy a Bicep Template" Category="azure" Description="Deploy an Azure Bicep template to a resource group." />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Octostache" />

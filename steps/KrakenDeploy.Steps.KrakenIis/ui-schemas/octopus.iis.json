@@ -1,0 +1,338 @@
+{
+  "id": "octopus.iis",
+  "title": "Deploy to IIS (Octopus shape)",
+  "description": "Configures an IIS web site, sub-application, or virtual directory.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "type",
+      "title": "Deployment Type",
+      "collapsed": false
+    },
+    {
+      "id": "site",
+      "title": "Web Site",
+      "collapsed": false
+    },
+    {
+      "id": "web-app",
+      "title": "Web Application",
+      "collapsed": false
+    },
+    {
+      "id": "vdir",
+      "title": "Virtual Directory",
+      "collapsed": false
+    },
+    {
+      "id": "app-pool",
+      "title": "App Pool",
+      "collapsed": false
+    },
+    {
+      "id": "auth",
+      "title": "Authentication",
+      "collapsed": false
+    },
+    {
+      "id": "bindings",
+      "title": "Bindings",
+      "collapsed": false
+    },
+    {
+      "id": "package",
+      "title": "Package payload",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.IISWebSite.DeploymentType": {
+      "type": "string",
+      "widget": "select",
+      "label": "Deployment type",
+      "group": "type",
+      "default": "webSite",
+      "enumValues": [
+        {
+          "value": "webSite",
+          "label": "Web site"
+        },
+        {
+          "value": "webApplication",
+          "label": "Web application"
+        },
+        {
+          "value": "virtualDirectory",
+          "label": "Virtual directory"
+        }
+      ]
+    },
+    "Octopus.Action.IISWebSite.WebSiteName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Site name",
+      "group": "site",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.IISWebSite.DeploymentType",
+        "operator": "equals",
+        "value": "webSite"
+      }
+    },
+    "Octopus.Action.IISWebSite.CreateOrUpdateWebSite": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Create or update web site",
+      "group": "site",
+      "default": "true",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.IISWebSite.DeploymentType",
+        "operator": "equals",
+        "value": "webSite"
+      }
+    },
+    "Octopus.Action.IISWebSite.StartWebSite": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Start web site",
+      "group": "site",
+      "default": "true",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.IISWebSite.DeploymentType",
+        "operator": "equals",
+        "value": "webSite"
+      }
+    },
+    "Octopus.Action.IISWebSite.StartApplicationPool": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Start application pool",
+      "group": "site",
+      "default": "true",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.IISWebSite.DeploymentType",
+        "operator": "equals",
+        "value": "webSite"
+      }
+    },
+    "Octopus.Action.IISWebSite.WebRootType": {
+      "type": "string",
+      "widget": "select",
+      "label": "Web root type",
+      "group": "site",
+      "default": "packageRoot",
+      "enumValues": [
+        {
+          "value": "packageRoot",
+          "label": "Package root"
+        },
+        {
+          "value": "packageDirectory",
+          "label": "Package subdirectory"
+        }
+      ],
+      "visibleWhen": {
+        "field": "Octopus.Action.IISWebSite.DeploymentType",
+        "operator": "equals",
+        "value": "webSite"
+      }
+    },
+    "Octopus.Action.IISWebSite.WebApplication.WebSiteName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Parent site name",
+      "group": "web-app",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.IISWebSite.DeploymentType",
+        "operator": "equals",
+        "value": "webApplication"
+      }
+    },
+    "Octopus.Action.IISWebSite.WebApplication.VirtualPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Virtual path",
+      "placeholder": "/sub",
+      "group": "web-app",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.IISWebSite.DeploymentType",
+        "operator": "equals",
+        "value": "webApplication"
+      }
+    },
+    "Octopus.Action.IISWebSite.WebApplication.CreateOrUpdate": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Create or update web application",
+      "group": "web-app",
+      "default": "true",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.IISWebSite.DeploymentType",
+        "operator": "equals",
+        "value": "webApplication"
+      }
+    },
+    "Octopus.Action.IISWebSite.VirtualDirectory.WebSiteName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Parent site name",
+      "group": "vdir",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.IISWebSite.DeploymentType",
+        "operator": "equals",
+        "value": "virtualDirectory"
+      }
+    },
+    "Octopus.Action.IISWebSite.VirtualDirectory.VirtualPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Virtual path",
+      "placeholder": "/static-content",
+      "group": "vdir",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.IISWebSite.DeploymentType",
+        "operator": "equals",
+        "value": "virtualDirectory"
+      }
+    },
+    "Octopus.Action.IISWebSite.VirtualDirectory.CreateOrUpdate": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Create or update virtual directory",
+      "group": "vdir",
+      "default": "true",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.IISWebSite.DeploymentType",
+        "operator": "equals",
+        "value": "virtualDirectory"
+      }
+    },
+    "Octopus.Action.IISWebSite.ApplicationPoolName": {
+      "type": "string",
+      "widget": "text",
+      "label": "App pool name",
+      "group": "app-pool",
+      "enumValues": []
+    },
+    "Octopus.Action.IISWebSite.ApplicationPoolFrameworkVersion": {
+      "type": "string",
+      "widget": "select",
+      "label": ".NET framework version",
+      "group": "app-pool",
+      "default": "v4.0",
+      "enumValues": [
+        {
+          "value": "v4.0",
+          "label": "v4.0"
+        },
+        {
+          "value": "v2.0",
+          "label": "v2.0"
+        },
+        {
+          "value": "",
+          "label": "No Managed Code"
+        }
+      ]
+    },
+    "Octopus.Action.IISWebSite.ApplicationPoolIdentityType": {
+      "type": "string",
+      "widget": "select",
+      "label": "Identity",
+      "group": "app-pool",
+      "default": "ApplicationPoolIdentity",
+      "enumValues": [
+        {
+          "value": "ApplicationPoolIdentity",
+          "label": "ApplicationPoolIdentity"
+        },
+        {
+          "value": "LocalSystem",
+          "label": "LocalSystem"
+        },
+        {
+          "value": "LocalService",
+          "label": "LocalService"
+        },
+        {
+          "value": "NetworkService",
+          "label": "NetworkService"
+        },
+        {
+          "value": "SpecificUser",
+          "label": "Specific user"
+        }
+      ]
+    },
+    "Octopus.Action.IISWebSite.ApplicationPoolUsername": {
+      "type": "string",
+      "widget": "text",
+      "label": "Username",
+      "group": "app-pool",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.IISWebSite.ApplicationPoolIdentityType",
+        "operator": "equals",
+        "value": "SpecificUser"
+      }
+    },
+    "Octopus.Action.IISWebSite.ApplicationPoolPassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Password",
+      "group": "app-pool",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.IISWebSite.ApplicationPoolIdentityType",
+        "operator": "equals",
+        "value": "SpecificUser"
+      }
+    },
+    "Octopus.Action.IISWebSite.EnableAnonymousAuthentication": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Anonymous",
+      "group": "auth",
+      "enumValues": []
+    },
+    "Octopus.Action.IISWebSite.EnableBasicAuthentication": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Basic",
+      "group": "auth",
+      "enumValues": []
+    },
+    "Octopus.Action.IISWebSite.EnableWindowsAuthentication": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Windows",
+      "group": "auth",
+      "enumValues": []
+    },
+    "Octopus.Action.IISWebSite.Bindings": {
+      "type": "string",
+      "widget": "json-editor",
+      "label": "Bindings (JSON array)",
+      "helpText": "JSON array of binding objects with keys protocol/ipAddress/port/host/thumbprint/certificateVariable/requireSni/enabled.",
+      "group": "bindings",
+      "enumValues": []
+    },
+    "Octopus.Action.Package.CustomInstallationDirectory": {
+      "type": "string",
+      "widget": "text",
+      "label": "Custom installation directory",
+      "helpText": "Where the package is extracted. Blank uses the agent\u0027s per-step staging dir.",
+      "group": "package",
+      "enumValues": []
+    }
+  }
+}

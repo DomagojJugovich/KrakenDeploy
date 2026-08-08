@@ -188,7 +188,7 @@ public sealed class StepPackagePinTests(PostgresFixture postgres)
             Version      = version,
             Sha256       = new string('a', 64),
             ManifestJson = "{}",
-            UiSchemaJson = null,
+
             Source       = StepPackageSource.LocalUpload,
             StepTypes    = stepTypes,
         });

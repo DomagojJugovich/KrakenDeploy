@@ -1,49 +1,110 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
+using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Data.Net;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Data.Services;
 
 /// <summary>
-/// Caches step-template metadata from the OctopusDeploy/Library GitHub repo
-/// in the local <c>step_template_catalog</c> table. Used by the
-/// <c>/step-templates/community</c> catalog browser. Refreshed hourly by a
-/// Hangfire recurring job and on demand via the "Refresh" button.
+/// Caches step-template metadata from GitHub-hosted template feeds in the
+/// local <c>step_template_catalog</c> table. Used by the
+/// <c>/step-templates/community</c> catalog browser and the Add-Step picker's
+/// "Available to install" section. Refreshed hourly by a Hangfire recurring
+/// job and on demand via the "Refresh" button.
 /// <para>
-/// Strategy:
+/// SC6: the catalog is MULTI-FEED. Feeds come from configuration
+/// (<c>StepTemplates:Catalog:Feeds</c> — array of Owner/Repo/Branch/SubDir),
+/// defaulting to the Octopus community library plus the Kraken community
+/// repo's <c>step-templates/</c> lane. <c>StepTemplates:Catalog:Enabled</c> =
+/// <c>false</c> turns refresh into a no-op (air-gapped installs), matching
+/// the step-package catalog's switch.
+/// </para>
+/// <para>
+/// Per-feed strategy (unchanged from the single-feed original):
 /// <list type="number">
 ///   <item>One GitHub API call to the Git Trees endpoint returns every blob's
-///         path + SHA in the master branch (single request, cheap on the
+///         path + SHA in the branch (single request, cheap on the
 ///         60-req/hr unauthenticated rate limit).</item>
-///   <item>For each <c>step-templates/*.json</c> path whose SHA has changed
-///         since the last sync, fetch the raw file via
+///   <item>For each <c>{subdir}/*.json</c> path whose SHA has changed since
+///         the last sync, fetch the raw file via
 ///         <c>raw.githubusercontent.com</c> (does NOT count against the API
 ///         rate limit) and extract metadata.</item>
-///   <item>Upsert by <c>CommunityActionTemplateId</c>. Delete catalog rows
-///         whose path no longer appears in the tree (orphans from deletions
-///         upstream).</item>
+///   <item>Upsert by (feed, path); delete rows whose path no longer appears
+///         in THAT feed's tree. One feed's outage never orphan-deletes
+///         another feed's rows — and never aborts its sync.</item>
 /// </list>
+/// Every refresh records per-feed health (last attempt / success / error) in
+/// the <see cref="StepFeedHealthDocument"/> settings document, surfaced by
+/// the picker's feed-health strip.
 /// </para>
 /// </summary>
 public class StepTemplateCatalogService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     IHttpClientFactory httpClientFactory,
     StepTemplateService stepTemplateService,
+    IConfiguration config,
     IOptions<SsrfOptions> ssrfOptions,
-    ILogger<StepTemplateCatalogService> logger)
+    ILogger<StepTemplateCatalogService> logger,
+    SettingsService? settings = null)
 {
-    private const string Owner = "OctopusDeploy";
-    private const string Repo  = "Library";
-    private const string Branch = "master";
-    private const string SubDir = "step-templates";
-
     /// <summary>Named <see cref="HttpClient"/> registered in <c>Program.cs</c>.</summary>
     public const string HttpClientName = "kraken.github";
+
+    /// <summary>One configured template feed.</summary>
+    public sealed record Feed(string Owner, string Repo, string Branch, string SubDir)
+    {
+        /// <summary>Lower-cased <c>owner/repo</c> — the per-row attribution key.</summary>
+        public string Key => $"{Owner}/{Repo}".ToLowerInvariant();
+
+        /// <summary>Key in the <see cref="StepFeedHealthDocument"/>.</summary>
+        public string HealthKey => $"templates:{Key}";
+    }
+
+    private bool Enabled =>
+        !string.Equals(config["StepTemplates:Catalog:Enabled"], "false",
+            StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The configured feeds, or the defaults when none are configured:
+    /// the Octopus community library (600+ templates) and the Kraken
+    /// community repo's <c>step-templates/</c> lane (SD-12/SD-13).
+    /// </summary>
+    public IReadOnlyList<Feed> ResolveFeeds()
+    {
+        var feeds = new List<Feed>();
+        foreach (var child in config.GetSection("StepTemplates:Catalog:Feeds").GetChildren())
+        {
+            var owner = child["Owner"];
+            var repo  = child["Repo"];
+            if (string.IsNullOrWhiteSpace(owner) || string.IsNullOrWhiteSpace(repo))
+            {
+                logger.LogWarning(
+                    "StepTemplates:Catalog:Feeds entry '{Key}' is missing Owner/Repo — skipped.",
+                    child.Key);
+                continue;
+            }
+            feeds.Add(new Feed(
+                owner.Trim(), repo.Trim(),
+                child["Branch"]?.Trim() is { Length: > 0 } b ? b : "main",
+                child["SubDir"]?.Trim() is { Length: > 0 } s ? s : "step-templates"));
+        }
+
+        if (feeds.Count == 0)
+        {
+            feeds =
+            [
+                new Feed("OctopusDeploy", "Library", "master", "step-templates"),
+                new Feed("DomagojJugovich", "kraken-steps", "main", "step-templates"),
+            ];
+        }
+        return feeds;
+    }
 
     // ── Queries ────────────────────────────────────────────────────────────
 
@@ -106,7 +167,7 @@ public class StepTemplateCatalogService(
 
         return await stepTemplateService.ImportFromJsonAsync(
             json,
-            importSource: $"github.com/{Owner}/{Repo} ({entry.PathInRepo})",
+            importSource: $"github.com/{entry.FeedKey} ({entry.PathInRepo})",
             source: StepTemplateSource.CommunityLibrary,
             ct: ct).ConfigureAwait(false);
     }
@@ -114,16 +175,69 @@ public class StepTemplateCatalogService(
     // ── Refresh ────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Refreshes the catalog from GitHub. Returns a summary describing how many
-    /// entries were added / updated / unchanged / removed. Safe to call as
-    /// often as you like — only changed file SHAs trigger a per-file fetch.
+    /// Refreshes the catalog from every configured feed. One feed's failure
+    /// is recorded in its health entry and does not abort the others; the
+    /// call throws only when EVERY feed failed (so the UI's manual Refresh
+    /// still surfaces a total outage). Returns the aggregate summary.
     /// </summary>
     public async Task<CatalogRefreshResult> RefreshAsync(CancellationToken ct = default)
+    {
+        if (!Enabled)
+        {
+            logger.LogDebug("Step-template catalog refresh skipped — disabled by config.");
+            return new CatalogRefreshResult(0, 0, 0, 0, 0, 0);
+        }
+
+        var feeds = ResolveFeeds();
+        var totals = new CatalogRefreshResult(0, 0, 0, 0, 0, 0);
+        var errors = new List<string>();
+
+        foreach (var feed in feeds)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var result = await RefreshFeedAsync(feed, ct).ConfigureAwait(false);
+                totals = new CatalogRefreshResult(
+                    totals.UpstreamCount + result.UpstreamCount,
+                    totals.Added        + result.Added,
+                    totals.Updated      + result.Updated,
+                    totals.Unchanged    + result.Unchanged,
+                    totals.Removed      + result.Removed,
+                    totals.Failed       + result.Failed);
+                await RecordFeedHealthAsync(feed.HealthKey, error: null, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex,
+                    "Step-template feed {Feed} refresh failed; other feeds continue.", feed.Key);
+                errors.Add($"{feed.Key}: {ex.Message}");
+                await RecordFeedHealthAsync(feed.HealthKey, ex.Message, ct).ConfigureAwait(false);
+            }
+        }
+
+        if (errors.Count == feeds.Count && feeds.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "Every step-template feed failed to refresh: " + string.Join(" | ", errors));
+        }
+
+        logger.LogInformation(
+            "Catalog refresh ({Feeds} feed(s)): upstream={Upstream} added={Added} updated={Updated} " +
+            "unchanged={Unchanged} removed={Removed} failed={Failed}.",
+            feeds.Count, totals.UpstreamCount, totals.Added, totals.Updated,
+            totals.Unchanged, totals.Removed, totals.Failed);
+
+        return totals;
+    }
+
+    private async Task<CatalogRefreshResult> RefreshFeedAsync(Feed feed, CancellationToken ct)
     {
         var http = httpClientFactory.CreateClient(HttpClientName);
 
         // 1. Tree listing — single API call.
-        var treeUrl = $"https://api.github.com/repos/{Owner}/{Repo}/git/trees/{Branch}?recursive=1";
+        var treeUrl =
+            $"https://api.github.com/repos/{feed.Owner}/{feed.Repo}/git/trees/{feed.Branch}?recursive=1";
         JsonNode? treeNode;
         try
         {
@@ -131,15 +245,14 @@ public class StepTemplateCatalogService(
         }
         catch (HttpRequestException ex)
         {
-            logger.LogWarning(ex, "Failed to fetch catalog tree from GitHub.");
             throw new InvalidOperationException(
-                $"GitHub tree fetch failed: {ex.Message}", ex);
+                $"GitHub tree fetch failed for {feed.Key}: {ex.Message}", ex);
         }
 
         var tree = treeNode?["tree"]?.AsArray()
             ?? throw new InvalidOperationException("GitHub response missing 'tree' array.");
 
-        // Map of path → file SHA, restricted to step-templates/*.json blobs.
+        // Map of path → file SHA, restricted to {subdir}/*.json blobs.
         var upstreamFiles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var node in tree.OfType<JsonObject>())
         {
@@ -147,16 +260,25 @@ public class StepTemplateCatalogService(
             var path = node["path"]?.GetValue<string>();
             var sha  = node["sha"]?.GetValue<string>();
             if (type != "blob" || path is null || sha is null) { continue; }
-            if (!path.StartsWith(SubDir + "/", StringComparison.OrdinalIgnoreCase)) { continue; }
+            if (!path.StartsWith(feed.SubDir + "/", StringComparison.OrdinalIgnoreCase)) { continue; }
             if (!path.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) { continue; }
             upstreamFiles[path] = sha;
         }
 
-        // 2. Compare against what we have locally.
+        // 2. Compare against what we have locally — for THIS feed only.
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var existing = await db.StepTemplateCatalog
+            .Where(e => e.FeedKey == feed.Key)
             .ToDictionaryAsync(e => e.PathInRepo, StringComparer.OrdinalIgnoreCase, ct)
             .ConfigureAwait(false);
+
+        // CommunityTemplateId is globally unique — a duplicate id arriving
+        // from a second feed must be skipped (counted failed), not blow up
+        // the whole feed's SaveChanges.
+        var knownIds = (await db.StepTemplateCatalog
+                .Select(e => e.CommunityTemplateId)
+                .ToListAsync(ct).ConfigureAwait(false))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var added     = 0;
         var updated   = 0;
@@ -178,7 +300,8 @@ public class StepTemplateCatalogService(
                 continue;
             }
 
-            var rawUrl = $"https://raw.githubusercontent.com/{Owner}/{Repo}/{Branch}/{path}";
+            var rawUrl =
+                $"https://raw.githubusercontent.com/{feed.Owner}/{feed.Repo}/{feed.Branch}/{path}";
             string fileJson;
             try
             {
@@ -186,7 +309,7 @@ public class StepTemplateCatalogService(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Failed to fetch catalog file {Path}.", path);
+                logger.LogWarning(ex, "Failed to fetch catalog file {Feed}/{Path}.", feed.Key, path);
                 failed++;
                 continue;
             }
@@ -198,7 +321,7 @@ public class StepTemplateCatalogService(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Failed to parse catalog file {Path}.", path);
+                logger.LogWarning(ex, "Failed to parse catalog file {Feed}/{Path}.", feed.Key, path);
                 failed++;
                 continue;
             }
@@ -227,10 +350,19 @@ public class StepTemplateCatalogService(
                     failed++;
                     continue;
                 }
+                if (!knownIds.Add(meta.CommunityTemplateId))
+                {
+                    logger.LogWarning(
+                        "Catalog file {Feed}/{Path} carries CommunityTemplateId '{Id}' that another " +
+                        "feed already provides — skipped.", feed.Key, path, meta.CommunityTemplateId);
+                    failed++;
+                    continue;
+                }
 
                 db.StepTemplateCatalog.Add(new StepTemplateCatalogEntry
                 {
                     CommunityTemplateId = meta.CommunityTemplateId,
+                    FeedKey             = feed.Key,
                     PathInRepo          = path,
                     FileSha             = sha,
                     DownloadUrl         = rawUrl,
@@ -248,7 +380,7 @@ public class StepTemplateCatalogService(
             }
         }
 
-        // 4. Delete orphans (files removed upstream).
+        // 4. Delete orphans (files removed upstream) — this feed's rows only.
         foreach (var (path, row) in existing)
         {
             if (!upstreamFiles.ContainsKey(path))
@@ -260,21 +392,37 @@ public class StepTemplateCatalogService(
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-        var result = new CatalogRefreshResult(
+        return new CatalogRefreshResult(
             UpstreamCount: upstreamFiles.Count,
             Added:         added,
             Updated:       updated,
             Unchanged:     unchanged,
             Removed:       removed,
             Failed:        failed);
+    }
 
-        logger.LogInformation(
-            "Catalog refresh: upstream={Upstream} added={Added} updated={Updated} " +
-            "unchanged={Unchanged} removed={Removed} failed={Failed}.",
-            result.UpstreamCount, result.Added, result.Updated,
-            result.Unchanged, result.Removed, result.Failed);
-
-        return result;
+    private async Task RecordFeedHealthAsync(string healthKey, string? error, CancellationToken ct)
+    {
+        if (settings is null) { return; }
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            await settings.MutateAsync<StepFeedHealthDocument>(null, doc =>
+            {
+                doc.Feeds.TryGetValue(healthKey, out var prev);
+                doc.Feeds[healthKey] = new StepFeedHealth
+                {
+                    LastAttemptUtc = now,
+                    LastSuccessUtc = error is null ? now : prev?.LastSuccessUtc,
+                    LastError      = error,
+                };
+                return doc;
+            }, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Failed to record feed health for {Feed}.", healthKey);
+        }
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────

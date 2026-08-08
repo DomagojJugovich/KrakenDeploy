@@ -2598,10 +2598,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("character varying(500)")
                         .HasColumnName("step_types");
 
-                    b.Property<string>("UiSchemaJson")
-                        .HasColumnType("jsonb")
-                        .HasColumnName("ui_schema_json");
-
                     b.Property<string>("Version")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -2686,6 +2682,115 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasDatabaseName("ix_step_package_catalog_name_version");
 
                     b.ToTable("step_package_catalog", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.StepPackages.StepPackageSchema", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<DateTimeOffset?>("ModifiedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("modified_utc");
+
+                    b.Property<string>("SchemaJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("schema_json");
+
+                    b.Property<Guid>("StepPackageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("step_package_id");
+
+                    b.Property<string>("StepType")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("step_type");
+
+                    b.HasKey("Id")
+                        .HasName("pk_step_package_schemas");
+
+                    b.HasIndex("StepPackageId", "StepType")
+                        .IsUnique()
+                        .HasDatabaseName("ix_step_package_schemas_step_package_id_step_type");
+
+                    b.ToTable("step_package_schemas", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.StepPackages.StepTypeEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Category")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("category");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("description");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("display_name");
+
+                    b.Property<int>("ExecutionLocus")
+                        .HasColumnType("integer")
+                        .HasColumnName("execution_locus");
+
+                    b.Property<bool>("Featured")
+                        .HasColumnType("boolean")
+                        .HasColumnName("featured");
+
+                    b.Property<DateTimeOffset?>("ModifiedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("modified_utc");
+
+                    b.Property<string>("ServingPackageName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("serving_package_name");
+
+                    b.Property<string>("ServingPackageVersion")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("serving_package_version");
+
+                    b.Property<int>("Source")
+                        .HasColumnType("integer")
+                        .HasColumnName("source");
+
+                    b.Property<string>("TypeId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("type_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_step_types");
+
+                    b.HasIndex("TypeId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_step_types_type_id");
+
+                    b.ToTable("step_types", (string)null);
                 });
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.StepTemplates.StepTemplate", b =>
@@ -2836,6 +2941,12 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("character varying(1024)")
                         .HasColumnName("download_url");
 
+                    b.Property<string>("FeedKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("feed_key");
+
                     b.Property<string>("FileSha")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -2881,6 +2992,9 @@ namespace KrakenDeploy.Server.Data.Migrations
                     b.HasIndex("CommunityTemplateId")
                         .IsUnique()
                         .HasDatabaseName("ix_step_template_catalog_community_template_id");
+
+                    b.HasIndex("FeedKey")
+                        .HasDatabaseName("ix_step_template_catalog_feed_key");
 
                     b.HasIndex("LastSyncedUtc")
                         .HasDatabaseName("ix_step_template_catalog_last_synced_utc");
@@ -4460,6 +4574,16 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasConstraintName("fk_team_members_users_user_id");
 
                     b.Navigation("Team");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.StepPackages.StepPackageSchema", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.StepPackages.StepPackage", null)
+                        .WithMany()
+                        .HasForeignKey("StepPackageId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_step_package_schemas_step_packages_step_package_id");
                 });
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.StepTemplates.StepTemplate", b =>

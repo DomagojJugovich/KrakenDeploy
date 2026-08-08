@@ -1,0 +1,52 @@
+{
+  "id": "kraken.runpackageassembly",
+  "title": "Run a .NET Assembly Step",
+  "description": "Load a .NET DLL from the package and invoke its IKrakenStep implementation.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "general",
+      "title": "General",
+      "collapsed": false
+    },
+    {
+      "id": "advanced",
+      "title": "Advanced",
+      "collapsed": true
+    }
+  ],
+  "properties": {
+    "Kraken.Action.PackageRunner.AssemblyPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Assembly path",
+      "helpText": "Path to the .dll relative to the package root (e.g. hooks/PostDeploy.dll).",
+      "placeholder": "hooks/PostDeploy.dll",
+      "group": "general",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Kraken.Action.PackageRunner.TypeName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Type name (optional)",
+      "helpText": "Fully-qualified class name implementing IKrakenStep. Auto-discovered if the assembly has exactly one implementor.",
+      "group": "general",
+      "enumValues": []
+    },
+    "Kraken.Action.PackageRunner.TimeoutSeconds": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Timeout (seconds)",
+      "group": "advanced",
+      "default": "600",
+      "enumValues": [],
+      "validation": {
+        "required": false,
+        "min": 1
+      }
+    }
+  }
+}

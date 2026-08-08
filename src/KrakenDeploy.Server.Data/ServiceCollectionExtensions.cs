@@ -266,8 +266,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IRunbookTrigger>(sp => sp.GetRequiredService<RunbookService>());
         services.AddScoped<DropBundleService>();
         services.AddScoped<OfflineResultService>();
-        services.AddScoped<BuiltInStepTemplateSeeder>();
         services.AddScoped<BuiltInStepPackageSeeder>();
+        services.AddScoped<StepTypeRegistry>();
+        services.AddScoped<StepSchemaResolver>();
         services.AddScoped<BuiltInRbacSeeder>();
         services.AddScoped<IPermissionEvaluator, PermissionEvaluator>();
         services.AddScoped<UserService>();

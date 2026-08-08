@@ -21,10 +21,29 @@ COPY steps/ ./steps/
 
 RUN dotnet restore src/KrakenDeploy.Server/KrakenDeploy.Server.csproj
 
-RUN dotnet publish src/KrakenDeploy.Server/KrakenDeploy.Server.csproj \
-    --configuration Release \
-    --no-restore \
-    --output /app
+# SC7: when a signing key is provided (BuildKit secret `kraken_signing_key`),
+# every built-in step package archive is signed during publish — the global
+# -p:KrakenSigningKey property flows into the steps/* project builds, whose
+# SignKrakenStepPackage target invokes the in-repo kraken CLI (built first so
+# the targets' _KrakenCliInRepoRelease path resolves). A production server
+# (AllowUnsignedUploads=false) refuses to seed unsigned built-ins, so a prod
+# image should always be built with:
+#   docker build --secret id=kraken_signing_key,src=./kraken-signing.pem ...
+# Without the secret the dev sentinel signature stays (local/dev images only).
+RUN --mount=type=secret,id=kraken_signing_key \
+    SIGN_ARG=""; \
+    if [ -f /run/secrets/kraken_signing_key ]; then \
+      echo "Signing built-in step packages with the provided key."; \
+      dotnet build src/KrakenDeploy.Cli/KrakenDeploy.Cli.csproj \
+        --configuration Release --nologo -v:q; \
+      SIGN_ARG="-p:KrakenSigningKey=/run/secrets/kraken_signing_key"; \
+    else \
+      echo "WARNING: no kraken_signing_key secret — built-ins keep the unsigned dev sentinel."; \
+    fi; \
+    dotnet publish src/KrakenDeploy.Server/KrakenDeploy.Server.csproj \
+      --configuration Release \
+      --no-restore \
+      --output /app $SIGN_ARG
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime

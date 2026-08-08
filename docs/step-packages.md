@@ -1,6 +1,11 @@
 # Authoring step packages
 
-> Version: 1.1. Last updated: 2026-05-21. Status: Draft.
+> Version: 2.0. Last updated: 2026-07-31. Status: Review.
+> v2.0 — step-systems consolidation (`docs/step-consolidation-plan.md`):
+> per-step-type UI schemas (`ui/schemas/{typeId}.json`), per-type picker
+> metadata + `executionLocus` in the manifest, the `step_types` registry,
+> pin-aware schema resolution, signing REQUIRED in production, community
+> catalog default `DomagojJugovich/kraken-steps`.
 
 A *step package* is a versioned, signed `.kdeploy-step` archive that supplies
 a custom step type to a KrakenDeploy installation. Authors get exactly the
@@ -58,7 +63,7 @@ The shipped fields:
 | `version` | yes | `"1.0.0"` | Semver. Used by the agent loader's cache key and the catalog's upsert. |
 | `displayName` | yes | `"Deploy to S3"` | Shown in the editor's step-type picker. |
 | `targetFramework` | yes | `"net10.0"` | The TFM the executor DLL was built against. |
-| `stepTypes` | yes | `["MyCompany.DeployToS3"]` | Step type strings your handler's `CanHandle` returns `true` for. A single package may claim multiple step types — `kraken.script` handles both `Kraken.Script` and `Octopus.Script`. |
+| `stepTypes` | yes | see below | Step types your handler's `CanHandle` returns `true` for. A single package may claim multiple step types — `kraken.script` handles both `Kraken.Script` and `Octopus.Script`. |
 | `executorAssembly` | yes | `"MyCompany.MyStep.dll"` | DLL inside the `executor/` folder. |
 | `executorTypeName` | yes | `"MyCompany.MyStep.SampleStepHandler"` | Fully-qualified name of the `IStepHandler` class. |
 | `signedBy` | optional | `"mycompany"` | Identifier of the signing key. Informational in v1. |
@@ -68,6 +73,47 @@ The shipped fields:
 The pack target emits these from the `.csproj`'s `KrakenStepPackage*`
 properties. To change values, edit the project file (not the generated
 `manifest.json`).
+
+### `stepTypes` entries (v2)
+
+An entry is either a plain string (id only — the pre-v2 shape, still fully
+supported) or an object carrying per-type picker metadata:
+
+```jsonc
+"stepTypes": [
+  "MyCompany.LegacyType",                       // id-only
+  {
+    "id": "MyCompany.DeployToS3",
+    "displayName": "Deploy to S3",              // picker-card title
+    "category": "aws",                          // picker category bucket
+    "description": "Upload files to a bucket.", // picker-card one-liner
+    "featured": true,                           // surfaces in the Featured section
+    "executionLocus": "server"                  // omit (or "agent") for agent-side
+  }
+]
+```
+
+Authoring: declare `KrakenStepType` MSBuild items in the `.csproj` — the pack
+target turns them into object entries (the legacy comma-list
+`KrakenStepPackageStepTypes` property still emits string entries; items win
+when both are present):
+
+```xml
+<ItemGroup>
+  <KrakenStepType Include="MyCompany.DeployToS3"
+                  DisplayName="Deploy to S3" Category="aws"
+                  Description="Upload files to a bucket." Featured="true" />
+</ItemGroup>
+```
+
+On install, the server writes one row per claimed type into the **step-type
+registry** (`step_types`) — the single authority for what the Add-Step picker
+shows, which schema the editor renders, and where a type executes.
+`executionLocus: "server"` marks a type as server-orchestrated (wave
+partitioning routes it server-side — `Octopus.Manual`'s task-global gate is
+the canonical example); everything else runs on agents via your handler. The
+registry recomputes on every install, uninstall, and server boot; the
+serving package for a type is always the highest-semver installed claimer.
 
 ## The `IStepHandler` contract
 
@@ -103,8 +149,18 @@ explaining why). Throw for unhandled errors — the agent catches and surfaces
 
 ## The UI schema
 
-`ui-schema.json` lives under `ui/` in the zip and drives the editor's form
-for this step type. Schema vocabulary:
+One schema file **per claimed step type** lives under `ui/schemas/` in the
+zip — `ui/schemas/{typeId}.json`, lower-cased type id as the file name (v2;
+a legacy single `ui/ui-schema.json` is still accepted and serves every
+claimed type). The server extracts each schema into `step_package_schemas`
+at install, keyed by (package version, type), and refuses the archive when
+a schema fails to parse or names a type the manifest doesn't claim.
+
+The editor resolves the form **pin-aware**: the schema of the exact package
+version the step is pinned to; when that version ships no schema for the
+type (a pre-v2 install), the serving package's newest schema renders with a
+visible provenance notice; presets (step templates) fall back to their own
+parameter forms. Schema vocabulary:
 
 ```jsonc
 {
@@ -301,6 +357,12 @@ both flags treat that sentinel as "no signature" and let the package through
 with a warning log line.
 
 **Never turn these on in production** — they defeat the entire trust model.
+Production requires signing end-to-end since the consolidation: a server with
+`AllowUnsignedUploads=false` (the non-Development default) refuses to install
+**or seed its own built-ins** unsigned, so production images are built with
+the signing key (`docker build --secret id=kraken_signing_key,...` — see
+`Dockerfile.server` and `deploy/onprem/README.md`), and the catalog's
+Releases are produced by the signing CI (`publish-step-packages` workflow).
 
 ## Local testing
 
@@ -324,12 +386,21 @@ with a warning log line.
 
 ## Publishing via the GitHub catalog feed
 
-KrakenDeploy installations can pull packages from
-[`KrakenDeploy/StepPackages`](https://github.com/KrakenDeploy/StepPackages) (or
-any GitHub repo configured under `StepPackages:Catalog:Owner` / `:Repo`).
-The hourly Hangfire job `kraken.step-package-catalog-poll` scrapes
+KrakenDeploy installations pull packages from
+[`DomagojJugovich/kraken-steps`](https://github.com/DomagojJugovich/kraken-steps)
+by default (or any GitHub repo configured under `StepPackages:Catalog:Owner`
+/ `:Repo`; `StepPackages:Catalog:Enabled=false` turns the feed off for
+air-gapped installs, and the `feeds.step-package-catalog` feature flag is the
+runtime kill-switch). The hourly Hangfire job
+`kraken.step-package-catalog-poll` scrapes
 `GET /repos/{owner}/{repo}/releases?per_page=100` and persists discovered
-entries. Admins see them under `/step-packages` → Catalog tab.
+entries. Admins see them under `/step-packages` → Catalog tab; feed health
+(last sync / last error) shows there and in the Add-Step picker's strip.
+
+For the community repo itself, releases are produced exclusively by the
+`publish-step-packages` CI workflow (build → sign → release with the manifest
+and SHA-256 in the notes) — see the repo's CONTRIBUTING for the two review
+lanes. The conventions below matter when you host your **own** feed.
 
 For your package to be discoverable, each GitHub Release must:
 

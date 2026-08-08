@@ -1,0 +1,96 @@
+{
+  "id": "octopus.awsruncloudformation",
+  "title": "Deploy AWS CloudFormation",
+  "description": "Create or update an AWS CloudFormation stack via change sets.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "credentials",
+      "title": "AWS Credentials",
+      "collapsed": false
+    },
+    {
+      "id": "stack",
+      "title": "Stack",
+      "collapsed": false
+    },
+    {
+      "id": "template",
+      "title": "Template",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Aws.AccessKeyId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Access Key ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.SecretAccessKey": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Secret Access Key",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.Region": {
+      "type": "string",
+      "widget": "text",
+      "label": "Region",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.StackName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Stack name",
+      "group": "stack",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Aws.WaitForCompletion": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Wait for completion",
+      "group": "stack",
+      "default": "true",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.Capabilities": {
+      "type": "string",
+      "widget": "text",
+      "label": "Capabilities",
+      "helpText": "Space-separated (e.g. CAPABILITY_IAM CAPABILITY_NAMED_IAM).",
+      "group": "stack",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.TemplateBody": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Template body (JSON/YAML)",
+      "helpText": "Inline CloudFormation template. Octostache #{...} variables are resolved.",
+      "group": "template",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.TemplateFile": {
+      "type": "string",
+      "widget": "text",
+      "label": "Template file path",
+      "helpText": "Path to a template file. Overrides TemplateBody.",
+      "group": "template",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.TemplateParameters": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Parameters",
+      "helpText": "One per line: Key=Value",
+      "group": "template",
+      "enumValues": []
+    }
+  }
+}

@@ -6,13 +6,20 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>octopus.terraform</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Terraform</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.TerraformApply,Octopus.TerraformPlan,Octopus.TerraformDestroy,Octopus.TerraformPlanDestroy</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.Terraform.TerraformStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes objects. -->
+  <ItemGroup>
+    <KrakenStepType Include="Octopus.TerraformApply" DisplayName="Apply a Terraform Template" Category="terraform" Description="Run terraform init and apply to provision infrastructure." />
+    <KrakenStepType Include="Octopus.TerraformPlan" DisplayName="Plan a Terraform Deployment" Category="terraform" Description="Run terraform init and plan to preview infrastructure changes." />
+    <KrakenStepType Include="Octopus.TerraformDestroy" DisplayName="Destroy Terraform Resources" Category="terraform" Description="Run terraform init and destroy to tear down infrastructure." />
+    <KrakenStepType Include="Octopus.TerraformPlanDestroy" DisplayName="Plan a Terraform Destroy" Category="terraform" Description="Run terraform plan -destroy to preview resource teardown." />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Octostache" />

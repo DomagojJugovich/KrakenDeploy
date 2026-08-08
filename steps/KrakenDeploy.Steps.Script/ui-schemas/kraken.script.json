@@ -1,0 +1,91 @@
+{
+  "id": "kraken.script",
+  "title": "Run a script",
+  "description": "Runs an inline script in PowerShell, Bash, C#, F#, or Python.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "script",
+      "title": "Script",
+      "collapsed": false
+    },
+    {
+      "id": "execution",
+      "title": "Execution",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Script.Syntax": {
+      "type": "string",
+      "widget": "select",
+      "label": "Language",
+      "group": "script",
+      "default": "PowerShell",
+      "enumValues": [
+        {
+          "value": "PowerShell",
+          "label": "PowerShell"
+        },
+        {
+          "value": "Bash",
+          "label": "Bash"
+        },
+        {
+          "value": "CSharp",
+          "label": "C# (dotnet script)"
+        },
+        {
+          "value": "FSharp",
+          "label": "F# (dotnet fsi)"
+        },
+        {
+          "value": "Python",
+          "label": "Python"
+        }
+      ]
+    },
+    "Octopus.Action.PowerShell.Edition": {
+      "type": "string",
+      "widget": "select",
+      "label": "PowerShell edition",
+      "group": "script",
+      "default": "Desktop",
+      "enumValues": [
+        {
+          "value": "Desktop",
+          "label": "Desktop (Windows PowerShell 5.x)"
+        },
+        {
+          "value": "Core",
+          "label": "Core (PowerShell 7\u002B / pwsh)"
+        }
+      ],
+      "visibleWhen": {
+        "field": "Octopus.Action.Script.Syntax",
+        "operator": "equals",
+        "value": "PowerShell"
+      }
+    },
+    "Octopus.Action.Script.ScriptBody": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Script",
+      "placeholder": "Write-Host \u0027Hello from KrakenDeploy.\u0027",
+      "group": "script",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.RunOnServer": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Run on the KrakenDeploy server",
+      "helpText": "When off, the script runs on each deployment target. When on, it runs on the server.",
+      "group": "execution",
+      "default": "false",
+      "enumValues": []
+    }
+  }
+}

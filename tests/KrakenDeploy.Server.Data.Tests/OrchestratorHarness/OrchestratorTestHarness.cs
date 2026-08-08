@@ -189,10 +189,115 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
 
     public KrakenDbContext CreateContext() => _postgres.CreateContext();
 
+    /// <summary>
+    /// SC4-b: the orchestrator consults the step-type REGISTRY before
+    /// dispatch — an unserved type refuses the run, registry locus drives
+    /// wave sides, and a RunOnServer flag is valid only when the serving
+    /// schema exposes the field. Harness scenarios seed ProcessStep rows
+    /// directly without installing packages, so give the registry the same
+    /// world a real install produces: script types served by kraken.script
+    /// (schema exposing RunOnServer), Octopus.Manual server-side.
+    /// kraken.stepgroup + octopus.deployrelease are System rows seeded by
+    /// the SC2 migration. Idempotent per shared database.
+    /// </summary>
+    private static async Task EnsureStepCatalogAsync(KrakenDbContext db)
+    {
+        if (await db.StepPackages.AnyAsync(p => p.Name == "kraken.script")) { return; }
+
+        const string scriptSchema =
+            """
+            {
+              "id": "kraken.script",
+              "title": "Run a Script",
+              "version": "1.0.0",
+              "properties": {
+                "Octopus.Action.RunOnServer": {
+                  "type": "boolean", "widget": "checkbox",
+                  "label": "Run on server", "enumValues": []
+                }
+              }
+            }
+            """;
+
+        var scriptPkg = new KrakenDeploy.Server.Core.Domain.StepPackages.StepPackage
+        {
+            Name         = "kraken.script",
+            Version      = "1.1.0",
+            Sha256       = new string('a', 64),
+            ManifestJson = "{}",
+            Source       = KrakenDeploy.Server.Core.Domain.StepPackages.StepPackageSource.Preinstalled,
+            StepTypes    = "kraken.script,octopus.script",
+        };
+        var manualPkg = new KrakenDeploy.Server.Core.Domain.StepPackages.StepPackage
+        {
+            Name         = "octopus.manual",
+            Version      = "1.2.0",
+            Sha256       = new string('b', 64),
+            ManifestJson = "{}",
+            Source       = KrakenDeploy.Server.Core.Domain.StepPackages.StepPackageSource.Preinstalled,
+            StepTypes    = "octopus.manual",
+        };
+        db.StepPackages.AddRange(scriptPkg, manualPkg);
+
+        foreach (var typeId in new[] { "kraken.script", "octopus.script" })
+        {
+            db.StepPackageSchemas.Add(new KrakenDeploy.Server.Core.Domain.StepPackages.StepPackageSchema
+            {
+                StepPackageId = scriptPkg.Id,
+                StepType      = typeId,
+                SchemaJson    = scriptSchema,
+            });
+            db.StepTypes.Add(new KrakenDeploy.Server.Core.Domain.StepPackages.StepTypeEntry
+            {
+                TypeId                = typeId,
+                DisplayName           = "Run a Script",
+                ExecutionLocus        = KrakenDeploy.Server.Core.Domain.StepPackages.StepTypeExecutionLocus.AgentPackage,
+                Source                = KrakenDeploy.Server.Core.Domain.StepPackages.StepTypeEntrySource.Package,
+                ServingPackageName    = scriptPkg.Name,
+                ServingPackageVersion = scriptPkg.Version,
+            });
+        }
+
+        db.StepTypes.Add(new KrakenDeploy.Server.Core.Domain.StepPackages.StepTypeEntry
+        {
+            TypeId                = "octopus.manual",
+            DisplayName           = "Manual Intervention",
+            ExecutionLocus        = KrakenDeploy.Server.Core.Domain.StepPackages.StepTypeExecutionLocus.ServerRunner,
+            Source                = KrakenDeploy.Server.Core.Domain.StepPackages.StepTypeEntrySource.Package,
+            ServingPackageName    = manualPkg.Name,
+            ServingPackageVersion = manualPkg.Version,
+        });
+
+        // The B8 transport round-trip fixture's test handler type — its
+        // package lives only in the REAL agent's cache (staged assembly, no
+        // server-side install), so the registry row is seeded here or the
+        // SC4-b guard refuses those deployments before dispatch.
+        var roundTripPkg = new KrakenDeploy.Server.Core.Domain.StepPackages.StepPackage
+        {
+            Name         = "kraken.roundtrip",
+            Version      = "1.0.0",
+            Sha256       = new string('c', 64),
+            ManifestJson = "{}",
+            Source       = KrakenDeploy.Server.Core.Domain.StepPackages.StepPackageSource.Preinstalled,
+            StepTypes    = "kraken.roundtrip",
+        };
+        db.StepPackages.Add(roundTripPkg);
+        db.StepTypes.Add(new KrakenDeploy.Server.Core.Domain.StepPackages.StepTypeEntry
+        {
+            TypeId                = "kraken.roundtrip",
+            DisplayName           = "Round-trip test handler",
+            ExecutionLocus        = KrakenDeploy.Server.Core.Domain.StepPackages.StepTypeExecutionLocus.AgentPackage,
+            Source                = KrakenDeploy.Server.Core.Domain.StepPackages.StepTypeEntrySource.Package,
+            ServingPackageName    = roundTripPkg.Name,
+            ServingPackageVersion = roundTripPkg.Version,
+        });
+    }
+
     /// <summary>Seeds a minimum-viable Project in the Default Space.</summary>
     public async Task<Project> SeedProjectAsync(string name = "test-project")
     {
         await using var db = _postgres.CreateContext();
+        await EnsureStepCatalogAsync(db);
         var p = new Project
         {
             SpaceId        = WellKnown.DefaultSpaceId,

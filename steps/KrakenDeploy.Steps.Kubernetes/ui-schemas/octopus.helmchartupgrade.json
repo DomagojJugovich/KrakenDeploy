@@ -1,0 +1,85 @@
+{
+  "id": "octopus.helmchartupgrade",
+  "title": "Deploy a Helm Chart",
+  "description": "Install or upgrade a Helm release on a Kubernetes cluster.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "cluster",
+      "title": "Cluster Connection",
+      "collapsed": false
+    },
+    {
+      "id": "helm",
+      "title": "Helm",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Kubernetes.ClusterUrl": {
+      "type": "string",
+      "widget": "text",
+      "label": "Cluster URL",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Token": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Token",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Namespace": {
+      "type": "string",
+      "widget": "text",
+      "label": "Namespace",
+      "group": "cluster",
+      "default": "default",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.KubeconfigPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Kubeconfig path",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.HelmReleaseName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Release name",
+      "group": "helm",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Kubernetes.HelmChartPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Chart path or reference",
+      "helpText": "Local path, OCI reference, or repo/chart-name.",
+      "group": "helm",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Kubernetes.HelmValues": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Values (YAML)",
+      "helpText": "Inline values.yaml content. Octostache #{...} variables are resolved.",
+      "group": "helm",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.HelmAdditionalArgs": {
+      "type": "string",
+      "widget": "text",
+      "label": "Additional helm args",
+      "group": "helm",
+      "enumValues": []
+    }
+  }
+}

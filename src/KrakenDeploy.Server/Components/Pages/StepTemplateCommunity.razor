@@ -8,6 +8,7 @@
 @using KrakenDeploy.Server.Data.Services
 
 @inject StepTemplateCatalogService Catalog
+@inject SettingsService Settings
 @inject NotificationService Notify
 @inject NavigationManager Nav
 @inject UiActionGuard Guard
@@ -209,6 +210,15 @@ else
         {
             _entries  = await Catalog.GetAllAsync();
             _lastSync = await Catalog.GetLastSyncAsync();
+
+            // SC6 — a background poll failure is visible here too, not only
+            // after a manual Refresh throws.
+            var health = await Settings.GetAsync<KrakenDeploy.Server.Core.Domain.StepPackages.StepFeedHealthDocument>();
+            _lastError ??= health.Feeds
+                .Where(f => f.Key.StartsWith("templates:", StringComparison.OrdinalIgnoreCase))
+                .Select(f => f.Value.LastError)
+                .FirstOrDefault(e => e is not null);
+
             RecomputeBuckets();
         }
         finally

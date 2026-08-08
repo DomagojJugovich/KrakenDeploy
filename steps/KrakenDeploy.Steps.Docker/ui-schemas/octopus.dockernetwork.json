@@ -1,0 +1,62 @@
+{
+  "id": "octopus.dockernetwork",
+  "title": "Create a Docker Network",
+  "description": "Create a Docker network for use by containers.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "network",
+      "title": "Network",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Docker.NetworkName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Network name",
+      "group": "network",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Docker.NetworkDriver": {
+      "type": "string",
+      "widget": "select",
+      "label": "Driver",
+      "group": "network",
+      "default": "bridge",
+      "enumValues": [
+        {
+          "value": "bridge",
+          "label": "bridge"
+        },
+        {
+          "value": "host",
+          "label": "host"
+        },
+        {
+          "value": "overlay",
+          "label": "overlay"
+        },
+        {
+          "value": "macvlan",
+          "label": "macvlan"
+        },
+        {
+          "value": "none",
+          "label": "none"
+        }
+      ]
+    },
+    "Octopus.Action.Docker.Labels": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Labels",
+      "helpText": "One per line: key=value",
+      "group": "network",
+      "enumValues": []
+    }
+  }
+}

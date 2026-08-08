@@ -93,12 +93,19 @@ public static class WavePartitioner
     /// for or run alongside) — passing
     /// <see cref="StepStartTrigger.StartAfterPrevious"/> for it is the
     /// canonical choice.</param>
+    /// <param name="serverSideTypes">Step types that execute server-side
+    /// regardless of the per-step <see cref="DeploymentStepPlan.RunOnServer"/>
+    /// flag. SC4-b: sourced from the step-type registry (rows whose
+    /// <c>ExecutionLocus</c> is not AgentPackage) — the packages themselves
+    /// declare it; there is no hardcoded list anymore.</param>
     public static List<Wave> Partition(
         IReadOnlyList<DeploymentStepPlan> steps,
-        Func<int, StepStartTrigger> triggerByIndex)
+        Func<int, StepStartTrigger> triggerByIndex,
+        IReadOnlySet<string> serverSideTypes)
     {
         ArgumentNullException.ThrowIfNull(steps);
         ArgumentNullException.ThrowIfNull(triggerByIndex);
+        ArgumentNullException.ThrowIfNull(serverSideTypes);
 
         // Trigger-based grouping is shared with the offline agent runner via
         // KrakenDeploy.Execution's WaveGrouping (single source of truth for the
@@ -115,7 +122,7 @@ public static class WavePartitioner
         var waves = new List<Wave>(groups.Count);
         foreach (var group in groups)
         {
-            waves.Add(BuildWave(group));
+            waves.Add(BuildWave(group, serverSideTypes));
         }
 
         return waves;
@@ -128,14 +135,15 @@ public static class WavePartitioner
     /// <see cref="StepStartTrigger.StartAfterPrevious"/>) trivially pass the
     /// homogeneity check.
     /// </summary>
-    private static Wave BuildWave(IReadOnlyList<DeploymentStepPlan> steps)
+    private static Wave BuildWave(
+        IReadOnlyList<DeploymentStepPlan> steps, IReadOnlySet<string> serverSideTypes)
     {
         var serverNames = new List<string>();
         var targetNames = new List<string>();
 
         foreach (var step in steps)
         {
-            if (IsServerStep(step))
+            if (IsServerStep(step, serverSideTypes))
             {
                 serverNames.Add(step.Name);
             }
@@ -167,42 +175,26 @@ public static class WavePartitioner
     /// Whether a step runs server-side. A step is server-side when EITHER
     /// the typed <see cref="DeploymentStepPlan.RunOnServer"/> flag is set (D3 —
     /// promoted from the <c>Octopus.Action.RunOnServer</c> Config key), OR the
-    /// <see cref="DeploymentStepPlan.StepType"/> is one of the intrinsically
-    /// server-side orchestrator types in <see cref="ServerOnlyStepTypes"/>.
+    /// <see cref="DeploymentStepPlan.StepType"/> is in
+    /// <paramref name="serverSideTypes"/>.
     ///
     /// <para>
-    /// Moved here from <c>DeploymentWorker</c> (M14.0..3) so the partitioner
-    /// can classify in isolation and unit tests don't need an orchestrator
-    /// fixture. The orchestrator still reads through this helper when it
-    /// needs to know a single step's side outside the wave path.
+    /// SC4-b: the intrinsically server-side set comes from the step-type
+    /// registry (locus declared by the packages themselves — e.g.
+    /// <c>Octopus.Manual</c>'s manifest says <c>executionLocus=server</c>
+    /// because a manual-intervention gate is TASK-GLOBAL, and
+    /// <c>Octopus.DeployRelease</c> is a System registry row). The old
+    /// hardcoded <c>ServerOnlyStepTypes</c> constant is gone; callers load
+    /// the set once per dispatch.
     /// </para>
     /// </summary>
-    internal static bool IsServerStep(DeploymentStepPlan step)
+    internal static bool IsServerStep(
+        DeploymentStepPlan step, IReadOnlySet<string> serverSideTypes)
     {
         ArgumentNullException.ThrowIfNull(step);
         // D3 — RunOnServer is a typed field on the plan now (promoted from the
         // Config key "Octopus.Action.RunOnServer"). The flattener stamps it from
         // StepSnapshot.RunOnServer; the raw key no longer travels in Config.
-        return step.RunOnServer || ServerOnlyStepTypes.Contains(step.StepType);
+        return step.RunOnServer || serverSideTypes.Contains(step.StepType);
     }
-
-    /// <summary>
-    /// Step types that always run on the server regardless of the
-    /// <see cref="DeploymentStepPlan.RunOnServer"/> flag — they coordinate other
-    /// deployments or otherwise have no agent-side meaning. Mirrors the
-    /// set previously defined inline in <c>DeploymentWorker</c>.
-    /// </summary>
-    internal static readonly HashSet<string> ServerOnlyStepTypes =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            DeployReleaseStepRunner.StepType,
-            // WP3 — a manual-intervention gate is TASK-GLOBAL: the whole task pauses
-            // before this wave dispatches, and one human decision resumes or fails
-            // it. That is only expressible server-side; as a per-target agent step it
-            // would need N approvals for N targets and could not pause the
-            // orchestration at all. This also aligns the online path with the offline
-            // one, which has always classified Octopus.Manual as server-orchestrated
-            // (OfflineDropBundleBuilder refuses a bundle containing one).
-            ManualInterventionConfigKeys.StepType,
-        };
 }

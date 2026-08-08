@@ -8,6 +8,7 @@
 @using KrakenDeploy.Server.Data.Services
 @inject StepPackageService Svc
 @inject StepPackageCatalogService Catalog
+@inject SettingsService Settings
 @inject DialogService Dialog
 @inject NotificationService Notifications
 @inject UiActionGuard Guard
@@ -131,12 +132,16 @@
             <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
                          JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-3">
                 <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-0">
-                    Step packages discovered on the public KrakenDeploy/StepPackages
-                    GitHub feed (configurable). The catalog refreshes hourly via a
-                    background job; click "Refresh now" to pull immediately.
+                    Step packages discovered on the configured GitHub Releases feed
+                    (default DomagojJugovich/kraken-steps). The catalog refreshes
+                    hourly via a background job; click "Refresh now" to pull immediately.
                     @if (_catalogLastSync is { } sync)
                     {
                         <span> Last sync: <strong>@sync.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</strong>.</span>
+                    }
+                    @if (_feedError is not null)
+                    {
+                        <span class="rz-color-danger"> Last refresh failed: @_feedError</span>
                     }
                 </RadzenText>
                 <RequirePermission Permission="Permission.StepPackageManage">
@@ -230,6 +235,7 @@
     private bool _refreshing;
     private List<StepPackageCatalogEntry> _catalog = [];
     private DateTimeOffset? _catalogLastSync;
+    private string? _feedError; // SC6 — last recorded refresh failure for this feed
     /// <summary>"name@version" of the catalog entry being installed, for IsBusy.</summary>
     private string? _installingKey;
     /// <summary>(name, version) tuples of every locally-installed package, for the
@@ -273,6 +279,12 @@
         {
             _catalog = await Catalog.GetAllAsync();
             _catalogLastSync = await Catalog.GetLastSyncAsync();
+
+            var health = await Settings.GetAsync<StepFeedHealthDocument>();
+            _feedError = health.Feeds
+                .Where(f => f.Key.StartsWith("packages:", StringComparison.OrdinalIgnoreCase))
+                .Select(f => f.Value.LastError)
+                .FirstOrDefault(e => e is not null);
         }
         catch (Exception ex)
         {

@@ -1,0 +1,100 @@
+{
+  "id": "octopus.kubernetesdeployservice",
+  "title": "Deploy Kubernetes Service",
+  "description": "Create or update a Kubernetes Service.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "cluster",
+      "title": "Cluster Connection",
+      "collapsed": false
+    },
+    {
+      "id": "service",
+      "title": "Service",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Kubernetes.ClusterUrl": {
+      "type": "string",
+      "widget": "text",
+      "label": "Cluster URL",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Token": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Token",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Namespace": {
+      "type": "string",
+      "widget": "text",
+      "label": "Namespace",
+      "group": "cluster",
+      "default": "default",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.KubeconfigPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Kubeconfig path",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.ResourceName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Service name",
+      "group": "service",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Kubernetes.ServiceType": {
+      "type": "string",
+      "widget": "select",
+      "label": "Service type",
+      "group": "service",
+      "default": "ClusterIP",
+      "enumValues": [
+        {
+          "value": "ClusterIP",
+          "label": "ClusterIP"
+        },
+        {
+          "value": "NodePort",
+          "label": "NodePort"
+        },
+        {
+          "value": "LoadBalancer",
+          "label": "LoadBalancer"
+        },
+        {
+          "value": "ExternalName",
+          "label": "ExternalName"
+        }
+      ]
+    },
+    "Octopus.Action.Kubernetes.Ports": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Ports",
+      "helpText": "One per line: port or port:targetPort",
+      "group": "service",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Selector": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Selector",
+      "helpText": "One per line: key=value",
+      "group": "service",
+      "enumValues": []
+    }
+  }
+}

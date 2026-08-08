@@ -1,6 +1,12 @@
 # Step Catalog Plan — KrakenDeploy vs Octopus Built-in Steps
 
-> Version: 1.0. Date: 2026-07-30. Status: Active.
+> Version: 1.1. Date: 2026-07-31. Status: Completed (coverage tracker).
+> All batches shipped in `a23c691`; the step-systems consolidation
+> (`docs/step-consolidation-plan.md`, SC0–SC8) then made packages the single
+> source of truth — per-type schemas + picker metadata live in each
+> `steps/*` project, the `step_types` registry replaces the seeded template
+> index, and the design decision below about the community library is
+> implemented as the presets model (templates resolve below packages).
 
 Source of truth for Octopus built-in steps: network export at
 `D:\_DOWNLOADS\KrakenDeploy\octopus_json_result_builtin_AND_ALL_tasks.txt`

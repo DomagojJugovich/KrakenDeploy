@@ -6,15 +6,20 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>kraken.script</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Run a Script</KrakenStepPackageDisplayName>
-    <!-- Both Kraken-native and Octopus-imported scripts share this package;
-         the targets file expands the comma into a JSON array in manifest.json. -->
-    <KrakenStepPackageStepTypes>Kraken.Script,Octopus.Script</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.Script.ScriptStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes
+       objects. Both Kraken-native and Octopus-imported scripts share this
+       package. -->
+  <ItemGroup>
+    <KrakenStepType Include="Kraken.Script" DisplayName="Run a Script" Category="script" Description="Inline PowerShell, Bash, C#, F#, or Python script." Featured="true" />
+    <KrakenStepType Include="Octopus.Script" DisplayName="Run a Script (Octopus)" Category="script" Description="Octopus.Script-compatible inline script step." />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />

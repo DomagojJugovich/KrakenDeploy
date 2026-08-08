@@ -1,0 +1,493 @@
+{
+  "id": "kraken.iis",
+  "title": "Deploy to IIS",
+  "description": "Configure an IIS site, app pool, bindings, and deploy a package payload.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "general",
+      "title": "General",
+      "collapsed": false
+    },
+    {
+      "id": "app-pool",
+      "title": "App Pool",
+      "collapsed": false
+    },
+    {
+      "id": "recycling",
+      "title": "Recycling",
+      "collapsed": true
+    },
+    {
+      "id": "rapid-fail",
+      "title": "Rapid-Fail Protection",
+      "collapsed": true
+    },
+    {
+      "id": "auth",
+      "title": "Authentication",
+      "collapsed": false
+    },
+    {
+      "id": "bindings",
+      "title": "Bindings",
+      "collapsed": false
+    },
+    {
+      "id": "preload",
+      "title": "Application Init / Preload",
+      "collapsed": true
+    },
+    {
+      "id": "deploy",
+      "title": "Deploy Strategy",
+      "collapsed": false
+    },
+    {
+      "id": "health",
+      "title": "Health Probe",
+      "collapsed": true
+    }
+  ],
+  "properties": {
+    "Kraken.IIS.SiteName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Site name",
+      "group": "general",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Kraken.IIS.WebRoot": {
+      "type": "string",
+      "widget": "text",
+      "label": "Web root",
+      "helpText": "Base directory for the site. In atomic-swap mode versioned subdirs are created underneath.",
+      "group": "general",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Kraken.IIS.AppPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "App path",
+      "group": "general",
+      "default": "/",
+      "enumValues": []
+    },
+    "Kraken.IIS.AppPool.Name": {
+      "type": "string",
+      "widget": "text",
+      "label": "Name",
+      "helpText": "Defaults to the site name when blank.",
+      "group": "app-pool",
+      "enumValues": []
+    },
+    "Kraken.IIS.AppPool.RuntimeVersion": {
+      "type": "string",
+      "widget": "select",
+      "label": ".NET runtime version",
+      "group": "app-pool",
+      "default": "v4.0",
+      "enumValues": [
+        {
+          "value": "v4.0",
+          "label": "v4.0"
+        },
+        {
+          "value": "v2.0",
+          "label": "v2.0"
+        },
+        {
+          "value": "",
+          "label": "No Managed Code"
+        }
+      ]
+    },
+    "Kraken.IIS.AppPool.PipelineMode": {
+      "type": "string",
+      "widget": "select",
+      "label": "Pipeline mode",
+      "group": "app-pool",
+      "default": "Integrated",
+      "enumValues": [
+        {
+          "value": "Integrated",
+          "label": "Integrated"
+        },
+        {
+          "value": "Classic",
+          "label": "Classic"
+        }
+      ]
+    },
+    "Kraken.IIS.AppPool.Enable32Bit": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Enable 32-bit applications",
+      "group": "app-pool",
+      "default": "false",
+      "enumValues": []
+    },
+    "Kraken.IIS.AppPool.LoadUserProfile": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Load user profile",
+      "group": "app-pool",
+      "default": "false",
+      "enumValues": []
+    },
+    "Kraken.IIS.AppPool.IdentityType": {
+      "type": "string",
+      "widget": "select",
+      "label": "Identity",
+      "group": "app-pool",
+      "default": "ApplicationPoolIdentity",
+      "enumValues": [
+        {
+          "value": "ApplicationPoolIdentity",
+          "label": "ApplicationPoolIdentity"
+        },
+        {
+          "value": "LocalSystem",
+          "label": "LocalSystem"
+        },
+        {
+          "value": "LocalService",
+          "label": "LocalService"
+        },
+        {
+          "value": "NetworkService",
+          "label": "NetworkService"
+        },
+        {
+          "value": "SpecificUser",
+          "label": "Specific user"
+        }
+      ]
+    },
+    "Kraken.IIS.AppPool.Username": {
+      "type": "string",
+      "widget": "text",
+      "label": "Username",
+      "group": "app-pool",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Kraken.IIS.AppPool.IdentityType",
+        "operator": "equals",
+        "value": "SpecificUser"
+      }
+    },
+    "Kraken.IIS.AppPool.Password": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Password",
+      "group": "app-pool",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Kraken.IIS.AppPool.IdentityType",
+        "operator": "equals",
+        "value": "SpecificUser"
+      }
+    },
+    "Kraken.IIS.AppPool.IdleTimeoutMinutes": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Idle timeout (minutes)",
+      "group": "app-pool",
+      "default": "20",
+      "enumValues": [],
+      "validation": {
+        "required": false,
+        "min": 0
+      }
+    },
+    "Kraken.IIS.AppPool.StartMode": {
+      "type": "string",
+      "widget": "select",
+      "label": "Start mode",
+      "group": "app-pool",
+      "default": "OnDemand",
+      "enumValues": [
+        {
+          "value": "OnDemand",
+          "label": "On demand"
+        },
+        {
+          "value": "AlwaysRunning",
+          "label": "Always running"
+        }
+      ]
+    },
+    "Kraken.IIS.AppPool.QueueLength": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Queue length",
+      "group": "app-pool",
+      "default": "1000",
+      "enumValues": [],
+      "validation": {
+        "required": false,
+        "min": 10,
+        "max": 65535
+      }
+    },
+    "Kraken.IIS.Recycle.RegularTimeIntervalMinutes": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Regular interval (minutes)",
+      "helpText": "0 disables the regular interval recycle.",
+      "group": "recycling",
+      "default": "1740",
+      "enumValues": [],
+      "validation": {
+        "required": false,
+        "min": 0
+      }
+    },
+    "Kraken.IIS.Recycle.PrivateMemoryLimitKB": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Private memory limit (KB)",
+      "group": "recycling",
+      "enumValues": [],
+      "validation": {
+        "required": false,
+        "min": 0
+      }
+    },
+    "Kraken.IIS.Recycle.SpecificTimes": {
+      "type": "string",
+      "widget": "text",
+      "label": "Specific times (semicolon-separated HH:mm)",
+      "placeholder": "03:00; 15:00",
+      "group": "recycling",
+      "enumValues": []
+    },
+    "Kraken.IIS.RapidFail.Enabled": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Enable rapid-fail protection",
+      "group": "rapid-fail",
+      "default": "true",
+      "enumValues": []
+    },
+    "Kraken.IIS.RapidFail.MaxCrashesPerInterval": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Max crashes per interval",
+      "group": "rapid-fail",
+      "default": "5",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Kraken.IIS.RapidFail.Enabled",
+        "operator": "truthy"
+      },
+      "validation": {
+        "required": false,
+        "min": 1
+      }
+    },
+    "Kraken.IIS.RapidFail.IntervalMinutes": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Interval (minutes)",
+      "group": "rapid-fail",
+      "default": "5",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Kraken.IIS.RapidFail.Enabled",
+        "operator": "truthy"
+      },
+      "validation": {
+        "required": false,
+        "min": 1
+      }
+    },
+    "Kraken.IIS.Authentication.AnonymousEnabled": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Anonymous authentication",
+      "group": "auth",
+      "default": "true",
+      "enumValues": []
+    },
+    "Kraken.IIS.Authentication.BasicEnabled": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Basic authentication",
+      "helpText": "Requires the IIS Basic Authentication sub-feature to be installed on the host.",
+      "group": "auth",
+      "default": "false",
+      "enumValues": []
+    },
+    "Kraken.IIS.Authentication.WindowsEnabled": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Windows authentication",
+      "helpText": "Requires the IIS Windows Authentication sub-feature to be installed on the host.",
+      "group": "auth",
+      "default": "false",
+      "enumValues": []
+    },
+    "Kraken.IIS.Bindings": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Bindings",
+      "helpText": "Newline-separated. Per line: protocol|ipAddress|port|host|certThumbprint|certStore|sniRequired|sslFlags. Example: http|*|80||||false|0  or  https|*|443|app.example.com|ABCDEF|My|true|1",
+      "placeholder": "http|*|80||||false|0",
+      "group": "bindings",
+      "enumValues": []
+    },
+    "Kraken.IIS.PreloadEnabled": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Preload enabled",
+      "group": "preload",
+      "default": "false",
+      "enumValues": []
+    },
+    "Kraken.IIS.AlwaysRunning": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Always-running app pool",
+      "group": "preload",
+      "default": "false",
+      "enumValues": []
+    },
+    "Kraken.IIS.Deploy.Mode": {
+      "type": "string",
+      "widget": "select",
+      "label": "Deploy mode",
+      "group": "deploy",
+      "default": "AtomicSwap",
+      "enumValues": [
+        {
+          "value": "AtomicSwap",
+          "label": "Atomic swap (versioned subdirs)"
+        },
+        {
+          "value": "InPlace",
+          "label": "In-place (copy over webroot)"
+        }
+      ]
+    },
+    "Kraken.IIS.Deploy.KeepVersions": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Keep N versions",
+      "helpText": "Older versioned subdirs beyond this count are pruned after a successful swap.",
+      "group": "deploy",
+      "default": "5",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Kraken.IIS.Deploy.Mode",
+        "operator": "equals",
+        "value": "AtomicSwap"
+      },
+      "validation": {
+        "required": false,
+        "min": 0
+      }
+    },
+    "Kraken.IIS.Deploy.DrainModeRecycle": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Drain-mode recycle",
+      "helpText": "Overlapping recycle so in-flight requests aren\u0027t dropped.",
+      "group": "deploy",
+      "default": "true",
+      "enumValues": []
+    },
+    "Kraken.IIS.HealthCheck.Url": {
+      "type": "string",
+      "widget": "text",
+      "label": "Health probe URL",
+      "helpText": "Absolute URL or path relative to the first HTTP binding. Leave blank to disable the probe.",
+      "group": "health",
+      "enumValues": []
+    },
+    "Kraken.IIS.HealthCheck.ExpectedStatus": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Expected status code",
+      "group": "health",
+      "default": "200",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Kraken.IIS.HealthCheck.Url",
+        "operator": "truthy"
+      },
+      "validation": {
+        "required": false,
+        "min": 100,
+        "max": 599
+      }
+    },
+    "Kraken.IIS.HealthCheck.TimeoutSeconds": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Timeout (seconds)",
+      "group": "health",
+      "default": "30",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Kraken.IIS.HealthCheck.Url",
+        "operator": "truthy"
+      },
+      "validation": {
+        "required": false,
+        "min": 1
+      }
+    },
+    "Kraken.IIS.HealthCheck.RetryAttempts": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Retry attempts",
+      "group": "health",
+      "default": "5",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Kraken.IIS.HealthCheck.Url",
+        "operator": "truthy"
+      },
+      "validation": {
+        "required": false,
+        "min": 0
+      }
+    },
+    "Kraken.IIS.HealthCheck.RetryDelaySeconds": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Retry delay (seconds)",
+      "group": "health",
+      "default": "3",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Kraken.IIS.HealthCheck.Url",
+        "operator": "truthy"
+      },
+      "validation": {
+        "required": false,
+        "min": 0
+      }
+    },
+    "Kraken.IIS.HealthCheck.ExpectedBodyContains": {
+      "type": "string",
+      "widget": "text",
+      "label": "Expected body contains",
+      "helpText": "Optional substring that must appear in the response body.",
+      "group": "health",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Kraken.IIS.HealthCheck.Url",
+        "operator": "truthy"
+      }
+    }
+  }
+}

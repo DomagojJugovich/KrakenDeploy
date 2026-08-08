@@ -584,16 +584,21 @@
             return;
         }
 
-        if (result.IsBlankScriptStep)
+        // SC5 — installed step TYPE card (registry-sourced) or the legacy
+        // blank-script sentinel → unified dialog with the type's schema.
+        if (result.StepTypeId is not null || result.IsBlankScriptStep)
         {
+            var actionType = result.StepTypeId ?? "Kraken.Script";
             var formResult = await Dialog.OpenAsync<StepFormDialog>(
-                "Add Step",
+                result.StepTypeDisplayName is null
+                    ? "Add Step"
+                    : $"Add Step — {result.StepTypeDisplayName}",
                 new Dictionary<string, object?>
                 {
                     [nameof(StepFormDialog.Host)]         = (IStepEditingHost)RunbookSvc,
                     [nameof(StepFormDialog.EditPermission)] = Permission.RunbookEdit,
                     [nameof(StepFormDialog.ProjectId)]    = Id,
-                    [nameof(StepFormDialog.ActionType)]   = "Kraken.Script",
+                    [nameof(StepFormDialog.ActionType)]   = actionType,
                     [nameof(StepFormDialog.ParentStepId)] = parentStepId,
                 },
                 new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });

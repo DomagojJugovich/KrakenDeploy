@@ -1,0 +1,81 @@
+{
+  "id": "octopus.wildflydeploy",
+  "title": "Deploy to WildFly",
+  "description": "Deploy a WAR or EAR to a WildFly/JBoss instance via CLI.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "server",
+      "title": "Server",
+      "collapsed": false
+    },
+    {
+      "id": "deployment",
+      "title": "Deployment",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Java.WildFlyHome": {
+      "type": "string",
+      "widget": "text",
+      "label": "WildFly home",
+      "helpText": "Path to the WildFly installation (JBOSS_HOME).",
+      "group": "server",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.WildFlyHost": {
+      "type": "string",
+      "widget": "text",
+      "label": "Host",
+      "group": "server",
+      "default": "localhost",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.WildFlyPort": {
+      "type": "string",
+      "widget": "text",
+      "label": "Management port",
+      "group": "server",
+      "default": "9990",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.WildFlyUser": {
+      "type": "string",
+      "widget": "text",
+      "label": "Management user",
+      "group": "server",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.WildFlyPassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Management password",
+      "group": "server",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.DeploymentName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Deployment name",
+      "helpText": "Defaults to the archive file name.",
+      "group": "deployment",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.ForceDeploy": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Force (replace existing)",
+      "group": "deployment",
+      "default": "false",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.WildFlyServerGroupName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Server group (domain mode)",
+      "group": "deployment",
+      "enumValues": []
+    }
+  }
+}

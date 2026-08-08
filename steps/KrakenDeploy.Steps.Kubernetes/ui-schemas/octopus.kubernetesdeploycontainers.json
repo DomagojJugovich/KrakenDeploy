@@ -1,0 +1,106 @@
+{
+  "id": "octopus.kubernetesdeploycontainers",
+  "title": "Deploy Kubernetes Containers",
+  "description": "Create or update a Kubernetes Deployment from a container image.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "cluster",
+      "title": "Cluster Connection",
+      "collapsed": false
+    },
+    {
+      "id": "workload",
+      "title": "Workload",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Kubernetes.ClusterUrl": {
+      "type": "string",
+      "widget": "text",
+      "label": "Cluster URL",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Token": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Token",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Namespace": {
+      "type": "string",
+      "widget": "text",
+      "label": "Namespace",
+      "group": "cluster",
+      "default": "default",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.KubeconfigPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Kubeconfig path",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.ResourceName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Deployment name",
+      "group": "workload",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Kubernetes.Image": {
+      "type": "string",
+      "widget": "text",
+      "label": "Container image",
+      "placeholder": "nginx:latest",
+      "group": "workload",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Kubernetes.Replicas": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Replicas",
+      "group": "workload",
+      "default": "1",
+      "enumValues": [],
+      "validation": {
+        "required": false,
+        "min": 0
+      }
+    },
+    "Octopus.Action.Kubernetes.Ports": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Container ports",
+      "helpText": "One per line.",
+      "group": "workload",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.EnvVars": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Environment variables",
+      "helpText": "One per line: KEY=VALUE",
+      "group": "workload",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Labels": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Labels",
+      "helpText": "One per line: key=value",
+      "group": "workload",
+      "enumValues": []
+    }
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "id": "kraken.runpackageexecutable",
+  "title": "Run a Package Executable",
+  "description": "Run an executable or binary shipped inside the deployment package.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "general",
+      "title": "General",
+      "collapsed": false
+    },
+    {
+      "id": "advanced",
+      "title": "Advanced",
+      "collapsed": true
+    }
+  ],
+  "properties": {
+    "Kraken.Action.PackageRunner.ExecutablePath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Executable path",
+      "helpText": "Path relative to the package root (e.g. tools/migrate.exe) or absolute.",
+      "placeholder": "tools/migrate.exe",
+      "group": "general",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Kraken.Action.PackageRunner.Arguments": {
+      "type": "string",
+      "widget": "text",
+      "label": "Arguments",
+      "helpText": "Command-line arguments. Octostache #{...} variables are resolved.",
+      "group": "general",
+      "enumValues": []
+    },
+    "Kraken.Action.PackageRunner.WorkingDirectory": {
+      "type": "string",
+      "widget": "text",
+      "label": "Working directory",
+      "helpText": "Defaults to the package extract directory.",
+      "group": "advanced",
+      "enumValues": []
+    },
+    "Kraken.Action.PackageRunner.TimeoutSeconds": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Timeout (seconds)",
+      "group": "advanced",
+      "default": "600",
+      "enumValues": [],
+      "validation": {
+        "required": false,
+        "min": 1
+      }
+    }
+  }
+}

@@ -6,13 +6,19 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>octopus.docker</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Docker</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.DockerRun,Octopus.DockerStop,Octopus.DockerNetwork</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.Docker.DockerStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes objects. -->
+  <ItemGroup>
+    <KrakenStepType Include="Octopus.DockerRun" DisplayName="Run a Docker Container" Category="docker" Description="Pull and run a container from a registry." />
+    <KrakenStepType Include="Octopus.DockerStop" DisplayName="Stop a Docker Resource" Category="docker" Description="Stop or remove a container or network created by a previous deployment." />
+    <KrakenStepType Include="Octopus.DockerNetwork" DisplayName="Create a Docker Network" Category="docker" Description="Create a Docker network for use by containers." />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />

@@ -6,13 +6,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>octopus.substitutevariables</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Substitute Variables in Files</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.SubstituteVariables</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.SubstituteVariables.SubstituteVariablesStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes objects. -->
+  <ItemGroup>
+    <KrakenStepType Include="Octopus.SubstituteVariables" DisplayName="Substitute Variables in Files" Category="package" Description="Apply variable substitution to files inside the deployed package." />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Octostache" />

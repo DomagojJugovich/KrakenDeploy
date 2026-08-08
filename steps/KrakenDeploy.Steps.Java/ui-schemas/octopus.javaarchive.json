@@ -1,0 +1,26 @@
+{
+  "id": "octopus.javaarchive",
+  "title": "Deploy a Java Archive",
+  "description": "Deploy a WAR, JAR, or EAR file to a target directory.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "general",
+      "title": "General",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Java.DeployPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Deployment path",
+      "placeholder": "/opt/apps",
+      "group": "general",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    }
+  }
+}

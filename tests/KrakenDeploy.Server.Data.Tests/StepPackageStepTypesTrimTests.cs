@@ -99,7 +99,7 @@ public sealed class StepPackageStepTypesTrimTests(PostgresFixture postgres)
             Version          = version,
             DisplayName      = "StepTypes trim test",
             TargetFramework  = "net10.0",
-            StepTypes        = stepTypes,
+            StepTypes        = [.. stepTypes],
             ExecutorAssembly = "Stub.dll",
             ExecutorTypeName = "Stub.Handler",
             Signature        = "unsigned-dev-build",

@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Security.Cryptography;
 using KrakenDeploy.Contracts.StepPackages;
+using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using Microsoft.EntityFrameworkCore;
@@ -33,8 +34,31 @@ namespace KrakenDeploy.Server.Data.Services;
 public sealed class StepPackageService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     IConfiguration config,
-    ILogger<StepPackageService> logger)
+    ILogger<StepPackageService> logger,
+    StepTypeRegistry? registry = null)
 {
+    // Optional so existing construction sites (tests) keep working; DI
+    // injects the registered instance. Both paths share the same rebuild.
+    private readonly StepTypeRegistry _registry = registry ?? new StepTypeRegistry(dbFactory);
+
+    /// <summary>
+    /// SC3: refresh the step-type registry after a catalog mutation. The
+    /// mutation itself already succeeded — a rebuild failure leaves the
+    /// registry stale (healed by the next rebuild), never fails the caller.
+    /// </summary>
+    private async Task RefreshRegistryAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _registry.RebuildAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex,
+                "Step-type registry rebuild failed after a catalog change; " +
+                "registry is stale until the next install/uninstall/boot.");
+        }
+    }
     /// <summary>
     /// Result of an upload — either a successful install with the persisted
     /// row, or an error message the caller surfaces to the user.
@@ -79,6 +103,7 @@ public sealed class StepPackageService(
             StepPackageManifest manifest;
             string? uiSchemaJson;
             string? changelogMarkdown;
+            var perTypeSchemas = new Dictionary<string, string>(StringComparer.Ordinal);
             try
             {
                 await using var temp = File.OpenRead(tempFile);
@@ -96,6 +121,53 @@ public sealed class StepPackageService(
                 uiSchemaJson = uiSchemaEntry is null
                     ? null
                     : await ReadAllTextAsync(uiSchemaEntry, ct).ConfigureAwait(false);
+
+                // SC2: per-step-type schemas at ui/schemas/{typeId}.json.
+                // Validated hard at upload — a stray file for an undeclared
+                // type or an unparseable schema is a broken package, and the
+                // server is the last gate before it reaches the editor.
+                var declaredTypes = manifest.StepTypeIds
+                    .Select(t => t.Trim().ToLowerInvariant())
+                    .Where(t => t.Length > 0)
+                    .ToHashSet(StringComparer.Ordinal);
+
+                foreach (var entry in zip.Entries)
+                {
+                    var name = entry.FullName.Replace('\\', '/');
+                    if (!name.StartsWith(StepPackageFiles.UiSchemasDirectory + "/",
+                            StringComparison.OrdinalIgnoreCase)
+                        || !name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (entry.Length > 1024 * 1024)
+                    {
+                        return Fail(
+                            $"Schema file '{name}' exceeds 1 MB — refusing the archive.");
+                    }
+
+                    var typeId = Path.GetFileNameWithoutExtension(entry.Name).ToLowerInvariant();
+                    if (!declaredTypes.Contains(typeId))
+                    {
+                        return Fail(
+                            $"Schema file '{name}' has no matching stepTypes entry " +
+                            $"'{typeId}' in the manifest.");
+                    }
+
+                    var schemaJson = await ReadAllTextAsync(entry, ct).ConfigureAwait(false);
+                    try
+                    {
+                        _ = StepUiSchemaJson.Deserialize(schemaJson);
+                    }
+                    catch (Exception ex) when (
+                        ex is System.Text.Json.JsonException or InvalidOperationException)
+                    {
+                        return Fail($"Schema file '{name}' is not a valid step UI schema: {ex.Message}");
+                    }
+
+                    perTypeSchemas[typeId] = schemaJson;
+                }
 
                 // CHANGELOG.md at the zip root is optional (Phase D-12.4).
                 // The renderer treats null vs empty differently — empty means
@@ -167,23 +239,44 @@ public sealed class StepPackageService(
                 Version           = manifest.Version,
                 Sha256            = sha256,
                 ManifestJson      = StepPackageManifestJson.Serialize(manifest),
-                UiSchemaJson      = uiSchemaJson,
                 ChangelogMarkdown = changelogMarkdown,
                 Source            = source,
                 // Trim each claim: a padded entry (e.g. manifest authored as
                 // "A, B") would otherwise be stored verbatim and never match
                 // StepPackageResolver's ",{type}," sentinel lookup.
                 StepTypes         = string.Join(',',
-                    manifest.StepTypes
+                    manifest.StepTypeIds
                         .Select(t => t.Trim().ToLowerInvariant())
                         .Where(t => t.Length > 0)),
             };
             db.StepPackages.Add(row);
+
+            // SC2: persist per-type schemas alongside the package row. A
+            // claimed type without a per-type file falls back to the legacy
+            // single ui-schema.json (one schema served the whole package
+            // pre-SC1); a type with neither simply has no schema row.
+            foreach (var typeId in row.StepTypes.Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var schemaJson = perTypeSchemas.TryGetValue(typeId, out var perType)
+                    ? perType
+                    : uiSchemaJson;
+                if (schemaJson is null) { continue; }
+
+                db.StepPackageSchemas.Add(new StepPackageSchema
+                {
+                    StepPackageId = row.Id,
+                    StepType      = typeId,
+                    SchemaJson    = schemaJson,
+                });
+            }
+
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
             logger.LogInformation(
                 "Installed step package {Name} {Version} ({StepTypes}) from {Source}.",
                 row.Name, row.Version, row.StepTypes, row.Source);
+
+            await RefreshRegistryAsync(ct).ConfigureAwait(false);
 
             return new UploadResult(true, row, null);
         }
@@ -350,6 +443,8 @@ public sealed class StepPackageService(
 
         logger.LogInformation(
             "StepPackageService.UninstallAsync: removed {Name} {Version}.", name, version);
+
+        await RefreshRegistryAsync(ct).ConfigureAwait(false);
 
         return new UninstallResult(UninstallStatus.Uninstalled, null);
     }
@@ -617,6 +712,10 @@ public sealed class StepPackageService(
         if (string.IsNullOrWhiteSpace(m.DisplayName))      { return "Manifest displayName is required."; }
         if (string.IsNullOrWhiteSpace(m.TargetFramework))  { return "Manifest targetFramework is required."; }
         if (m.StepTypes is null || m.StepTypes.Count == 0) { return "Manifest stepTypes must list at least one type."; }
+        if (m.StepTypes.Any(t => string.IsNullOrWhiteSpace(t.Id)))
+        {
+            return "Manifest stepTypes entries must each carry a non-empty id.";
+        }
         if (string.IsNullOrWhiteSpace(m.ExecutorAssembly)) { return "Manifest executorAssembly is required."; }
         if (string.IsNullOrWhiteSpace(m.ExecutorTypeName)) { return "Manifest executorTypeName is required."; }
 

@@ -1,0 +1,69 @@
+{
+  "id": "octopus.awsrunscript",
+  "title": "Run an AWS Script",
+  "description": "Run a script with AWS credentials set as environment variables.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "credentials",
+      "title": "AWS Credentials",
+      "collapsed": false
+    },
+    {
+      "id": "script",
+      "title": "Script",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Aws.AccessKeyId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Access Key ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.SecretAccessKey": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Secret Access Key",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.Region": {
+      "type": "string",
+      "widget": "text",
+      "label": "Region",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.ScriptBody": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Script body",
+      "helpText": "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_DEFAULT_REGION env vars are set.",
+      "group": "script",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Aws.ScriptSyntax": {
+      "type": "string",
+      "widget": "select",
+      "label": "Language",
+      "group": "script",
+      "default": "Bash",
+      "enumValues": [
+        {
+          "value": "Bash",
+          "label": "Bash"
+        },
+        {
+          "value": "PowerShell",
+          "label": "PowerShell"
+        }
+      ]
+    }
+  }
+}

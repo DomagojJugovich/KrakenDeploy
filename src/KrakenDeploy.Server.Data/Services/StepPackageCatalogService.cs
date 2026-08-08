@@ -13,11 +13,12 @@ using Microsoft.Extensions.Options;
 namespace KrakenDeploy.Server.Data.Services;
 
 /// <summary>
-/// Caches step-package metadata from the public KrakenDeploy/StepPackages
-/// GitHub repo's Releases feed in the local <c>step_package_catalog</c>
-/// table (Phase D-9). Used by the catalog tab on <c>/step-packages</c>.
-/// Refreshed hourly by a Hangfire recurring job and on demand via the
-/// "Refresh" button.
+/// Caches step-package metadata from the Kraken community repo's GitHub
+/// Releases feed in the local <c>step_package_catalog</c> table (Phase D-9,
+/// default repo corrected in SC6 — the old <c>KrakenDeploy/StepPackages</c>
+/// default pointed at a squatted GitHub name and 404'd on every poll).
+/// Used by the catalog tab on <c>/step-packages</c>. Refreshed hourly by a
+/// Hangfire recurring job and on demand via the "Refresh" button.
 /// <para>
 /// Strategy:
 /// <list type="number">
@@ -37,8 +38,8 @@ namespace KrakenDeploy.Server.Data.Services;
 /// <para>
 /// Configuration keys (under <c>StepPackages:Catalog</c>):
 /// <list type="bullet">
-///   <item><c>Owner</c> — GitHub owner. Default <c>"KrakenDeploy"</c>.</item>
-///   <item><c>Repo</c> — Repo name. Default <c>"StepPackages"</c>.</item>
+///   <item><c>Owner</c> — GitHub owner. Default <c>"DomagojJugovich"</c>.</item>
+///   <item><c>Repo</c> — Repo name. Default <c>"kraken-steps"</c>.</item>
 ///   <item><c>Enabled</c> — When <c>false</c>, refresh is a no-op (useful
 ///         for air-gapped servers). Default <c>true</c>.</item>
 /// </list>
@@ -53,13 +54,16 @@ public class StepPackageCatalogService(
     StepPackageService stepPackageService,
     IConfiguration config,
     IOptions<SsrfOptions> ssrfOptions,
-    ILogger<StepPackageCatalogService> logger)
+    ILogger<StepPackageCatalogService> logger,
+    SettingsService? settings = null)
 {
     /// <summary>Named <see cref="HttpClient"/> shared with the step-template catalog.</summary>
     public const string HttpClientName = "kraken.github";
 
-    private string Owner => config["StepPackages:Catalog:Owner"] ?? "KrakenDeploy";
-    private string Repo  => config["StepPackages:Catalog:Repo"]  ?? "StepPackages";
+    private string Owner => config["StepPackages:Catalog:Owner"] ?? "DomagojJugovich";
+    private string Repo  => config["StepPackages:Catalog:Repo"]  ?? "kraken-steps";
+
+    private string HealthKey => $"packages:{Owner}/{Repo}".ToLowerInvariant();
     private bool Enabled =>
         !string.Equals(config["StepPackages:Catalog:Enabled"], "false",
             StringComparison.OrdinalIgnoreCase);
@@ -115,6 +119,8 @@ public class StepPackageCatalogService(
         {
             logger.LogWarning(ex,
                 "Failed to fetch step-package catalog from GitHub ({Owner}/{Repo}).", Owner, Repo);
+            await RecordFeedHealthAsync($"GitHub releases fetch failed: {ex.Message}", ct)
+                .ConfigureAwait(false);
             throw new InvalidOperationException(
                 $"GitHub releases fetch failed for {Owner}/{Repo}: {ex.Message}", ex);
         }
@@ -220,7 +226,39 @@ public class StepPackageCatalogService(
             Owner, Repo, result.UpstreamCount, result.Added, result.Updated,
             result.Unchanged, result.Removed, result.Failed);
 
+        await RecordFeedHealthAsync(error: null, ct).ConfigureAwait(false);
+
         return result;
+    }
+
+    /// <summary>
+    /// SC6: records this feed's last attempt / success / error in the
+    /// <see cref="StepFeedHealthDocument"/>, surfaced by the picker's
+    /// feed-health strip and the catalog tab. Best-effort — never fails
+    /// the refresh itself.
+    /// </summary>
+    private async Task RecordFeedHealthAsync(string? error, CancellationToken ct)
+    {
+        if (settings is null) { return; }
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            await settings.MutateAsync<StepFeedHealthDocument>(null, doc =>
+            {
+                doc.Feeds.TryGetValue(HealthKey, out var prev);
+                doc.Feeds[HealthKey] = new StepFeedHealth
+                {
+                    LastAttemptUtc = now,
+                    LastSuccessUtc = error is null ? now : prev?.LastSuccessUtc,
+                    LastError      = error,
+                };
+                return doc;
+            }, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Failed to record feed health for {Feed}.", HealthKey);
+        }
     }
 
     // ── Install ────────────────────────────────────────────────────────────

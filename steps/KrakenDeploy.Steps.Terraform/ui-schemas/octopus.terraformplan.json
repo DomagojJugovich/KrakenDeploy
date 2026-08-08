@@ -1,0 +1,91 @@
+{
+  "id": "octopus.terraformplan",
+  "title": "Plan a Terraform Deployment",
+  "description": "Run terraform init and plan to preview infrastructure changes.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "general",
+      "title": "General",
+      "collapsed": false
+    },
+    {
+      "id": "variables",
+      "title": "Variables",
+      "collapsed": true
+    },
+    {
+      "id": "advanced",
+      "title": "Advanced",
+      "collapsed": true
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Terraform.WorkingDirectory": {
+      "type": "string",
+      "widget": "text",
+      "label": "Working directory",
+      "group": "general",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.Workspace": {
+      "type": "string",
+      "widget": "text",
+      "label": "Workspace",
+      "group": "general",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.PlanFilePath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Plan output file",
+      "helpText": "Optional path to save the plan file (-out).",
+      "group": "general",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.Vars": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Variables",
+      "helpText": "One per line: key=value.",
+      "group": "variables",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.VarFile": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Var files",
+      "group": "variables",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.BackendConfig": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Backend config",
+      "group": "advanced",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.AdditionalInitArgs": {
+      "type": "string",
+      "widget": "text",
+      "label": "Additional init args",
+      "group": "advanced",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.AdditionalActionArgs": {
+      "type": "string",
+      "widget": "text",
+      "label": "Additional plan args",
+      "group": "advanced",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.SkipInit": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Skip terraform init",
+      "group": "advanced",
+      "default": "false",
+      "enumValues": []
+    }
+  }
+}

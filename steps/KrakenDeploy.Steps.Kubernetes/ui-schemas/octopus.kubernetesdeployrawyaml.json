@@ -1,0 +1,65 @@
+{
+  "id": "octopus.kubernetesdeployrawyaml",
+  "title": "Deploy Kubernetes YAML",
+  "description": "Apply raw YAML manifests to a Kubernetes cluster.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "cluster",
+      "title": "Cluster Connection",
+      "collapsed": false
+    },
+    {
+      "id": "yaml",
+      "title": "YAML",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Kubernetes.ClusterUrl": {
+      "type": "string",
+      "widget": "text",
+      "label": "Cluster URL",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Token": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Token",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Namespace": {
+      "type": "string",
+      "widget": "text",
+      "label": "Namespace",
+      "group": "cluster",
+      "default": "default",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.KubeconfigPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Kubeconfig path",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Yaml": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Inline YAML",
+      "helpText": "YAML manifests to apply. Octostache #{...} variables are resolved.",
+      "group": "yaml",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.YamlFiles": {
+      "type": "string",
+      "widget": "text",
+      "label": "YAML file globs",
+      "helpText": "Comma-separated globs relative to the package (e.g. *.yaml, k8s/*.yml).",
+      "group": "yaml",
+      "enumValues": []
+    }
+  }
+}
