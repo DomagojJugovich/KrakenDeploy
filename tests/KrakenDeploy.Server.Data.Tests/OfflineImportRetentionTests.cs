@@ -133,7 +133,7 @@ public sealed class OfflineImportRetentionTests(PostgresFixture postgres)
             postgres,
             new UnusedArtifactStore(),
             crypto,
-            new RetentionService(postgres, new DefaultSpaceContext(), NullLogger<RetentionService>.Instance),
+            RetentionTestFactory.NewService(postgres),
             NullLogger<OfflineResultService>.Instance);
 
         await using var bundle = BuildSuccessBundle(pendingId);

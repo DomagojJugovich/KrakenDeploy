@@ -304,6 +304,34 @@ public class RunbookService(
         return runbook;
     }
 
+    /// <summary>
+    /// WP9 — sets the per-runbook retention override for how many successful runs
+    /// are kept per (runbook, environment). <paramref name="keepRuns"/> is a true
+    /// tri-state: <c>null</c> clears the override (inherit the instance-wide
+    /// <c>PerformanceSettings.RunbookRunRetentionKeep</c>), <c>0</c> keeps all runs,
+    /// a positive value keeps that many. Kept separate from
+    /// <see cref="UpdateAsync"/> so the name/description REST path (which carries no
+    /// retention field) never accidentally clears an operator's override. Authorized
+    /// like any other runbook edit (RunbookEdit on the owning project).
+    /// </summary>
+    public async Task<Runbook?> SetRetentionOverrideAsync(
+        Guid id, int? keepRuns, CallerAuthorization caller, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(caller);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureRunbookScopeAsync(db, caller, id, ct).ConfigureAwait(false);
+
+        var runbook = await db.Runbooks.FindAsync([id], ct).ConfigureAwait(false);
+        if (runbook is null)
+        {
+            return null;
+        }
+
+        runbook.RetentionKeepRuns = keepRuns;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return runbook;
+    }
+
     public async Task<bool> DeleteAsync(Guid id, CallerAuthorization caller, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(caller);

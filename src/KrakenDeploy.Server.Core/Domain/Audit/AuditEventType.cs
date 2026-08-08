@@ -212,6 +212,14 @@ public static class AuditEventType
     /// audit log can see a clear chronology of "who tuned what when".</summary>
     public const string PerformanceSettingsUpdated = "Performance.SettingsUpdated";
 
+    /// <summary>The scheduled retention sweep (WP9) completed a pass. Emitted
+    /// once per run with a per-category count summary in Details (deployments,
+    /// releases, packages, runbook runs, step-log blobs, orphaned live-log
+    /// rows, artifact files, drop-bundle files) and whether the run was a
+    /// dry-run. In dry-run mode the counts are what WOULD be deleted and
+    /// nothing is actually removed — the entry is the operator's preview.</summary>
+    public const string RetentionSweepCompleted    = "Retention.SweepCompleted";
+
     /// <summary>A deployment exceeded the configured
     /// <c>SlowDeploymentThresholdMinutes</c> window. Emitted at deployment
     /// finalization. Subscribable via M13.B.2/3 — operators route to

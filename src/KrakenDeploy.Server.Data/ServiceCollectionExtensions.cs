@@ -18,6 +18,7 @@ using KrakenDeploy.Server.Data.Storage;
 using KrakenDeploy.Server.Data.Net;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
@@ -95,6 +96,20 @@ public static class ServiceCollectionExtensions
         // ctor params via the container). The Server replaces this with
         // HttpAccountContext when MultiAccount:Enabled is set.
         services.TryAddScoped<IAccountContext, DisabledAccountContext>();
+
+        // Default configuration: data services that read config knobs (WP9
+        // RetentionService's Server:DataPath) resolve IConfiguration from the
+        // container. The web host + CLI already register the real configuration
+        // (this TryAdd never overrides it); this default only kicks in for bare
+        // AddKrakenDeployData consumers (tests) and carries the same dataPath the
+        // stores were constructed with so file paths stay consistent.
+        services.TryAddSingleton<IConfiguration>(_ =>
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Server:DataPath"] = dataPath,
+                })
+                .Build());
         // No-op resolver so AccountBoundary can inject IAccountResolver
         // unconditionally; the control plane replaces it with the catalog resolver.
         services.TryAddScoped<IAccountResolver, NullAccountResolver>();
@@ -360,6 +375,7 @@ public static class ServiceCollectionExtensions
         services.AddTransient<StepTemplateCatalogPollJob>();
         services.AddTransient<StepPackageCatalogPollJob>();
         services.AddTransient<BackupJob>();
+        services.AddTransient<RetentionSweepJob>();
 
         // Octodiff delta generation — singleton because it has no mutable state;
         // signatures are cached on disk alongside the package files.

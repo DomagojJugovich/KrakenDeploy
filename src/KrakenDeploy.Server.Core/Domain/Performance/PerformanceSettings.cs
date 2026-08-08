@@ -142,6 +142,53 @@ public class PerformanceSettings : ISettingsDocument
 
     public const int DefaultAiCallLogRetentionDays = 90;
 
+    // ── Retention sweep (WP9) ─────────────────────────────────────────────
+    // Knobs for the scheduled RetentionSweepJob — the event-driven prune
+    // (RetentionService.PruneAfter*) still fires post-completion; the sweep
+    // catches rows the event path never saw (imported history, rows that
+    // pre-dated a keep-count change) plus the disk/log cleanup the row prune
+    // cannot do.
+
+    /// <summary>
+    /// Number of package versions kept per package id by the retention sweep.
+    /// Versions older than the newest <c>N</c> are pruned UNLESS pinned by a
+    /// retained release's <c>ProcessSnapshot</c> (primary or referenced
+    /// package) or referenced by a retained deployment — the reference guard
+    /// always wins, so a keep of 1 never deletes a version an in-window
+    /// release still deploys. <c>0</c> (the default) disables package pruning
+    /// entirely; operators opt in once they have sized their feed.
+    /// </summary>
+    public int PackageRetentionKeepVersions { get; set; } = DefaultPackageRetentionKeepVersions;
+
+    public const int DefaultPackageRetentionKeepVersions = 0;
+
+    /// <summary>
+    /// Default number of successful runbook runs kept per (runbook, environment).
+    /// Wired into <c>RetentionService.PruneAfterRunbookRunAsync</c>'s reserved
+    /// <c>keepOverride</c> hook; a per-runbook <c>Runbook.RetentionKeepRuns</c>
+    /// override wins when set (&gt; 0). Replaces the previously hardcoded
+    /// <c>RetentionService.DefaultRunbookRunKeep</c> (50) as the production
+    /// default — the const stays as the fallback when no settings row exists.
+    /// <c>0</c> or negative disables runbook-run pruning.
+    /// </summary>
+    public int RunbookRunRetentionKeep { get; set; } = DefaultRunbookRunRetentionKeep;
+
+    public const int DefaultRunbookRunRetentionKeep = 50;
+
+    /// <summary>
+    /// Age cap for <c>task_step_logs</c> blob rows, in days. The sweep deletes
+    /// step-log blobs whose parent task completed more than this many days ago
+    /// (the live <c>task_log_live</c> staging rows for terminal tasks are swept
+    /// regardless of age — they are orphaned by definition once a task is
+    /// terminal). <c>0</c> (the default) disables age-based log pruning; the
+    /// orphan-live sweep still runs. Kept separate from
+    /// <see cref="AuditLogRetentionDays"/> because step logs are high-volume
+    /// TOAST payloads operators may want to shed sooner than the audit record.
+    /// </summary>
+    public int TaskLogRetentionDays { get; set; } = DefaultTaskLogRetentionDays;
+
+    public const int DefaultTaskLogRetentionDays = 0;
+
     // ── Offline drop ──────────────────────────────────────────────────────
 
     /// <summary>

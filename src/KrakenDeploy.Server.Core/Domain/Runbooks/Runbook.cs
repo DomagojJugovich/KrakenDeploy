@@ -25,4 +25,15 @@ public class Runbook : AuditableEntity, ISpaceScoped
     public required string Name { get; set; }
 
     public string? Description { get; set; }
+
+    /// <summary>
+    /// Per-runbook override for how many successful runs are kept per
+    /// (runbook, environment) by retention (WP9). <c>null</c> (the default)
+    /// inherits the instance-wide <c>PerformanceSettings.RunbookRunRetentionKeep</c>;
+    /// a value overrides it for this runbook only. <c>0</c> disables run pruning
+    /// for this runbook (keep all). Wired into
+    /// <c>RetentionService.PruneAfterRunbookRunAsync</c>'s reserved
+    /// <c>keepOverride</c> hook.
+    /// </summary>
+    public int? RetentionKeepRuns { get; set; }
 }

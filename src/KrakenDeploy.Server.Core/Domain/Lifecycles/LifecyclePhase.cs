@@ -44,4 +44,13 @@ public class LifecyclePhase
     /// <c>0</c> means keep all (no pruning).
     /// </summary>
     public int RetentionKeepDeployments { get; set; }
+
+    /// <summary>
+    /// Maximum number of releases to retain for the projects governed by this phase's
+    /// lifecycle. A release is prunable once it falls outside EVERY phase's keep-window
+    /// AND has no retained deployments (WP9 release retention). <c>0</c> means keep all
+    /// (no release pruning) — the shipped default, so release pruning is opt-in per
+    /// lifecycle exactly like <see cref="RetentionKeepDeployments"/>.
+    /// </summary>
+    public int RetentionKeepReleases { get; set; }
 }
