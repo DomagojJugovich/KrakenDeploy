@@ -266,19 +266,26 @@ public class StepTemplateCatalogService(
         }
 
         // 2. Compare against what we have locally — for THIS feed only.
+        // Scoped by SubDir as well as FeedKey: Feed.Key is owner/repo, so two
+        // configured feeds over the same repo but different subdirectories share
+        // a key, and an unscoped orphan sweep would have each one delete all of
+        // the other's rows on every refresh.
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        // Case-insensitive prefix match: the upstream tree filter (line ~263) and
+        // both dictionaries are OrdinalIgnoreCase, so a plain StartsWith here
+        // (a case-SENSITIVE Postgres LIKE) would load an empty `existing` set when
+        // the repo's real subdir casing differs from feed.SubDir, treating every
+        // file as new and freezing the feed on the CommunityTemplateId unique index.
+        // ILike is Npgsql's case-insensitive LIKE; escape LIKE metacharacters in
+        // the (config-supplied) subdir so '_'/'%' in a dir name stay literal.
+        var subDirLike = (feed.SubDir + "/")
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("%", "\\%", StringComparison.Ordinal)
+            .Replace("_", "\\_", StringComparison.Ordinal) + "%";
         var existing = await db.StepTemplateCatalog
-            .Where(e => e.FeedKey == feed.Key)
+            .Where(e => e.FeedKey == feed.Key && EF.Functions.ILike(e.PathInRepo, subDirLike))
             .ToDictionaryAsync(e => e.PathInRepo, StringComparer.OrdinalIgnoreCase, ct)
             .ConfigureAwait(false);
-
-        // CommunityTemplateId is globally unique — a duplicate id arriving
-        // from a second feed must be skipped (counted failed), not blow up
-        // the whole feed's SaveChanges.
-        var knownIds = (await db.StepTemplateCatalog
-                .Select(e => e.CommunityTemplateId)
-                .ToListAsync(ct).ConfigureAwait(false))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var added     = 0;
         var updated   = 0;
@@ -286,6 +293,37 @@ public class StepTemplateCatalogService(
         var removed   = 0;
         var failed    = 0;
         var now = DateTimeOffset.UtcNow;
+
+        // 2b. Delete orphans FIRST, in their own SaveChanges. CommunityTemplateId
+        // is globally unique, so a template that merely MOVED path upstream would
+        // otherwise be rejected as a duplicate of the row that is about to be
+        // deleted, and the entry would vanish for a whole refresh cycle. EF orders
+        // inserts before deletes within one SaveChanges, so the two must be split.
+        foreach (var (path, row) in existing)
+        {
+            if (!upstreamFiles.ContainsKey(path))
+            {
+                db.StepTemplateCatalog.Remove(row);
+                removed++;
+            }
+        }
+        if (removed > 0)
+        {
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            foreach (var path in existing.Keys.Where(p => !upstreamFiles.ContainsKey(p)).ToList())
+            {
+                existing.Remove(path);
+            }
+        }
+
+        // CommunityTemplateId is globally unique — a duplicate id arriving
+        // from a second feed must be skipped (counted failed), not blow up
+        // the whole feed's SaveChanges. Loaded after the orphan delete so ids
+        // freed by it are available to the adds below.
+        var knownIds = (await db.StepTemplateCatalog
+                .Select(e => e.CommunityTemplateId)
+                .ToListAsync(ct).ConfigureAwait(false))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         // 3. Per-changed-file fetch via raw URL (doesn't count against API limit).
         foreach (var (path, sha) in upstreamFiles)
@@ -328,6 +366,27 @@ public class StepTemplateCatalogService(
 
             if (hadExisting)
             {
+                // A changed id must clear the same global-uniqueness bar the add
+                // branch enforces. Letting it through means SaveChanges throws on
+                // ix_step_template_catalog_community_template_id, which rolls back
+                // the WHOLE feed pass (adds, sync bumps, orphan deletes) and
+                // re-throws every hour because nothing was persisted.
+                if (meta.CommunityTemplateId is not null
+                    && !string.Equals(meta.CommunityTemplateId, row!.CommunityTemplateId,
+                                      StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!knownIds.Add(meta.CommunityTemplateId))
+                    {
+                        logger.LogWarning(
+                            "Catalog file {Feed}/{Path} changed its CommunityTemplateId to '{Id}', " +
+                            "which another row already holds — row left unchanged.",
+                            feed.Key, path, meta.CommunityTemplateId);
+                        failed++;
+                        continue;
+                    }
+                    knownIds.Remove(row.CommunityTemplateId);
+                }
+
                 row!.FileSha             = sha;
                 row.DownloadUrl          = rawUrl;
                 row.Name                 = meta.Name;
@@ -380,16 +439,8 @@ public class StepTemplateCatalogService(
             }
         }
 
-        // 4. Delete orphans (files removed upstream) — this feed's rows only.
-        foreach (var (path, row) in existing)
-        {
-            if (!upstreamFiles.ContainsKey(path))
-            {
-                db.StepTemplateCatalog.Remove(row);
-                removed++;
-            }
-        }
-
+        // 4. Orphans were already deleted in step 2b (before the adds, so a moved
+        // template's id is free by the time its new path is inserted).
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         return new CatalogRefreshResult(

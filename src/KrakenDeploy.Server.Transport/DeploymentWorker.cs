@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.Logging;
+using KrakenDeploy.Contracts.StepPackages;
 using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Accounts;
@@ -696,24 +697,122 @@ public sealed class DeploymentWorker(
                 .Where(t => planTypeIds.Contains(t.TypeId))
                 .ToDictionaryAsync(t => t.TypeId, ct).ConfigureAwait(false);
 
+            // A step executes with the package version it is PINNED to, so that
+            // version's manifest and schema decide its locus and whether its
+            // RunOnServer flag means anything — not whatever the registry happens
+            // to be serving now. Reading the registry alone lets a newly installed
+            // version reroute steps pinned to an older one (agent -> server) and
+            // lets a dropped/added RunOnServer field refuse or wave through the
+            // wrong deployments.
+            var pinByType = new Dictionary<string, (string Name, string Version)>(
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var s in canonicalCtx.Steps)
+            {
+                if (s.StepPackageName is null || s.StepPackageVersion is null) { continue; }
+                var key = s.StepType.ToLowerInvariant();
+                if (!pinByType.ContainsKey(key))
+                {
+                    pinByType[key] = (s.StepPackageName, s.StepPackageVersion);
+                }
+            }
+
+            var pinnedNames    = pinByType.Values.Select(p => p.Name).Distinct().ToList();
+            var pinnedVersions = pinByType.Values.Select(p => p.Version).Distinct().ToList();
+            var pinnedManifests = pinnedNames.Count == 0
+                ? []
+                : await db.StepPackages.AsNoTracking()
+                    .Where(p => pinnedNames.Contains(p.Name) && pinnedVersions.Contains(p.Version))
+                    .Select(p => new { p.Name, p.Version, p.ManifestJson })
+                    .ToListAsync(ct).ConfigureAwait(false);
+            var manifestByPin = pinnedManifests.ToDictionary(
+                p => (p.Name, p.Version), p => p.ManifestJson);
+
+            // The locus a specific pinned (name, version) declares for a type, or
+            // null when the pin is absent / its row is gone / its manifest no
+            // longer claims the type / it fails to parse — all of which fall back
+            // to the registry's serving row.
+            StepTypeExecutionLocus? LocusForPin(string? name, string? version, string typeId)
+            {
+                if (name is null || version is null) { return null; }
+                if (!manifestByPin.TryGetValue((name, version), out var json)) { return null; }
+                try
+                {
+                    var pinnedManifest = StepPackageManifestJson.Deserialize(json);
+                    var decl = pinnedManifest.StepTypes.FirstOrDefault(d =>
+                        d.Id.Trim().Equals(typeId, StringComparison.OrdinalIgnoreCase));
+                    if (decl is null) { return null; }
+                    return string.Equals(decl.ExecutionLocus, StepTypeDeclaration.ServerLocus,
+                                         StringComparison.OrdinalIgnoreCase)
+                        ? StepTypeExecutionLocus.ServerRunner
+                        : StepTypeExecutionLocus.AgentPackage;
+                }
+                catch (Exception ex) when (
+                    ex is JsonException or InvalidOperationException or NotSupportedException)
+                {
+                    // Corrupt/unsupported stored manifest → fall back to the
+                    // registry serving row rather than aborting the dispatch.
+                    return null;
+                }
+            }
+
+            StepTypeExecutionLocus? PinnedLocus(string typeId)
+                => pinByType.TryGetValue(typeId, out var pin)
+                    ? LocusForPin(pin.Name, pin.Version, typeId)
+                    : null;
+
+            // The wave partitioner classifies by TYPE, not per step, so it takes
+            // one locus for all steps of a type. If two steps of the same type are
+            // pinned to versions that declare DIFFERENT loci, no single wave
+            // classification is correct — refuse rather than silently route one of
+            // them to the wrong side. Rare (a package rarely changes a type's locus
+            // across versions), but a mis-route runs a step on the wrong machine.
+            foreach (var grp in canonicalCtx.Steps
+                .Where(s => s.StepPackageName is not null && s.StepPackageVersion is not null)
+                .GroupBy(s => s.StepType.ToLowerInvariant()))
+            {
+                var distinctLoci = grp
+                    .Select(s => LocusForPin(s.StepPackageName, s.StepPackageVersion, grp.Key))
+                    .Where(l => l is not null)
+                    .Distinct()
+                    .Count();
+                if (distinctLoci > 1)
+                {
+                    var reason =
+                        $"Steps of type '{grp.Key}' are pinned to package versions that declare " +
+                        "different execution locations (some agent-side, some server-side), which " +
+                        "the deployment cannot route consistently. Pin all steps of this type to " +
+                        "versions with the same execution locus and re-run.";
+                    await logSeq.AppendAsync(-1, null, "error", reason, ct).ConfigureAwait(false);
+                    await FailAsync(db, deployment, reason, ct).ConfigureAwait(false);
+                    return;
+                }
+            }
+
             var schemaResolver = scope.ServiceProvider.GetRequiredService<StepSchemaResolver>();
             var typeFacts = new Dictionary<string, StepTypeExecutionGuard.TypeFacts>(
+                StringComparer.OrdinalIgnoreCase);
+            var effectiveLocus = new Dictionary<string, StepTypeExecutionLocus>(
                 StringComparer.OrdinalIgnoreCase);
             foreach (var typeId in planTypeIds)
             {
                 registryRows.TryGetValue(typeId, out var row);
-                var exists     = row is not null;
-                var serverSide = row is not null
-                    && row.ExecutionLocus != StepTypeExecutionLocus.AgentPackage;
+                var exists = row is not null;
+                var locus  = PinnedLocus(typeId)
+                             ?? row?.ExecutionLocus
+                             ?? StepTypeExecutionLocus.AgentPackage;
+                var serverSide = exists && locus != StepTypeExecutionLocus.AgentPackage;
+                if (exists) { effectiveLocus[typeId] = locus; }
 
-                // The RunOnServer flag is only meaningful when the serving
-                // schema exposes the field — look the schema up lazily, only
-                // for types where a step actually sets the flag.
+                // The RunOnServer flag is only meaningful when the schema exposes
+                // the field — look it up lazily, only for types where a step
+                // actually sets the flag, and against the step's own pin.
                 var supportsRunOnServer = false;
                 if (exists && !serverSide && canonicalCtx.Steps.Any(s =>
                         s.RunOnServer && s.StepType.Equals(typeId, StringComparison.OrdinalIgnoreCase)))
                 {
-                    var resolved = await schemaResolver.ResolveAsync(typeId, ct: ct)
+                    pinByType.TryGetValue(typeId, out var pin);
+                    var resolved = await schemaResolver
+                        .ResolveAsync(typeId, pin.Name, pin.Version, ct)
                         .ConfigureAwait(false);
                     supportsRunOnServer = resolved?.Schema.Properties
                         .ContainsKey(KrakenScriptConfigKeys.RunOnServer) == true;
@@ -733,9 +832,11 @@ public sealed class DeploymentWorker(
                 return;
             }
 
-            var serverSideTypes = registryRows.Values
-                .Where(t => t.ExecutionLocus != StepTypeExecutionLocus.AgentPackage)
-                .Select(t => t.TypeId)
+            // Built from the pin-aware locus above, so wave routing agrees with the
+            // guard and with the version each step will actually execute.
+            var serverSideTypes = effectiveLocus
+                .Where(kv => kv.Value != StepTypeExecutionLocus.AgentPackage)
+                .Select(kv => kv.Key)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             // ── 3. Partition canonical steps into waves (M14.4) ─────────────
@@ -1178,7 +1279,7 @@ public sealed class DeploymentWorker(
                         await PauseForInterventionAsync(
                             db, deployment, source.Audit, auditLog, logSeq,
                             decision.Pending!, decision.ResponsibleTeamNames,
-                            waveIndex, hasFailed, interventionRejected, aliveTargets,
+                            waveIndex, waves, hasFailed, interventionRejected, aliveTargets,
                             droppedTargets, softFailedTargets, outputAccumulator,
                             encryption, ct).ConfigureAwait(false);
                         return;
@@ -1744,6 +1845,7 @@ public sealed class DeploymentWorker(
         IReadOnlyDictionary<string, string> flatVars,
         Guid spaceId,
         SecretRedactor redactor,
+        LogSequencer logSeq,
         CancellationToken ct)
     {
         // WP3 — a manual-intervention gate is decided at the wave boundary and its
@@ -1776,6 +1878,39 @@ public sealed class DeploymentWorker(
                 ? new ServerScriptResult(true, new Dictionary<string, string>(), [])
                 : ServerScriptResult.Failure;
         }
+        // Everything else lands on the generic script runner, which reads
+        // Octopus.Action.Script.ScriptBody regardless of type. A package type that
+        // declares executionLocus=server but is not a script type would die there
+        // with the misleading "Step has no script body" — the exact failure
+        // StepTypeExecutionGuard exists to eliminate, and one the guard cannot
+        // catch because facts.ServerSide is true for such a type. Name the real
+        // problem instead, so the operator learns which package is mis-declared.
+        //
+        // Scoped to steps routed here purely BY LOCUS: a step with RunOnServer set
+        // has already passed the pre-dispatch guard, which only lets the flag
+        // through for types whose schema exposes it — i.e. script types. An empty
+        // body on one of those is an authoring mistake, and it stays a soft
+        // per-step failure from the runner, not a thrown orchestration error.
+        //
+        // A NON-script type declaring executionLocus=server is mis-declared and
+        // cannot execute (no server runner handles it, no script body to run).
+        // Fail this STEP softly — logging the real reason — rather than throwing:
+        // a throw propagates past StepRetryRunner (catches only cancellation) to
+        // the dispatch catch and FailAsyncs the whole task, which would abort a
+        // deployment even for a NON-REQUIRED such step. Returning Failure keeps
+        // the required/non-required contract every other server-step failure honors.
+        if (!step.RunOnServer && !step.Config.ContainsKey(KrakenScriptConfigKeys.ScriptBody))
+        {
+            await logSeq.AppendAsync(step.Index, null, "error",
+                $"Step '{step.Name}' (type '{step.StepType}') is routed server-side by its " +
+                "step package's declared execution locus, but no server runner handles that " +
+                "type and it carries no script body. Only script steps, Octopus.DeployRelease " +
+                "and Octopus.Manual can execute server-side — a package declaring " +
+                "executionLocus=server for any other type is mis-declared.", ct)
+                .ConfigureAwait(false);
+            return ServerScriptResult.Failure;
+        }
+
         // ServerScriptStepRunner only writes deployment-log rows and scopes those
         // short-lived writes itself (IgnoreQueryFilters + explicit SpaceId stamp),
         // so it needs no Space threading. The redactor masks sensitive values in
@@ -1946,6 +2081,7 @@ public sealed class DeploymentWorker(
         Interruption interruption,
         IReadOnlyList<string>? responsibleTeamNames,
         int waveIndex,
+        IReadOnlyList<WavePartitioner.Wave> waves,
         bool hasFailed,
         bool interventionRejected,
         IReadOnlyList<DeploymentTarget> aliveTargets,
@@ -1959,6 +2095,9 @@ public sealed class DeploymentWorker(
         var checkpoint = new TaskPauseCheckpoint
         {
             ResumeWaveIndex      = waveIndex,
+            // Recorded so the resume can prove the remaining waves still run on the
+            // side they ran on when the approval was given.
+            WaveKinds            = [.. waves.Select(w => w.Kind.ToString())],
             HasFailed            = hasFailed,
             // Without this a rejection recorded on an EARLIER wave is lost across this
             // pause, and the run finalises SucceededWithWarnings after the next gate is
@@ -2175,6 +2314,36 @@ public sealed class DeploymentWorker(
                    "process no longer matches this task — re-deploy the release.";
         }
 
+        // The count matching is not enough: wave SIDE comes from the step-type
+        // registry at dispatch time, so a package installed during the approval
+        // window can flip a remaining wave from Target to Server without changing
+        // the count. Resuming then executes on the server box instead of the
+        // approved targets, with no operator-visible signal.
+        if (checkpoint.WaveKinds.Length > 0)
+        {
+            if (checkpoint.WaveKinds.Length != waves.Count)
+            {
+                return "Resume checkpoint recorded " +
+                       $"{checkpoint.WaveKinds.Length.ToString(CultureInfo.InvariantCulture)} " +
+                       "wave(s) but the process now partitions into " +
+                       $"{waves.Count.ToString(CultureInfo.InvariantCulture)}. The approved " +
+                       "process no longer matches this task — re-deploy the release.";
+            }
+
+            for (var i = checkpoint.ResumeWaveIndex; i < waves.Count; i++)
+            {
+                var nowKind = waves[i].Kind.ToString();
+                if (!string.Equals(checkpoint.WaveKinds[i], nowKind, StringComparison.Ordinal))
+                {
+                    return $"Wave {(i + 1).ToString(CultureInfo.InvariantCulture)} ran " +
+                           $"{checkpoint.WaveKinds[i]}-side when this task was approved but " +
+                           $"now routes {nowKind}-side. A step package's declared execution " +
+                           "locus changed while the task was paused — re-deploy the release " +
+                           "so the change is reviewed and approved explicitly.";
+                }
+            }
+        }
+
         var byId = targets.ToDictionary(t => t.Id);
 
         aliveTargets.Clear();
@@ -2294,7 +2463,7 @@ public sealed class DeploymentWorker(
             snapshot.RetryDelaySeconds,
             effectiveTimeoutSeconds,
             runAttempt: (CancellationToken attemptCt) =>
-                ExecuteServerStepAsync(deploymentId, step, flatVars, deployment.SpaceId, redactor, attemptCt),
+                ExecuteServerStepAsync(deploymentId, step, flatVars, deployment.SpaceId, redactor, logSeq, attemptCt),
             isSuccess: r => r.Success,
             onTimeoutResult: () => ServerScriptResult.Failure,
             // Server surfaces the per-step timeout ONCE via the final TimedOut

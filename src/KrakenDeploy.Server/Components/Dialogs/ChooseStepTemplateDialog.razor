@@ -329,7 +329,11 @@
         }
 
         _featuredCount  = _cards.Count(c => c.Section == CardSection.Featured);
-        _installedCount = _cards.Count(c => c.Section == CardSection.Installed);
+        // Matches the "Installed" filter below, which deliberately includes
+        // Featured (a featured card IS an installed type, just promoted) — the
+        // count and the filter must agree or the button under-reports.
+        _installedCount = _cards.Count(c =>
+            c.Section is CardSection.Installed or CardSection.Featured);
         _presetCount    = _cards.Count(c => c.Section == CardSection.Presets);
         _communityCount = _cards.Count(c => c.Section == CardSection.Community);
 
@@ -352,19 +356,28 @@
     {
         IEnumerable<Card> q = _cards;
 
-        q = _currentBucket switch
-        {
-            "Featured"  => q.Where(c => c.Section == CardSection.Featured),
-            "Installed" => q.Where(c => c.Section is CardSection.Installed or CardSection.Featured),
-            "Presets"   => q.Where(c => c.Section == CardSection.Presets),
-            "Community" => q.Where(c => c.Section == CardSection.Community),
-            null        => q,
-            _           => q.Where(c =>
-                StepTemplateCategoryMap.GetBigBucket(c.Category)
-                    .Equals(_currentBucket, StringComparison.OrdinalIgnoreCase)),
-        };
+        // A search spans the WHOLE catalog. The dialog opens on Featured, which
+        // the registry populates with only the handful of types whose manifest
+        // sets featured=true, so filtering by bucket first made typing
+        // "kubernetes" report "Nothing matches the filter" while the card sat
+        // one unclicked bucket away.
+        var searching = !string.IsNullOrWhiteSpace(_search);
 
-        if (!string.IsNullOrWhiteSpace(_search))
+        if (!searching)
+        {
+            q = _currentBucket switch
+            {
+                "Featured"  => q.Where(c => c.Section == CardSection.Featured),
+                "Installed" => q.Where(c => c.Section is CardSection.Installed or CardSection.Featured),
+                "Presets"   => q.Where(c => c.Section == CardSection.Presets),
+                "Community" => q.Where(c => c.Section == CardSection.Community),
+                null        => q,
+                _           => q.Where(c =>
+                    StepTemplateCategoryMap.GetBigBucket(c.Category)
+                        .Equals(_currentBucket, StringComparison.OrdinalIgnoreCase)),
+            };
+        }
+        else
         {
             var s = _search.Trim();
             q = q.Where(c =>

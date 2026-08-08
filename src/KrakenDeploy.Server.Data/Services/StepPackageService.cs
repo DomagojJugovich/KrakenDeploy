@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using KrakenDeploy.Contracts.StepPackages;
 using KrakenDeploy.Contracts.Steps;
+using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using Microsoft.EntityFrameworkCore;
@@ -147,12 +148,37 @@ public sealed class StepPackageService(
                             $"Schema file '{name}' exceeds 1 MB — refusing the archive.");
                     }
 
-                    var typeId = Path.GetFileNameWithoutExtension(entry.Name).ToLowerInvariant();
+                    // The slot is exactly ui/schemas/{typeId}.json. The prefix test
+                    // above matches the whole path, so a nested entry
+                    // (ui/schemas/vendor/x.json) would resolve to the same leaf type
+                    // id as the canonical file and silently shadow it — last entry in
+                    // the central directory wins. UI schemas are NOT covered by the
+                    // archive signature (CanonicalSignatureInput hashes the manifest +
+                    // executor DLL only), so that shadow survives verification.
+                    var leaf = name[(StepPackageFiles.UiSchemasDirectory.Length + 1)..];
+                    if (leaf.Contains('/', StringComparison.Ordinal))
+                    {
+                        return Fail(
+                            $"Schema file '{name}' is nested — per-type schemas must live " +
+                            $"directly at {StepPackageFiles.UiSchemasDirectory}/{{typeId}}.json.");
+                    }
+
+                    var typeId = Path.GetFileNameWithoutExtension(leaf).ToLowerInvariant();
                     if (!declaredTypes.Contains(typeId))
                     {
                         return Fail(
                             $"Schema file '{name}' has no matching stepTypes entry " +
                             $"'{typeId}' in the manifest.");
+                    }
+
+                    // Case-variant duplicates (Octopus.Script.json vs
+                    // octopus.script.json) collapse to one key — refuse rather than
+                    // let entry order decide which form the editor renders.
+                    if (perTypeSchemas.ContainsKey(typeId))
+                    {
+                        return Fail(
+                            $"Archive ships more than one schema file for step type " +
+                            $"'{typeId}' (offending entry: '{name}').");
                     }
 
                     var schemaJson = await ReadAllTextAsync(entry, ct).ConfigureAwait(false);
@@ -217,6 +243,44 @@ public sealed class StepPackageService(
                     "Uninstall the existing version first, or publish a new version number.");
             }
 
+            // ── Reserved-type guard (SC-review): one choke point that closes the
+            // built-in takeover for the pin path, the schema resolver AND the
+            // registry at once. An untrusted source (LocalUpload) may not claim a
+            // step type a trusted source (built-in / official catalog) already
+            // serves — otherwise a higher-semver upload of e.g. "Octopus.Script"
+            // wins StepPackageResolver's pin and executes its code under a
+            // built-in type. The seeder installs built-ins as Preinstalled, which
+            // is trusted, so it is never blocked here. Same-NAME re-uploads are
+            // still refused: a hotfix ships through the seeder, not manual upload.
+            if (!source.OwnsClaimedTypes())
+            {
+                var claimed = manifest.StepTypeIds
+                    .Select(t => t.Trim().ToLowerInvariant())
+                    .Where(t => t.Length > 0)
+                    .ToHashSet(StringComparer.Ordinal);
+
+                var reserved = await db.StepPackages.AsNoTracking()
+                    .Where(p => p.Source == StepPackageSource.Preinstalled
+                             || p.Source == StepPackageSource.CatalogPull)
+                    .Select(p => new { p.Name, p.StepTypes })
+                    .ToListAsync(ct).ConfigureAwait(false);
+
+                foreach (var owner in reserved)
+                {
+                    var conflict = owner.StepTypes
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                        .FirstOrDefault(t => claimed.Contains(t));
+                    if (conflict is not null)
+                    {
+                        return Fail(
+                            $"Step type '{conflict}' is provided by the trusted package " +
+                            $"'{owner.Name}' and cannot be claimed by an uploaded package. " +
+                            "Rename the step type, or ship the change through the built-in " +
+                            "package it belongs to.");
+                    }
+                }
+            }
+
             // ── Extract to disk ─────────────────────────────────────────────
             var targetDir = ResolveDir(manifest.Id, manifest.Version);
             Directory.CreateDirectory(targetDir);
@@ -244,10 +308,15 @@ public sealed class StepPackageService(
                 // Trim each claim: a padded entry (e.g. manifest authored as
                 // "A, B") would otherwise be stored verbatim and never match
                 // StepPackageResolver's ",{type}," sentinel lookup.
+                // Distinct: step_package_schemas is unique on (package, type), so a
+                // repeated claim would insert the same key twice and blow up
+                // SaveChanges. ValidateManifest already refuses duplicates with a
+                // readable message; this keeps the storage shape correct regardless.
                 StepTypes         = string.Join(',',
                     manifest.StepTypeIds
                         .Select(t => t.Trim().ToLowerInvariant())
-                        .Where(t => t.Length > 0)),
+                        .Where(t => t.Length > 0)
+                        .Distinct(StringComparer.Ordinal)),
             };
             db.StepPackages.Add(row);
 
@@ -395,8 +464,14 @@ public sealed class StepPackageService(
         // EF doesn't translate it cleanly, so we pull releases and filter
         // in C#. Release counts are bounded (rarely > a few thousand per
         // server); good enough until volume justifies a json-path predicate.
+        // IgnoreQueryFilters: step packages are platform-wide and the archive
+        // deleted below is shared across Spaces, so this MUST see releases in
+        // every Space — matching the live-step and runbook scans. Without it a
+        // background sweep (DefaultSpace context) would miss a pinning release
+        // in another Space and delete an archive that Space still needs.
         var releaseRefs = new List<StepPackageUsageReport.ReleaseSnapshotRef>();
         var releases = await db.Releases
+            .IgnoreQueryFilters()
             .AsNoTracking()
             .Include(r => r.Project)
             .ToListAsync(ct)
@@ -413,11 +488,49 @@ public sealed class StepPackageService(
             }
         }
 
-        if (liveSteps.Count > 0 || releaseRefs.Count > 0)
+        // ── Unfinished runbook runs (no Release backs them) ─────────────
+        // A runbook run freezes its process into ProcessSnapshot at trigger
+        // time, so its pin survives a live-step re-pin — exactly what the
+        // SD-11 seed sweep does before calling us. Without this scan the sweep
+        // deletes the archive out from under a queued or paused run and the
+        // agent's download fails with "is not installed". Only unfinished runs
+        // matter; a completed run never downloads again.
+        var unfinishedRuns = await db.RunbookRuns
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(r => !DeploymentStatusExtensions.TerminalStatuses.Contains(r.Status))
+            .Include(r => r.Runbook)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var runbookRunRefs = new List<StepPackageUsageReport.RunbookRunRef>();
+        if (unfinishedRuns.Count > 0)
         {
-            return new UninstallResult(
-                UninstallStatus.Blocked,
-                new StepPackageUsageReport(name, version, liveSteps, releaseRefs));
+            var resolveRunProject = await BuildProjectResolverAsync(
+                db,
+                unfinishedRuns.Select(r => (ProcessOwnerKind.Runbook, r.RunbookId)),
+                ct).ConfigureAwait(false);
+
+            foreach (var r in unfinishedRuns)
+            {
+                if (!r.ProcessSnapshot.Any(s =>
+                        string.Equals(s.StepPackageName, name, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(s.StepPackageVersion, version, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                var (pName, pSlug) = resolveRunProject(ProcessOwnerKind.Runbook, r.RunbookId);
+                runbookRunRefs.Add(new StepPackageUsageReport.RunbookRunRef(
+                    r.Id, pName, pSlug, r.Runbook?.Name ?? "(unknown runbook)"));
+            }
+        }
+
+        var usage = new StepPackageUsageReport(
+            name, version, liveSteps, releaseRefs, runbookRunRefs);
+        if (usage.HasReferences)
+        {
+            return new UninstallResult(UninstallStatus.Blocked, usage);
         }
 
         // ── Clean up DB + disk ──────────────────────────────────────────
@@ -715,6 +828,49 @@ public sealed class StepPackageService(
         if (m.StepTypes.Any(t => string.IsNullOrWhiteSpace(t.Id)))
         {
             return "Manifest stepTypes entries must each carry a non-empty id.";
+        }
+
+        // Type ids are matched case-insensitively everywhere downstream, so
+        // "Octopus.Script" + "octopus.script" is one claim made twice.
+        var duplicateType = m.StepTypes
+            .GroupBy(t => t.Id.Trim(), StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(g => g.Count() > 1);
+        if (duplicateType is not null)
+        {
+            return $"Manifest stepTypes declares '{duplicateType.Key}' more than once.";
+        }
+
+        // The registry mirrors this metadata into length-capped columns
+        // (step_types: type_id/display_name 200, category 100, description 1000).
+        // Refusing here keeps one oversized field from installing cleanly and then
+        // failing every subsequent registry rebuild.
+        foreach (var t in m.StepTypes)
+        {
+            if (t.Id.Trim().Length > StepTypeMetadataLimits.TypeId)
+            {
+                return $"Manifest stepTypes id '{t.Id}' exceeds " +
+                       $"{StepTypeMetadataLimits.TypeId} characters.";
+            }
+            if (t.DisplayName is { Length: > StepTypeMetadataLimits.DisplayName })
+            {
+                return $"Manifest stepTypes displayName for '{t.Id}' exceeds " +
+                       $"{StepTypeMetadataLimits.DisplayName} characters.";
+            }
+            if (t.Category is { Length: > StepTypeMetadataLimits.Category })
+            {
+                return $"Manifest stepTypes category for '{t.Id}' exceeds " +
+                       $"{StepTypeMetadataLimits.Category} characters.";
+            }
+            if (t.Description is { Length: > StepTypeMetadataLimits.Description })
+            {
+                return $"Manifest stepTypes description for '{t.Id}' exceeds " +
+                       $"{StepTypeMetadataLimits.Description} characters.";
+            }
+        }
+        if (m.DisplayName.Length > StepTypeMetadataLimits.DisplayName)
+        {
+            return $"Manifest displayName exceeds " +
+                   $"{StepTypeMetadataLimits.DisplayName} characters.";
         }
         if (string.IsNullOrWhiteSpace(m.ExecutorAssembly)) { return "Manifest executorAssembly is required."; }
         if (string.IsNullOrWhiteSpace(m.ExecutorTypeName)) { return "Manifest executorTypeName is required."; }

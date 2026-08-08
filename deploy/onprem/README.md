@@ -103,9 +103,21 @@ chmod 644 secrets/kraken-signing.pub.pem
 
   ```bash
   docker build -f Dockerfile.server \
+    --build-arg SIGN_STEP_PACKAGES=true \
+    --build-arg SIGNING_KEY_FINGERPRINT="$(sha256sum secrets/kraken-signing.pem | cut -d' ' -f1)" \
     --secret id=kraken_signing_key,src=./secrets/kraken-signing.pem \
     -t krakendeploy-server:latest .
   ```
+
+  `--build-arg SIGN_STEP_PACKAGES=true` is required, not optional. BuildKit
+  excludes secrets from the layer cache key, so without the build arg a
+  previously-built unsigned dev layer is reused and the "signed" image silently
+  ships `signature: unsigned-dev-build`. With the arg set, a missing
+  `--secret` fails the build instead of producing an unsigned image.
+  `SIGNING_KEY_FINGERPRINT` busts the cache when you **rotate** the key — the
+  secret's bytes are not part of the cache key, so a rotated key on a warm cache
+  would otherwise reuse the layer signed by the old key. Pass any value that
+  changes with the key (its SHA-256 above is convenient).
 
   The same key belongs in the `KRAKEN_SIGNING_KEY` GitHub Actions secret so
   the `publish-step-packages` workflow signs catalog releases with it.

@@ -77,3 +77,20 @@ public enum StepPackageSource
     /// <summary>Seeded by the fresh-install bundle (Phase D-8 built-ins).</summary>
     Preinstalled = 2,
 }
+
+/// <summary><see cref="StepPackageSource"/> helpers.</summary>
+public static class StepPackageSourceExtensions
+{
+    /// <summary>
+    /// Whether packages of this source own the step types they claim — i.e.
+    /// which sources are trusted to define a type. Built-ins (Preinstalled)
+    /// and the official GitHub catalog (CatalogPull) are trusted; an admin
+    /// <see cref="StepPackageSource.LocalUpload"/> is not, so it cannot claim
+    /// (hijack) a type a trusted source already serves. The single source of
+    /// truth for both the upload-time reserved-type guard
+    /// (<c>StepPackageService.UploadAsync</c>) and the registry ownership pick
+    /// (<c>StepTypeRegistry.RebuildAsync</c>), so the two never drift.
+    /// </summary>
+    public static bool OwnsClaimedTypes(this StepPackageSource source)
+        => source is StepPackageSource.Preinstalled or StepPackageSource.CatalogPull;
+}

@@ -1,8 +1,11 @@
+using System.Text.Json;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.StepPackages;
 using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Security;
+using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data;
@@ -179,6 +182,103 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
                 "reach an approver for a manual-intervention gate, and passing one " +
                 "unapproved would defeat its purpose. Remove them from the process or " +
                 "deploy this project to an online target.");
+        }
+
+        // SC4-b: the online path refuses unserved and server-locus types before
+        // dispatch (StepTypeExecutionGuard), but that block sits AFTER the
+        // offline-drop branch returns, so this path never saw it. The hardcoded
+        // pair above only covers the two types that predate the registry — a
+        // package declaring executionLocus=server, or a type nothing serves,
+        // would otherwise be written into an air-gapped bundle and die on the
+        // runner with the opaque "Unknown step type" the guard exists to
+        // prevent. Same choke point as the UI regenerate path.
+        await using (var guardDb = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false))
+        {
+            var planTypeIds = plan.Steps
+                .Select(s => s.StepType.ToLowerInvariant())
+                .Distinct()
+                .ToList();
+            var registryRows = await guardDb.StepTypes.AsNoTracking()
+                .Where(t => planTypeIds.Contains(t.TypeId))
+                .ToDictionaryAsync(t => t.TypeId, StringComparer.OrdinalIgnoreCase, ct)
+                .ConfigureAwait(false);
+
+            var unserved = plan.Steps
+                .Where(s => !registryRows.ContainsKey(s.StepType.ToLowerInvariant()))
+                .Select(s => $"{s.Name} ({s.StepType})")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (unserved.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    "Offline drop cannot carry steps whose type no installed step package " +
+                    $"serves: {string.Join(", ", unserved)}. Install the package that " +
+                    "provides the type (or fix the step's type) and regenerate the bundle.");
+            }
+
+            // Pin-aware locus: a step executes with the version it is PINNED to,
+            // so its pinned manifest's declared locus decides its side — mirroring
+            // the online DeploymentWorker guard. Reading the registry serving row
+            // alone would falsely refuse a bundle whose step pins an agent-locus
+            // version of a now-server-locus type, and (worse) let a server-locus
+            // pinned step through when the registry serves an agent-locus version.
+            var pinnedNames = plan.Steps
+                .Where(s => s.StepPackageName is not null).Select(s => s.StepPackageName!)
+                .Distinct().ToList();
+            var pinnedVersions = plan.Steps
+                .Where(s => s.StepPackageVersion is not null).Select(s => s.StepPackageVersion!)
+                .Distinct().ToList();
+            var manifestByPin = pinnedNames.Count == 0
+                ? new Dictionary<(string, string), string>()
+                : (await guardDb.StepPackages.AsNoTracking()
+                        .Where(p => pinnedNames.Contains(p.Name) && pinnedVersions.Contains(p.Version))
+                        .Select(p => new { p.Name, p.Version, p.ManifestJson })
+                        .ToListAsync(ct).ConfigureAwait(false))
+                    .ToDictionary(p => (p.Name, p.Version), p => p.ManifestJson);
+
+            StepTypeExecutionLocus LocusOf(DeploymentStepPlan step)
+            {
+                var typeId = step.StepType.ToLowerInvariant();
+                if (step.StepPackageName is not null && step.StepPackageVersion is not null
+                    && manifestByPin.TryGetValue((step.StepPackageName, step.StepPackageVersion), out var json))
+                {
+                    try
+                    {
+                        var pinnedManifest = StepPackageManifestJson.Deserialize(json);
+                        var decl = pinnedManifest.StepTypes.FirstOrDefault(d =>
+                            d.Id.Trim().Equals(typeId, StringComparison.OrdinalIgnoreCase));
+                        if (decl is not null)
+                        {
+                            return string.Equals(decl.ExecutionLocus, StepTypeDeclaration.ServerLocus,
+                                                 StringComparison.OrdinalIgnoreCase)
+                                ? StepTypeExecutionLocus.ServerRunner
+                                : StepTypeExecutionLocus.AgentPackage;
+                        }
+                    }
+                    catch (Exception ex) when (
+                        ex is JsonException or InvalidOperationException or NotSupportedException)
+                    {
+                        // Fall back to the registry serving row below.
+                    }
+                }
+                return registryRows.TryGetValue(typeId, out var row)
+                    ? row.ExecutionLocus
+                    : StepTypeExecutionLocus.AgentPackage;
+            }
+
+            var serverLocus = plan.Steps
+                .Where(s => LocusOf(s) != StepTypeExecutionLocus.AgentPackage)
+                .Select(s => $"{s.Name} ({s.StepType})")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (serverLocus.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    "Offline drop cannot run server-orchestrated steps: " +
+                    $"{string.Join(", ", serverLocus)}. Their step package declares " +
+                    "server-side execution, which an air-gapped target cannot provide. " +
+                    "Remove them from the process or deploy to an online target.");
+            }
         }
 
         // Runner embedding (PerformanceSettings.EmbedOfflineRunner, default true,

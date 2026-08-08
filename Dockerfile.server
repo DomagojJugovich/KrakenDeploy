@@ -21,24 +21,48 @@ COPY steps/ ./steps/
 
 RUN dotnet restore src/KrakenDeploy.Server/KrakenDeploy.Server.csproj
 
-# SC7: when a signing key is provided (BuildKit secret `kraken_signing_key`),
-# every built-in step package archive is signed during publish — the global
-# -p:KrakenSigningKey property flows into the steps/* project builds, whose
-# SignKrakenStepPackage target invokes the in-repo kraken CLI (built first so
-# the targets' _KrakenCliInRepoRelease path resolves). A production server
-# (AllowUnsignedUploads=false) refuses to seed unsigned built-ins, so a prod
-# image should always be built with:
-#   docker build --secret id=kraken_signing_key,src=./kraken-signing.pem ...
-# Without the secret the dev sentinel signature stays (local/dev images only).
-RUN --mount=type=secret,id=kraken_signing_key \
+# SC7: when signing is requested, every built-in step package archive is signed
+# during publish — the global -p:KrakenSigningKey property flows into the steps/*
+# project builds, whose SignKrakenStepPackage target invokes the in-repo kraken
+# CLI (built first so the targets' _KrakenCliInRepoRelease path resolves). A
+# production server (AllowUnsignedUploads=false) refuses to seed unsigned
+# built-ins, so a prod image must be built with BOTH the flag and the secret:
+#   docker build --build-arg SIGN_STEP_PACKAGES=true \
+#     --build-arg SIGNING_KEY_FINGERPRINT="$(sha256sum kraken-signing.pem | cut -d' ' -f1)" \
+#     --secret id=kraken_signing_key,src=./kraken-signing.pem ...
+#
+# SIGN_STEP_PACKAGES is a real build ARG, and that is load-bearing: BuildKit
+# deliberately excludes SECRETS from the layer cache key, so keying the decision
+# only on the presence of /run/secrets/... meant a prod build reused a cached
+# unsigned dev layer — same command string, no cache miss, no warning replayed,
+# exit 0 — and the unsigned archives only surfaced when kraken-init refused to
+# seed them. The ARG changes the cache key so signed/unsigned don't share a layer.
+# Fail-closed on a set flag without a mounted secret comes from the explicit
+# file check below, NOT from the mount (kept required=false so an unsigned dev
+# build with no --secret still succeeds).
+#
+# SIGNING_KEY_FINGERPRINT is ALSO referenced in the RUN so a KEY ROTATION busts
+# the cache: the secret's content is not part of the cache key, so without this a
+# rebuild with a rotated key on a warm cache would reuse the layer signed by the
+# OLD key. Pass the new key's fingerprint (any value that changes with the key).
+ARG SIGN_STEP_PACKAGES=false
+ARG SIGNING_KEY_FINGERPRINT=""
+RUN --mount=type=secret,id=kraken_signing_key,required=false \
     SIGN_ARG=""; \
-    if [ -f /run/secrets/kraken_signing_key ]; then \
+    echo "Signing key fingerprint (cache-key input): ${SIGNING_KEY_FINGERPRINT:-<none>}"; \
+    if [ "$SIGN_STEP_PACKAGES" = "true" ]; then \
+      if [ ! -f /run/secrets/kraken_signing_key ]; then \
+        echo "ERROR: SIGN_STEP_PACKAGES=true but no kraken_signing_key secret was mounted."; \
+        echo "       Re-run with --secret id=kraken_signing_key,src=<path to the PEM>."; \
+        exit 1; \
+      fi; \
       echo "Signing built-in step packages with the provided key."; \
       dotnet build src/KrakenDeploy.Cli/KrakenDeploy.Cli.csproj \
         --configuration Release --nologo -v:q; \
       SIGN_ARG="-p:KrakenSigningKey=/run/secrets/kraken_signing_key"; \
     else \
-      echo "WARNING: no kraken_signing_key secret — built-ins keep the unsigned dev sentinel."; \
+      echo "WARNING: SIGN_STEP_PACKAGES is not true — built-ins keep the unsigned dev sentinel."; \
+      echo "         This image is for local/dev use only; a Production server will refuse to seed it."; \
     fi; \
     dotnet publish src/KrakenDeploy.Server/KrakenDeploy.Server.csproj \
       --configuration Release \

@@ -23,9 +23,22 @@ public static class AgentContract
     ///     the new <see cref="IAgentHubServer.ReportExecutionStartedAsync"/> report
     ///     (the server arms the wave deadline from it, so a v1 agent would leave
     ///     every wave on the dispatch-time backstop).</item>
+    ///   <item><c>3</c> — SC1: step-package <c>manifest.json</c> <c>stepTypes</c>
+    ///     entries may be OBJECTS carrying per-type metadata, not just strings. A
+    ///     pre-SC1 agent's <c>StepPackageManifest.StepTypes</c> is
+    ///     <c>IReadOnlyList&lt;string&gt;</c>, so its <c>StepPackageLoader</c> throws
+    ///     <c>JsonException</c> on every SC1 archive and logs "failed to parse
+    ///     manifest" — leaving the type unhandled. Not gateable by
+    ///     <c>MinKrakenAgent</c>: reading that field requires parsing the manifest
+    ///     that fails. And SD-11 makes the encounter unavoidable — the seeder bumps
+    ///     every built-in version, re-pins live steps to it, then sweeps the old
+    ///     version, so there is no pre-SC1 archive left to fall back to. Bumping the
+    ///     contract turns an opaque per-step failure at first dispatch into the
+    ///     registration-time refusal <c>AgentHub</c> already implements ("Update the
+    ///     agent binary").</item>
     /// </list>
     /// </summary>
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
 }
 
 /// <summary>

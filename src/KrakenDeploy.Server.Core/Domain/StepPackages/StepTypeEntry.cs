@@ -52,6 +52,20 @@ public class StepTypeEntry : AuditableEntity
     public string? ServingPackageVersion { get; set; }
 }
 
+/// <summary>
+/// Column widths for the registry's mirrored manifest metadata. Shared by the
+/// EF configuration, the upload validator (which refuses over-long values with
+/// a readable message) and the rebuild (which truncates defensively, so a row
+/// installed before the validator existed cannot abort a whole recompute).
+/// </summary>
+public static class StepTypeMetadataLimits
+{
+    public const int TypeId      = 200;
+    public const int DisplayName = 200;
+    public const int Category    = 100;
+    public const int Description = 1000;
+}
+
 /// <summary>Where steps of a type execute.</summary>
 public enum StepTypeExecutionLocus
 {

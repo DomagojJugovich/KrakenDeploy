@@ -433,19 +433,28 @@
             .GroupBy(r => r.ProjectSlug)
             .Select(g => $"{g.First().ProjectName} ({g.Key}): " +
                          string.Join(", ", g.Select(r => r.ReleaseVersion)));
+        var runsByProject = report.RunbookRunRefs
+            .GroupBy(r => r.ProjectSlug)
+            .Select(g => $"{g.First().ProjectName} ({g.Key}): " +
+                         string.Join(", ", g.Select(r => r.RunbookName)));
 
         var body =
             $"'{report.Name} {report.Version}' is still pinned by " +
-            $"{report.LiveSteps.Count} live step(s) and " +
-            $"{report.ReleaseSnapshots.Count} release snapshot(s).\n\n" +
+            $"{report.LiveSteps.Count} live step(s), " +
+            $"{report.ReleaseSnapshots.Count} release snapshot(s) and " +
+            $"{report.RunbookRunRefs.Count} in-flight runbook run(s).\n\n" +
             (report.LiveSteps.Count > 0
                 ? "Live steps:\n  • " + string.Join("\n  • ", liveByProject) + "\n\n"
                 : "") +
             (report.ReleaseSnapshots.Count > 0
                 ? "Release snapshots:\n  • " + string.Join("\n  • ", releasesByProject) + "\n\n"
                 : "") +
-            "Edit each live step's version pin (or delete the affected releases) " +
-            "before retrying the uninstall.";
+            (report.RunbookRunRefs.Count > 0
+                ? "In-flight runbook runs:\n  • " + string.Join("\n  • ", runsByProject) + "\n\n"
+                : "") +
+            "Edit each live step's version pin, delete the affected releases, or " +
+            "wait for the runbook run(s) to finish (or cancel them) before retrying " +
+            "the uninstall.";
 
         await Dialog.Alert(body, "Uninstall blocked", new AlertOptions
         {

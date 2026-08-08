@@ -84,9 +84,19 @@ jobs:
           published=0 skipped=0
           for archive in steps/KrakenDeploy.Steps.*/bin/Release/net10.0/*.kdeploy-step; do
             file="$(basename "$archive")"
-            id="${file%-*}"                      # {id}-{version}.kdeploy-step
-            version="${file##*-}"; version="${version%.kdeploy-step}"
+            # Take id/version from the manifest, NOT the filename: both the
+            # ".kdeploy-step" extension and a "-prerelease" version segment contain
+            # dashes, so any filename split mis-parses (e.g. 2.2.0-beta.1 -> "1").
+            # The manifest is the authoritative source the catalog also reads.
+            manifest="$(unzip -p "$archive" manifest.json)"
+            id="$(printf '%s' "$manifest" | jq -r '.id')"
+            version="$(printf '%s' "$manifest" | jq -r '.version')"
             tag="${id}-v${version}"
+
+            if [ -z "$id" ] || [ "$id" = "null" ] || [ -z "$version" ] || [ "$version" = "null" ]; then
+              echo "::error::Cannot read id/version from manifest in '$file'."
+              exit 1
+            fi
 
             if gh release view "$tag" --repo "$TARGET_REPO" >/dev/null 2>&1; then
               echo "skip   $tag (already published — bump the version to ship changes)"
@@ -94,7 +104,6 @@ jobs:
               continue
             fi
 
-            manifest="$(unzip -p "$archive" manifest.json)"
             sha256="$(sha256sum "$archive" | cut -d' ' -f1)"
 
             notes="$RUNNER_TEMP/notes-$tag.md"
