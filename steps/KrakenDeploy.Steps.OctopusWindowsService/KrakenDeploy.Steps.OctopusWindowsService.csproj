@@ -6,13 +6,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>octopus.windowsservice</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Deploy a Windows Service</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.WindowsService</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.OctopusWindowsService.OctopusWindowsServiceStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes objects. -->
+  <ItemGroup>
+    <KrakenStepType Include="Octopus.WindowsService" DisplayName="Deploy a Windows Service" Category="windows-service" Description="Install or update a Windows service from the deployed package." />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Octostache" />

@@ -1,0 +1,84 @@
+{
+  "id": "octopus.azurewebapp",
+  "title": "Deploy to Azure Web App",
+  "description": "Deploy a package to an Azure App Service (Web App).",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "credentials",
+      "title": "Azure Credentials",
+      "collapsed": false
+    },
+    {
+      "id": "webapp",
+      "title": "Web App",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Azure.ServicePrincipalAppId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Service Principal App ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.ServicePrincipalPassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Service Principal Password",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.TenantId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Tenant ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.SubscriptionId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Subscription ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.ResourceGroupName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Resource group",
+      "group": "webapp",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Azure.WebAppName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Web App name",
+      "group": "webapp",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Azure.WebAppSlot": {
+      "type": "string",
+      "widget": "text",
+      "label": "Slot",
+      "helpText": "Leave empty for production slot.",
+      "group": "webapp",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.PackageUri": {
+      "type": "string",
+      "widget": "text",
+      "label": "Package URI (optional)",
+      "helpText": "External zip URL. Leave empty to use the deployment package.",
+      "group": "webapp",
+      "enumValues": []
+    }
+  }
+}

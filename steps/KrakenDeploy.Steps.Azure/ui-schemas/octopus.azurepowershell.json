@@ -1,0 +1,59 @@
+{
+  "id": "octopus.azurepowershell",
+  "title": "Run an Azure PowerShell Script",
+  "description": "Run a PowerShell script with Azure credentials set as environment variables.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "credentials",
+      "title": "Azure Credentials",
+      "collapsed": false
+    },
+    {
+      "id": "script",
+      "title": "Script",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Azure.ServicePrincipalAppId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Service Principal App ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.ServicePrincipalPassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Service Principal Password",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.TenantId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Tenant ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.SubscriptionId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Subscription ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.ScriptBody": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Script body",
+      "helpText": "AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID env vars are set.",
+      "group": "script",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    }
+  }
+}

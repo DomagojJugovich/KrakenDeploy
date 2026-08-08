@@ -68,22 +68,25 @@ public static class HangfireJobRegistrar
             Cron.Minutely(),
             new RecurringJobOptions { TimeZone = utc });
 
-        // Refresh the community step-template catalog from the
-        // OctopusDeploy/Library GitHub repo — hourly.
-        // Uses the Git Trees API (single request) + raw URLs (off-limit), so
-        // hourly polling stays comfortably within GitHub's 60-req/hour
-        // unauthenticated rate budget.
+        // Refresh the community step-template catalog from the configured
+        // feeds (SC6 multi-feed; defaults: OctopusDeploy/Library + the
+        // Kraken community repo) — hourly. Uses the Git Trees API (single
+        // request per feed) + raw URLs (off-limit), so hourly polling stays
+        // comfortably within GitHub's 60-req/hour unauthenticated rate
+        // budget. Gated on feeds.step-template-catalog inside the job.
         RecurringJob.AddOrUpdate<StepTemplateCatalogPollJob>(
             "kraken.step-template-catalog-poll",
             job => job.ExecuteAsync(CancellationToken.None),
             Cron.Hourly(),
             new RecurringJobOptions { TimeZone = utc });
 
-        // Step-package catalog (Phase D-9) — defaults to KrakenDeploy/StepPackages,
-        // configurable via StepPackages:Catalog:Owner / .Repo. Uses the same
-        // kraken.github named HttpClient + optional GitHub:Token as the
-        // step-template catalog above; one /releases call per hour is cheap
-        // even on the unauthenticated rate budget.
+        // Step-package catalog (Phase D-9) — defaults to
+        // DomagojJugovich/kraken-steps (SC6; the old KrakenDeploy default was
+        // a squatted GitHub name), configurable via StepPackages:Catalog:Owner
+        // / .Repo. Uses the same kraken.github named HttpClient + optional
+        // GitHub:Token as the step-template catalog above; one /releases call
+        // per hour is cheap even on the unauthenticated rate budget. Gated on
+        // feeds.step-package-catalog inside the job.
         RecurringJob.AddOrUpdate<StepPackageCatalogPollJob>(
             "kraken.step-package-catalog-poll",
             job => job.ExecuteAsync(CancellationToken.None),

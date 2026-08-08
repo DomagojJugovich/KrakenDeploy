@@ -67,6 +67,20 @@ public static class AgentContract
     ///     triggers the OPERATOR ACTION rule to bump <c>version.json</c> alongside it
     ///     (docs/agent-wire-contract.md §"Bumping the contract").</item>
     /// </list>
+    /// <para>
+    /// The gate also covers the step-package ARCHIVE format, which is not on the
+    /// SignalR surface. SC1 made <c>manifest.json</c>'s <c>stepTypes</c> entries
+    /// objects rather than plain strings; a pre-SC1 agent deserializes them into
+    /// <c>IReadOnlyList&lt;string&gt;</c> and its <c>StepPackageLoader</c> throws
+    /// <c>JsonException</c> on every SC1 archive ("failed to parse manifest"),
+    /// leaving the type unhandled — and SD-11's seeder sweeps the old versions, so
+    /// there is no pre-SC1 archive left to fall back to. No separate bump was
+    /// needed: <see cref="AgentContract"/> and <c>StepPackageManifest</c> ship in
+    /// the SAME assembly, so an agent that presents v4 necessarily carries the
+    /// SC1-capable parser, and anything older is already refused at the handshake.
+    /// Keep that coupling in mind when changing the archive format alone — it is
+    /// the contract version that protects it.
+    /// </para>
     /// </summary>
     public const int CurrentVersion = 4;
 }

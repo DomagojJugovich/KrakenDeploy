@@ -100,6 +100,13 @@ public sealed class SpacesTests
             // mirrors a public GitHub feed; same platform-level scope as
             // StepPackage itself.
             "StepPackageCatalogEntry",
+            // SC2: per-(package version, type) UI schema rows — children of
+            // StepPackage (cascade), platform-level like their parent.
+            "StepPackageSchema",
+            // SC2: the step-type registry — one row per type served by the
+            // platform-level package catalog (plus the two System rows).
+            // Same central-admin scope as StepPackage.
+            "StepTypeEntry",
             // Server-wide backup history (M13.G) — one backup policy per
             // instance; runs are server-level audit-like rows. (BackupSettings,
             // SmtpSettings, FeatureFlag, MaintenanceSettings, PerformanceSettings

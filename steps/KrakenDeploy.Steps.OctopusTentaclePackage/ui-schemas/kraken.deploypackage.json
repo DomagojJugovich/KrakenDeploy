@@ -1,0 +1,84 @@
+{
+  "id": "kraken.deploypackage",
+  "title": "Deploy a Package",
+  "description": "Extract a package to a target directory. Simplified view of the Octopus.TentaclePackage handler.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "general",
+      "title": "General",
+      "collapsed": false
+    },
+    {
+      "id": "features",
+      "title": "Features",
+      "collapsed": true
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Package.PackageId": {
+      "type": "string",
+      "widget": "package-ref",
+      "label": "Package",
+      "group": "general",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Package.CustomInstallationDirectory": {
+      "type": "string",
+      "widget": "text",
+      "label": "Installation directory",
+      "helpText": "Target directory where the package contents are deployed.",
+      "placeholder": "C:\\Apps\\MyApp",
+      "group": "general",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Package.CustomInstallationDirectoryShouldBePurgedBeforeDeployment": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Purge directory before deployment",
+      "helpText": "Delete existing files in the installation directory before copying.",
+      "group": "general",
+      "default": "false",
+      "enumValues": []
+    },
+    "Octopus.Action.Package.CustomInstallationDirectoryPurgeExclusions": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Purge exclusions",
+      "helpText": "Comma- or newline-separated entry names to keep when purging (e.g. App_Data, logs).",
+      "group": "general",
+      "enumValues": []
+    },
+    "Octopus.Action.EnabledFeatures": {
+      "type": "string",
+      "widget": "text",
+      "label": "Enabled features (advanced)",
+      "helpText": "Comma-separated Octopus feature ids. CustomDirectory is set automatically when an installation directory is provided.",
+      "group": "features",
+      "default": "Octopus.Features.CustomDirectory",
+      "enumValues": []
+    },
+    "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Update appSettings \u002B connectionStrings",
+      "group": "features",
+      "default": "false",
+      "enumValues": []
+    },
+    "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Run XDT config transforms",
+      "group": "features",
+      "default": "false",
+      "enumValues": []
+    }
+  }
+}

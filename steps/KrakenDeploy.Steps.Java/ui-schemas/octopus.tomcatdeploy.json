@@ -1,0 +1,31 @@
+{
+  "id": "octopus.tomcatdeploy",
+  "title": "Deploy to Tomcat",
+  "description": "Deploy a WAR file to an Apache Tomcat instance.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "tomcat",
+      "title": "Tomcat",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Java.TomcatHome": {
+      "type": "string",
+      "widget": "text",
+      "label": "Tomcat home",
+      "helpText": "Path to the Tomcat installation (CATALINA_HOME).",
+      "group": "tomcat",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.DeployPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Webapps directory",
+      "helpText": "Defaults to {TomcatHome}/webapps when empty.",
+      "group": "tomcat",
+      "enumValues": []
+    }
+  }
+}

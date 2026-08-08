@@ -6,8 +6,7 @@ using Microsoft.Extensions.Logging;
 namespace KrakenDeploy.Server.Data.Services;
 
 /// <summary>
-/// Server-startup seeder for built-in step packages (Phase D-8).
-/// Mirrors <see cref="BuiltInStepTemplateSeeder"/>'s pattern: idempotent
+/// Server-startup seeder for built-in step packages (Phase D-8). Idempotent
 /// on every startup, only inserts packages that aren't already installed.
 /// <para>
 /// Source: a directory of <c>.kdeploy-step</c> archives shipped alongside
@@ -113,6 +112,74 @@ public sealed class BuiltInStepPackageSeeder(
             {
                 logger.LogError(ex,
                     "BuiltInStepPackageSeeder: unhandled error processing '{File}'.", archivePath);
+            }
+        }
+
+        await UpgradePreinstalledPinsAndSweepAsync(db, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// SC3 / SD-11: after new built-in versions seed, live steps still pinned
+    /// to an older version of a Preinstalled package are bulk-upgraded to the
+    /// newest installed version (built-ins are ours; minor bumps by contract),
+    /// then superseded Preinstalled versions are swept. The sweep goes through
+    /// <see cref="StepPackageService.UninstallAsync"/>, so a version a release
+    /// snapshot still references comes back Blocked and stays — by design.
+    /// Release snapshots themselves are never re-pinned.
+    /// </summary>
+    private async Task UpgradePreinstalledPinsAndSweepAsync(KrakenDbContext db, CancellationToken ct)
+    {
+        var preinstalled = await db.StepPackages.AsNoTracking()
+            .Where(p => p.Source == StepPackageSource.Preinstalled)
+            .Select(p => new { p.Name, p.Version, p.Source })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        foreach (var group in preinstalled.GroupBy(p => p.Name))
+        {
+            var versions = group.Select(p => p.Version).ToList();
+            if (versions.Count < 2) { continue; } // nothing superseded
+
+            var latest = StepPackageResolver.PickHighestSemver(versions);
+            if (latest is null) { continue; }
+
+            try
+            {
+                // Re-pin live steps stuck on older versions.
+                var usage = await uploadService.GetUsageAsync(group.Key, ct).ConfigureAwait(false);
+                var stale = usage.Groups
+                    .Where(g => !string.Equals(g.Version, latest, StringComparison.Ordinal))
+                    .SelectMany(g => g.Rows)
+                    .ToList();
+
+                if (stale.Count > 0)
+                {
+                    var result = await uploadService.BulkUpgradeAsync(
+                        group.Key, latest,
+                        deploymentStepIds: [.. stale.Where(r => !r.IsRunbook).Select(r => r.StepId)],
+                        runbookStepIds:    [.. stale.Where(r => r.IsRunbook).Select(r => r.StepId)],
+                        ct).ConfigureAwait(false);
+
+                    logger.LogInformation(
+                        "BuiltInStepPackageSeeder: auto-upgraded {Touched} pin(s) of {Name} to {Latest} " +
+                        "({Skipped} skipped).",
+                        result.Touched, group.Key, latest, result.Skipped.Count);
+                }
+
+                // Sweep superseded built-in versions; Blocked results stay.
+                foreach (var version in versions.Where(v => v != latest))
+                {
+                    var uninstall = await uploadService
+                        .UninstallAsync(group.Key, version, ct).ConfigureAwait(false);
+                    logger.LogInformation(
+                        "BuiltInStepPackageSeeder: sweep of {Name} {Version} → {Status}.",
+                        group.Key, version, uninstall.Status);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex,
+                    "BuiltInStepPackageSeeder: pin auto-upgrade/sweep failed for {Name}; " +
+                    "old versions remain installed.", group.Key);
             }
         }
     }

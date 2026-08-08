@@ -76,17 +76,28 @@ public interface IStepHandler
 }
 ```
 
-Handlers are registered in DI order (first match wins). `DeploymentExecutor` calls `_handlers.FirstOrDefault(h => h.CanHandle(step.StepType))`.
+There are **no in-DI handlers** — Phase D-8.9 removed the last of them, and
+step packages are the only execution path. Every step carries a
+`(StepPackageName, StepPackageVersion)` pin resolved at author time; the
+agent's `DeploymentExecutor.ResolveHandlerAsync` downloads the pinned
+`.kdeploy-step` archive (gRPC, signature-verified, cached under
+`step-packages-cache/`), loads its executor in a collectible
+`AssemblyLoadContext`, and activates the handler whose `CanHandle` claims the
+step's type. A step whose type nothing serves is refused **before dispatch**
+by `StepTypeExecutionGuard` (SC4-b) with an actionable reason — it never
+reaches an agent.
 
-Current handlers:
-
-| Handler | Step types | Notes |
-|---|---|---|
-| `ScriptStepHandler` | `Kraken.Script`, `Octopus.Script` | Inline script in PowerShell / Bash / CSharp / FSharp / Python. Single entry point. |
-| `KrakenIisStepHandler` | `Kraken.IIS`, `Octopus.IIS` | Generates a PowerShell deployment script, runs via `ScriptRunner`. |
-| `SubstituteVariablesStepHandler` | `Octopus.SubstituteVariables` | In-place file variable substitution. |
-| `JsonConfigurationVariablesStepHandler` (step package `octopus.jsonconfigurationvariables`) | `Octopus.JsonConfigurationVariables` | JSON config variable substitution by dotted path (mirrors Octopus's "JSON Configuration Variables" feature). XDT for XML lives on `Octopus.TentaclePackage`, not here. |
-| `ManualInterventionStepHandler` | `Octopus.Manual` | **Not the approval gate** (WP3). Online, `Octopus.Manual` is server-only and the task PAUSES for a human decision; offline drop bundles containing one are refused at generation. This handler is only reachable by a runner on a hand-built plan, where it proceeds with a loud `APPROVAL NOT ENFORCED` warning. See `docs/design-manual-intervention.md`. |
+The built-in handlers live as ordinary step packages under `steps/`
+(17 projects, ~55 step types — script, IIS, package deploy, Windows service,
+Docker, Kubernetes, AWS, Azure, Java, Terraform, misc, package runner). What
+each installed package serves is recorded in the **step-type registry**
+(`step_types`, maintained by `StepTypeRegistry` on install/uninstall/boot),
+which also drives the Add-Step picker and wave routing:
+`Octopus.Manual` declares `executionLocus: "server"` in its manifest (a
+manual-intervention gate is task-global — see
+`docs/design-manual-intervention.md`), `Octopus.DeployRelease` is a System
+registry row, and `WavePartitioner` classifies waves from the registry's
+locus data — there is no hardcoded server-side type list anymore.
 
 ### `ScriptRunner` dispatch
 
@@ -148,10 +159,18 @@ Other markers handled by the parser:
 
 `StepTemplate` is a reusable definition of a step: an `ActionType` (e.g. `Kraken.Script`), a `Properties` dict that's copied onto a `DeploymentStep.Config` when applied, and a list of `Parameters` that drive the UI form. Extra metadata fields (`Category`, `Author`, `Website`, `LogoUrl`, `Source`) drive the picker / filter UI.
 
-Four sources tracked by the `StepTemplateSource` enum:
+Since the step-systems consolidation (SC2/SD-8), a template is a **preset**:
+a pre-filled form over a step type that an installed package serves. Presets
+resolve *below* packages — a preset whose base type nothing serves is
+importable but flagged unrunnable in the picker and refused at claim time,
+healing when the serving package installs.
 
-- **`BuiltIn`** — seeded at startup by `BuiltInStepTemplateSeeder` (idempotent by name). Currently: `Kraken.IIS — Deploy Web Site`, `Kraken.Script — Run a Script`. These rows are auto-managed; the seeder updates them on every startup if their definition has drifted.
-- **`CommunityLibrary`** — JSON files from `https://github.com/OctopusDeploy/Library/tree/master/step-templates`. Parsed by `OctopusLibraryImporter.Parse`; imported via `StepTemplateService.ImportFromJsonAsync(..., source: StepTemplateSource.CommunityLibrary)`. Upserted by Octopus `CommunityActionTemplateId` so re-import updates in place.
+Sources tracked by the `StepTemplateSource` enum:
+
+- **`BuiltIn`** — RETIRED (SC2). Built-in picker cards derive from the
+  step-type registry now; the seeder is deleted and the migration removed
+  its rows. The enum value survives only for historical data.
+- **`CommunityLibrary`** — JSON files from the configured template feeds (see below). Parsed by `OctopusLibraryImporter.Parse`; imported via `StepTemplateService.ImportFromJsonAsync(..., source: StepTemplateSource.CommunityLibrary)`. Upserted by Octopus `CommunityActionTemplateId` so re-import updates in place.
 - **`LocalImport`** — same parser path but the entry point is a single-file paste, single-file picker, or the bulk "Import from folder" feature pointed at a clone of the Library repo.
 - **`UserAuthored`** — created via `CreateStepTemplateDialog`.
 
@@ -161,14 +180,14 @@ Each template carries the small-bucket `Category` from the source JSON (e.g. `aw
 
 ### Community catalog
 
-`StepTemplateCatalogEntry` rows in `step_template_catalog` mirror metadata for every step-template JSON in `https://github.com/OctopusDeploy/Library/tree/master/step-templates`. `StepTemplateCatalogService.RefreshAsync(ct)` keeps them in sync:
+`StepTemplateCatalogEntry` rows in `step_template_catalog` mirror metadata for every template JSON in the configured **feeds** (SC6 — multi-feed: `StepTemplates:Catalog:Feeds`, defaulting to `OctopusDeploy/Library@master` plus the Kraken community repo `DomagojJugovich/kraken-steps@main`, both under `step-templates/`). `StepTemplateCatalogService.RefreshAsync(ct)` keeps them in sync per feed:
 
-1. One GitHub **Git Trees API** call (`GET /repos/OctopusDeploy/Library/git/trees/master?recursive=1`) returns every blob's path + SHA in one shot — cheap on the 60-req/hr unauthenticated limit.
-2. For each `step-templates/*.json` whose **per-file SHA has changed** since the last sync, fetch the raw file via `raw.githubusercontent.com/...` (no API limit) and re-parse metadata.
-3. Upsert by `CommunityActionTemplateId`. Orphans (paths removed upstream) are deleted.
+1. One GitHub **Git Trees API** call per feed (`GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1`) returns every blob's path + SHA in one shot — cheap on the 60-req/hr unauthenticated limit.
+2. For each `{subdir}/*.json` whose **per-file SHA has changed** since the last sync, fetch the raw file via `raw.githubusercontent.com/...` (no API limit) and re-parse metadata.
+3. Upsert by `(FeedKey, PathInRepo)`; orphan deletion is **scoped to the feed that synced** — one feed's outage never deletes another feed's rows, and never aborts its sync (the refresh throws only when every feed failed). `CommunityActionTemplateId` stays globally unique; a duplicate arriving from a second feed is skipped with a warning.
 
 Refresh strategy:
-- **Hangfire recurring job** `kraken.step-template-catalog-poll` runs `Cron.Hourly()`. Network failures log a warning and roll over to the next tick rather than retrying (Hangfire would otherwise retry on a tight backoff).
+- **Hangfire recurring job** `kraken.step-template-catalog-poll` runs `Cron.Hourly()`, gated on the `feeds.step-template-catalog` feature flag (runtime kill-switch; `StepTemplates:Catalog:Enabled=false` is the deployment-posture switch). Network failures log a warning, record the error in the `StepFeedHealthDocument` settings document (surfaced in the picker's feed-health strip and the community page), and roll over to the next tick.
 - **Manual** refresh from the `/step-templates/community` page via `POST /api/step-template-catalog/refresh` (permission `StepTemplateCreate`).
 
 The named `HttpClient` `kraken.github` is registered in `Program.cs` with the mandatory GitHub `User-Agent`. Set `GitHub:Token` in configuration to bump the rate limit from 60 to 5000 req/hour (the per-file fetches go via `raw.githubusercontent.com` which doesn't count regardless).
@@ -177,23 +196,14 @@ Installing a catalog row → `StepTemplateCatalogService.InstallAsync(id)` fetch
 
 ### Add-Step picker
 
-When a user clicks "Add Step" on a project's Process page, `ChooseStepTemplateDialog` shows the unified Octopus-style "Choose Step Template" screen. Left pane = Featured / Installed / each big-bucket category from `StepTemplateCategoryMap`, plus search. Right grid = a permanent "Run a Script" sentinel + every installed `StepTemplate` + every uninstalled community catalog entry. Clicking "Install and Add" on a community card installs the template via the catalog service first, then proceeds as if it had been installed all along. The dialog returns a `ChooseStepTemplateResult` so `Process.razor` can route to the right follow-up form:
+When a user clicks "Add Step", `ChooseStepTemplateDialog` shows the SC5 source-sectioned picker. Left pane = Featured / Installed / Presets / Community + each big-bucket category from `StepTemplateCategoryMap`, plus search. Right side = sections in order:
 
-- **Script sentinel + Script-flavoured templates** (`Kraken.Script` / `Octopus.Script`) → `StepFormDialog` (script-body editor).
-- **Other ActionTypes** → `TemplatedStepFormDialog`, a generic form that renders one input per `StepTemplateParameter` based on its `ControlType`:
+- **Featured** — registry types flagged `featured` in their package manifest (plus the Step Group System row).
+- **Installed step types** — one card per `step_types` registry row, i.e. exactly what installed packages serve. Cards carry the serving `package version` badge.
+- **Presets** — installed `StepTemplate` rows (community/user). A preset whose base type nothing serves gets a "requires X — not installed" badge with a disabled Add.
+- **Available to install** — uninstalled community catalog entries; "Install and Add" installs via the catalog service first, then proceeds as if it had been installed all along.
 
-  | ControlType | Editor |
-  |---|---|
-  | `SingleLineText` (default) | `RadzenTextBox` |
-  | `MultiLineText` | `RadzenTextArea` (6 rows, monospace) |
-  | `Sensitive` | `RadzenPassword` |
-  | `Checkbox` | `RadzenCheckBox<bool>` with `"true"` / `"false"` round-trip |
-  | `Select` | `RadzenDropDown` over `"value\|Label"` options parsed from `SelectOptions` |
-  | `Package` | `RadzenTextBox` (full package picker is Phase 8) |
-
-  On Save the form merges template `Properties` (template-author defaults) with the user's parameter values (user values win), and calls `ProcessService.AddStepAsync` with `template.ActionType` or `UpdateStepAsync` for edits. Edit mode also preserves any pre-existing Config keys the template doesn't know about.
-
-Editing an existing step routes the same way — `Process.razor.OpenEditStepAsync` switches on `step.StepType` (script → `StepFormDialog`, otherwise look up a `StepTemplate` whose `ActionType` matches the step and open `TemplatedStepFormDialog`; surface a warning notification if no template matches).
+A feed-health strip at the bottom shows last sync + last error for both catalog feeds. The dialog returns a `ChooseStepTemplateResult`; hosts (`Process.razor`, `RunbookDetail.razor`) open the single unified `StepFormDialog` either by step type (`ActionType = result.StepTypeId` — schema resolved pin-aware via `StepSchemaResolver`: pinned version's schema → serving package's newest with a provenance notice → preset parameters via `StepTemplateSchemaAdapter`) or with the picked preset (`Template` — parameter form; a parameterless preset falls through to the resolver). Editing an existing step opens the same dialog with the `Step`, resolving pin-aware the same way. (`TemplatedStepFormDialog` was deleted back in Phase C's `afed0d9`; `StepTemplateSchemaAdapter` maps each `ControlType` — `SingleLineText`, `MultiLineText`, `Sensitive`, `Checkbox`, `Select`, `Package` — onto the schema renderer's widgets.)
 
 ### Server-side execution
 
@@ -231,7 +241,7 @@ Reproducibility: `ReleaseService.CreateAsync` calls `PinReferencedPackagesAsync`
 
 | To add | Where |
 |---|---|
-| A new step type | Add an `IStepHandler` to `KrakenDeploy.Agent/Deployment/StepHandlers/`. Register in `Program.cs`. Optionally seed a `StepTemplate` from `BuiltInStepTemplateSeeder` so it appears in the UI step picker. |
+| A new step type | Author a **step package** — in-tree: a new `steps/KrakenDeploy.Steps.*` project (KrakenStepType items + `ui-schemas/{typeId}.json`, referenced from `KrakenDeploy.Server.csproj`'s seed list); externally: `dotnet new krakenstep` against Kraken.SDK. See `docs/step-packages.md`. Install writes the registry row that makes it pickable — nothing else to seed. |
 | A new Octopus system variable | Add a line to the right section in `OctopusSystemVariablesBuilder`. If the value isn't yet available, emit empty string with a `// TODO(kraken-equivalent)` comment so the gap is grep-auditable. |
 | A new step config key | Add a constant to the matching `Kraken<X>ConfigKeys` static class in `KrakenDeploy.Contracts/Steps/`. Keep names Octopus-compatible (`Octopus.Action.*`) when there's a sensible existing name to mirror. |
 | A new agent transport | Implement `IServerLink` in `KrakenDeploy.Agent.Transport`. The only live transport is `SignalRServerLink` (agent-initiated reverse tunnel; the server pushes work back over the same full-duplex connection). Air-gapped targets use the agentless OfflineDrop path instead. |

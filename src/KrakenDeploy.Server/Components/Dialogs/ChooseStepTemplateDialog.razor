@@ -1,21 +1,32 @@
 @using KrakenDeploy.Contracts.Steps
+@using KrakenDeploy.Server.Core.Domain.StepPackages
 @using KrakenDeploy.Server.Core.Domain.StepTemplates
 @using KrakenDeploy.Server.Data.Services
 
+@inject StepTypeRegistry TypeRegistry
 @inject StepTemplateService TemplateSvc
 @inject StepTemplateCatalogService CatalogSvc
+@inject StepPackageCatalogService PackageCatalogSvc
+@inject SettingsService Settings
 @inject NotificationService Notify
 @inject DialogService Dialog
 
+@* SC5 — source-sectioned Add-Step picker (SD-9). Cards come from three
+   sources: installed step TYPES (the step-type registry — what packages
+   actually serve), PRESETS (community/user step templates over a base
+   type), and the community catalog (uninstallable presets, one-click
+   Install-and-Add). A preset whose base type no package serves gets an
+   "unrunnable" badge and a guarded Add. *@
+
 <RadzenStack Gap="0.75rem" Style="min-width:900px; max-height:75vh; overflow:auto;">
     <RadzenTextBox @bind-Value="_search"
-                   Placeholder="Filter by name, action type, category or description…"
+                   Placeholder="Filter by name, step type, category or description…"
                    Style="width:100%;"
                    Change="@(() => InvokeAsync(StateHasChanged))" />
 
     @if (_loading)
     {
-        <RadzenText class="rz-color-secondary">Loading templates…</RadzenText>
+        <RadzenText class="rz-color-secondary">Loading step catalog…</RadzenText>
     }
     else
     {
@@ -34,7 +45,9 @@
 
                 @FilterButton("Featured", $"Featured ({_featuredCount})")
                 @FilterButton("Installed", $"Installed ({_installedCount})")
-                @FilterButton(null, $"All ({_installedCount + _communityCount})")
+                @FilterButton("Presets", $"Presets ({_presetCount})")
+                @FilterButton("Community", $"Community ({_communityCount})")
+                @FilterButton(null, $"All ({_cards.Count})")
 
                 <RadzenText TextStyle="TextStyle.Caption"
                             class="rz-color-secondary rz-mt-3 rz-mb-1">
@@ -46,7 +59,7 @@
                 }
             </RadzenColumn>
 
-            @* ── Right card list ──────────────────────────────────────── *@
+            @* ── Right: sections of cards ─────────────────────────────── *@
             <RadzenColumn Size="9">
                 @{
                     var visible = FilterCards().ToList();
@@ -58,91 +71,116 @@
                 @if (visible.Count == 0)
                 {
                     <RadzenAlert AlertStyle="AlertStyle.Info" Shade="Shade.Lighter" AllowClose="false">
-                        No templates match the filter.
+                        Nothing matches the filter.
                     </RadzenAlert>
                 }
                 else
                 {
-                    <RadzenRow Gap="0.75rem">
-                        @foreach (var card in visible)
-                        {
-                            <RadzenColumn Size="12" SizeMD="6">
-                                <RadzenCard Style="height:100%; display:flex; flex-direction:column;">
-                                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
-                                                 AlignItems="AlignItems.Start" class="rz-mb-2">
-                                        @if (!string.IsNullOrWhiteSpace(card.LogoUrl))
-                                        {
-                                            <img src="@card.LogoUrl" alt="" loading="lazy"
-                                                 style="width:28px;height:28px;object-fit:contain;flex:0 0 auto;" />
-                                        }
-                                        else
-                                        {
-                                            <RadzenIcon Icon="@card.Icon"
-                                                        Style="font-size:24px;flex:0 0 auto;" />
-                                        }
-                                        <div style="min-width:0;">
-                                            <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-0"
-                                                        Style="word-break:break-word;">@card.Title</RadzenText>
-                                            @if (!string.IsNullOrWhiteSpace(card.Subtitle))
+                    foreach (var section in Sections)
+                    {
+                        var sectionCards = visible.Where(c => c.Section == section).ToList();
+                        if (sectionCards.Count == 0) { continue; }
+
+                        <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mt-2 rz-mb-1">
+                            @SectionTitle(section)
+                        </RadzenText>
+                        <RadzenRow Gap="0.75rem">
+                            @foreach (var card in sectionCards)
+                            {
+                                <RadzenColumn Size="12" SizeMD="6">
+                                    <RadzenCard Style="height:100%; display:flex; flex-direction:column;">
+                                        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                                                     AlignItems="AlignItems.Start" class="rz-mb-2">
+                                            @if (!string.IsNullOrWhiteSpace(card.LogoUrl))
                                             {
-                                                <RadzenText TextStyle="TextStyle.Caption"
-                                                            class="rz-color-secondary">@card.Subtitle</RadzenText>
+                                                <img src="@card.LogoUrl" alt="" loading="lazy"
+                                                     style="width:28px;height:28px;object-fit:contain;flex:0 0 auto;" />
+                                            }
+                                            else
+                                            {
+                                                <RadzenIcon Icon="@card.Icon"
+                                                            Style="font-size:24px;flex:0 0 auto;" />
+                                            }
+                                            <div style="min-width:0;">
+                                                <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-0"
+                                                            Style="word-break:break-word;">@card.Title</RadzenText>
+                                                @if (!string.IsNullOrWhiteSpace(card.Subtitle))
+                                                {
+                                                    <RadzenText TextStyle="TextStyle.Caption"
+                                                                class="rz-color-secondary">@card.Subtitle</RadzenText>
+                                                }
+                                            </div>
+                                        </RadzenStack>
+
+                                        <div style="flex:1 1 auto;">
+                                            @if (!string.IsNullOrWhiteSpace(card.Description))
+                                            {
+                                                <RadzenText TextStyle="TextStyle.Body2"
+                                                            class="rz-color-secondary"
+                                                            Style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">
+                                                    @card.Description
+                                                </RadzenText>
                                             }
                                         </div>
-                                    </RadzenStack>
 
-                                    <div style="flex:1 1 auto;">
-                                        @if (!string.IsNullOrWhiteSpace(card.Description))
-                                        {
-                                            <RadzenText TextStyle="TextStyle.Body2"
-                                                        class="rz-color-secondary"
-                                                        Style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">
-                                                @card.Description
-                                            </RadzenText>
-                                        }
-                                    </div>
+                                        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.35rem"
+                                                     AlignItems="AlignItems.Center" class="rz-mt-2" Wrap="FlexWrap.Wrap">
+                                            @if (card.PackageBadge is not null)
+                                            {
+                                                <RadzenBadge Text="@card.PackageBadge" BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                                            }
+                                            @if (card.Unrunnable)
+                                            {
+                                                <RadzenBadge Text="@($"requires {card.BaseType} — not installed")"
+                                                             BadgeStyle="BadgeStyle.Danger" IsPill="true" />
+                                            }
+                                            @if (card.Section == CardSection.Community)
+                                            {
+                                                <RadzenBadge Text="Community" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                                            }
+                                            @if (!string.IsNullOrWhiteSpace(card.Category))
+                                            {
+                                                <RadzenBadge Text="@card.Category" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                                            }
+                                        </RadzenStack>
 
-                                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.35rem"
-                                                 AlignItems="AlignItems.Center" class="rz-mt-2">
-                                        @if (card.IsInstalled)
-                                        {
-                                            <RadzenBadge Text="Installed" BadgeStyle="BadgeStyle.Success" IsPill="true" />
-                                        }
-                                        @if (card.IsBuiltIn)
-                                        {
-                                            <RadzenBadge Text="Built-in" BadgeStyle="BadgeStyle.Info" IsPill="true" />
-                                        }
-                                        @if (!card.IsInstalled && !card.IsBuiltIn && !card.IsBlank)
-                                        {
-                                            <RadzenBadge Text="Community" BadgeStyle="BadgeStyle.Light" IsPill="true" />
-                                        }
-                                        @if (!string.IsNullOrWhiteSpace(card.Category))
-                                        {
-                                            <RadzenBadge Text="@card.Category" BadgeStyle="BadgeStyle.Light" IsPill="true" />
-                                        }
-                                    </RadzenStack>
-
-                                    <RadzenStack Orientation="Orientation.Horizontal"
-                                                 JustifyContent="JustifyContent.End" Gap="0.4rem"
-                                                 class="rz-mt-2">
-                                        <RadzenButton Text="@card.ButtonLabel"
-                                                      Icon="@card.ButtonIcon"
-                                                      ButtonStyle="ButtonStyle.Primary"
-                                                      Size="ButtonSize.Small"
-                                                      IsBusy="@(_busyCardKey == card.Key)"
-                                                      Disabled="@(_busyCardKey is not null)"
-                                                      Click="@(() => ChooseAsync(card))" />
-                                    </RadzenStack>
-                                </RadzenCard>
-                            </RadzenColumn>
-                        }
-                    </RadzenRow>
+                                        <RadzenStack Orientation="Orientation.Horizontal"
+                                                     JustifyContent="JustifyContent.End" Gap="0.4rem"
+                                                     class="rz-mt-2">
+                                            <RadzenButton Text="@card.ButtonLabel"
+                                                          Icon="@card.ButtonIcon"
+                                                          ButtonStyle="ButtonStyle.Primary"
+                                                          Size="ButtonSize.Small"
+                                                          IsBusy="@(_busyCardKey == card.Key)"
+                                                          Disabled="@(_busyCardKey is not null || card.Unrunnable)"
+                                                          Click="@(() => ChooseAsync(card))" />
+                                        </RadzenStack>
+                                    </RadzenCard>
+                                </RadzenColumn>
+                            }
+                        </RadzenRow>
+                    }
                 }
             </RadzenColumn>
         </RadzenRow>
     }
 
-    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" Gap="0.5rem">
+    @* ── Feed health strip (SD-9) ─────────────────────────────────────── *@
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.SpaceBetween"
+                 AlignItems="AlignItems.Center" Gap="0.5rem">
+        <RadzenStack Gap="0" Style="min-width:0;">
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
+                Community templates: @FormatSync(_templateFeedSync) · Step packages: @FormatSync(_packageFeedSync)
+            </RadzenText>
+            @if (_feedError is not null)
+            {
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-danger rz-mb-0"
+                            Style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                            title="@_feedError">
+                    feed error: @_feedError
+                </RadzenText>
+            }
+        </RadzenStack>
         <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
                       Click="@(() => Dialog.Close(null))" />
     </RadzenStack>
@@ -154,92 +192,124 @@
     private string? _currentBucket;
     private string? _busyCardKey;
 
-    private List<StepTemplate> _installed = [];
-    private List<StepTemplateCatalogEntry> _community = [];
     private List<Card> _cards = [];
+    private DateTimeOffset? _templateFeedSync;
+    private DateTimeOffset? _packageFeedSync;
+    private string? _feedError;
 
     private int _featuredCount;
     private int _installedCount;
+    private int _presetCount;
     private int _communityCount;
     private IReadOnlyList<string> _bigBuckets = [];
     private Dictionary<string, int> _bucketCounts = new(StringComparer.OrdinalIgnoreCase);
 
+    private enum CardSection { Featured, Installed, Presets, Community }
+
+    private static readonly CardSection[] Sections =
+        [CardSection.Featured, CardSection.Installed, CardSection.Presets, CardSection.Community];
+
+    private static string SectionTitle(CardSection s) => s switch
+    {
+        CardSection.Featured  => "Featured",
+        CardSection.Installed => "Installed step types",
+        CardSection.Presets   => "Presets",
+        CardSection.Community => "Available to install",
+        _                     => s.ToString(),
+    };
+
     protected override async Task OnInitializedAsync()
     {
-        _installed = await TemplateSvc.GetAllAsync();
-        _community = await CatalogSvc.GetAllAsync();
-        BuildCards();
+        var types     = await TypeRegistry.GetAllAsync();
+        var presets   = await TemplateSvc.GetAllAsync();
+        var community = await CatalogSvc.GetAllAsync();
+        _templateFeedSync = await CatalogSvc.GetLastSyncAsync();
+        _packageFeedSync  = await PackageCatalogSvc.GetLastSyncAsync();
+
+        // SC6 — surface the most recent feed failure, if any feed is unwell.
+        var health = await Settings.GetAsync<StepFeedHealthDocument>();
+        _feedError = health.Feeds
+            .Where(f => f.Value.LastError is not null)
+            .OrderByDescending(f => f.Value.LastAttemptUtc)
+            .Select(f => $"{f.Key}: {f.Value.LastError}")
+            .FirstOrDefault();
+
+        BuildCards(types, presets, community);
         _loading = false;
     }
 
-    private void BuildCards()
+    private void BuildCards(
+        List<StepTypeEntry> types,
+        List<StepTemplate> presets,
+        List<StepTemplateCatalogEntry> community)
     {
         _cards = [];
 
-        // Sentinel: blank script step — always at the top of Featured.
-        _cards.Add(new Card
-        {
-            Key            = "blank:script",
-            Title          = "Run a Script",
-            Subtitle       = "Kraken / Octopus.Script",
-            Description    = "Write an inline PowerShell, Bash, C#, F#, or Python script.",
-            Icon           = "code",
-            ButtonLabel    = "Add Step",
-            ButtonIcon     = "add",
-            Category       = "script",
-            IsFeatured     = true,
-            IsBlank        = true,
-        });
+        var servedTypeIds = types.Select(t => t.TypeId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        // M15 — Sentinel: Step Group. The one marker step type that can
-        // have children. Operators pick this to author a multi-action
-        // block OR to wrap a ForEach loop (loop properties set on the
-        // group's editor body, not from this picker).
-        _cards.Add(new Card
+        // ── Installed step types (the registry — what packages serve) ──
+        foreach (var t in types)
         {
-            Key            = "blank:stepgroup",
-            Title          = "Step Group",
-            Subtitle       = "Kraken.StepGroup",
-            Description    = "Container for child steps. Add a ForEach loop, " +
-                             "or run multiple actions in parallel on the same target.",
-            Icon           = "folder",
-            ButtonLabel    = "Add Group",
-            ButtonIcon     = "add",
-            Category       = "control",
-            IsFeatured     = true,
-            IsStepGroup    = true,
-        });
+            // System row with no serving package and no editor of its own:
+            // octopus.deployrelease is orchestrated through its dedicated
+            // flow, not authorable from the picker (pre-SC5 behavior kept).
+            var isStepGroup = t.TypeId.Equals("kraken.stepgroup", StringComparison.OrdinalIgnoreCase);
+            if (t.Source == StepTypeEntrySource.System && !isStepGroup) { continue; }
 
-        // Installed templates — Featured = those tagged BuiltIn.
-        foreach (var t in _installed)
-        {
             _cards.Add(new Card
             {
-                Key         = $"installed:{t.Id}",
-                Title       = t.Name,
-                Subtitle    = t.ActionType,
-                Description = t.Description,
-                Icon        = "extension",
-                LogoUrl     = t.LogoUrl,
-                Category    = t.Category,
-                ButtonLabel = "Add Step",
-                ButtonIcon  = "add",
-                IsInstalled = true,
-                IsBuiltIn   = t.Source == StepTemplateSource.BuiltIn,
-                IsFeatured  = t.Source == StepTemplateSource.BuiltIn,
-                InstalledTemplate = t,
+                Key          = $"type:{t.TypeId}",
+                Title        = t.DisplayName,
+                Subtitle     = t.TypeId,
+                Description  = t.Description,
+                Icon         = isStepGroup ? "folder" : "extension",
+                Category     = t.Category,
+                PackageBadge = t.ServingPackageName is null
+                    ? null
+                    : $"{t.ServingPackageName} {t.ServingPackageVersion}",
+                ButtonLabel  = isStepGroup ? "Add Group" : "Add Step",
+                ButtonIcon   = "add",
+                Section      = t.Featured ? CardSection.Featured : CardSection.Installed,
+                IsFeatured   = t.Featured,
+                TypeId       = t.TypeId,
+                TypeDisplayName = t.DisplayName,
+                IsStepGroup  = isStepGroup,
             });
         }
 
-        // Community catalog — exclude entries already installed (matched by CommunityTemplateId).
-        var installedIds = _installed
+        // ── Presets (community/user templates over a base type) ────────
+        foreach (var p in presets)
+        {
+            var runnable = servedTypeIds.Contains(p.ActionType);
+            _cards.Add(new Card
+            {
+                Key         = $"preset:{p.Id}",
+                Title       = p.Name,
+                Subtitle    = p.ActionType,
+                Description = p.Description,
+                Icon        = "bookmark",
+                LogoUrl     = p.LogoUrl,
+                Category    = p.Category,
+                ButtonLabel = "Add Step",
+                ButtonIcon  = "add",
+                Section     = CardSection.Presets,
+                Unrunnable  = !runnable,
+                BaseType    = p.ActionType,
+                Preset      = p,
+            });
+        }
+
+        // ── Community catalog — exclude entries already installed ──────
+        var installedCommunityIds = presets
             .Where(t => !string.IsNullOrWhiteSpace(t.CommunityTemplateId))
             .Select(t => t.CommunityTemplateId!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var c in _community)
+        foreach (var c in community)
         {
-            if (installedIds.Contains(c.CommunityTemplateId)) { continue; }
+            if (installedCommunityIds.Contains(c.CommunityTemplateId)) { continue; }
+            var runnable = servedTypeIds.Contains(c.ActionType);
             _cards.Add(new Card
             {
                 Key         = $"community:{c.Id}",
@@ -251,15 +321,23 @@
                 Category    = c.Category,
                 ButtonLabel = "Install and Add",
                 ButtonIcon  = "download",
+                Section     = CardSection.Community,
+                Unrunnable  = !runnable,
+                BaseType    = c.ActionType,
                 CommunityEntry = c,
             });
         }
 
-        _featuredCount  = _cards.Count(c => c.IsFeatured);
-        _installedCount = _cards.Count(c => c.IsInstalled || c.IsBlank || c.IsStepGroup);
-        _communityCount = _cards.Count(c => c.CommunityEntry is not null);
+        _featuredCount  = _cards.Count(c => c.Section == CardSection.Featured);
+        // Matches the "Installed" filter below, which deliberately includes
+        // Featured (a featured card IS an installed type, just promoted) — the
+        // count and the filter must agree or the button under-reports.
+        _installedCount = _cards.Count(c =>
+            c.Section is CardSection.Installed or CardSection.Featured);
+        _presetCount    = _cards.Count(c => c.Section == CardSection.Presets);
+        _communityCount = _cards.Count(c => c.Section == CardSection.Community);
 
-        // Build big-bucket counts across the whole card set.
+        // Big-bucket counts across the whole card set.
         _bucketCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in _cards)
         {
@@ -269,7 +347,6 @@
         }
         _bigBuckets = [.. StepTemplateCategoryMap.BigBuckets.Where(b => _bucketCounts.ContainsKey(b))];
 
-        // Default selection: Featured if anything featured exists, else All.
         _currentBucket = _featuredCount > 0 ? "Featured" : null;
     }
 
@@ -279,17 +356,28 @@
     {
         IEnumerable<Card> q = _cards;
 
-        q = _currentBucket switch
-        {
-            "Featured"  => q.Where(c => c.IsFeatured),
-            "Installed" => q.Where(c => c.IsInstalled || c.IsBlank || c.IsStepGroup),
-            null        => q,
-            _           => q.Where(c =>
-                StepTemplateCategoryMap.GetBigBucket(c.Category)
-                    .Equals(_currentBucket, StringComparison.OrdinalIgnoreCase)),
-        };
+        // A search spans the WHOLE catalog. The dialog opens on Featured, which
+        // the registry populates with only the handful of types whose manifest
+        // sets featured=true, so filtering by bucket first made typing
+        // "kubernetes" report "Nothing matches the filter" while the card sat
+        // one unclicked bucket away.
+        var searching = !string.IsNullOrWhiteSpace(_search);
 
-        if (!string.IsNullOrWhiteSpace(_search))
+        if (!searching)
+        {
+            q = _currentBucket switch
+            {
+                "Featured"  => q.Where(c => c.Section == CardSection.Featured),
+                "Installed" => q.Where(c => c.Section is CardSection.Installed or CardSection.Featured),
+                "Presets"   => q.Where(c => c.Section == CardSection.Presets),
+                "Community" => q.Where(c => c.Section == CardSection.Community),
+                null        => q,
+                _           => q.Where(c =>
+                    StepTemplateCategoryMap.GetBigBucket(c.Category)
+                        .Equals(_currentBucket, StringComparison.OrdinalIgnoreCase)),
+            };
+        }
+        else
         {
             var s = _search.Trim();
             q = q.Where(c =>
@@ -300,7 +388,6 @@
         }
 
         return q.OrderByDescending(c => c.IsFeatured)
-                .ThenByDescending(c => c.IsBlank)
                 .ThenByDescending(c => c.IsStepGroup)
                 .ThenBy(c => c.Title);
     }
@@ -310,15 +397,16 @@
         _busyCardKey = card.Key;
         try
         {
-            if (card.IsBlank)
-            {
-                Dialog.Close(ChooseStepTemplateResult.Blank);
-                return;
-            }
-
             if (card.IsStepGroup)
             {
                 Dialog.Close(ChooseStepTemplateResult.Group);
+                return;
+            }
+
+            if (card.TypeId is not null)
+            {
+                Dialog.Close(ChooseStepTemplateResult.FromStepType(
+                    card.TypeId, card.TypeDisplayName ?? card.TypeId));
                 return;
             }
 
@@ -337,15 +425,28 @@
                 }
             }
 
-            if (card.InstalledTemplate is not null)
+            if (card.Preset is not null)
             {
-                Dialog.Close(ChooseStepTemplateResult.FromTemplate(card.InstalledTemplate));
+                Dialog.Close(ChooseStepTemplateResult.FromTemplate(card.Preset));
             }
         }
         finally
         {
             _busyCardKey = null;
         }
+    }
+
+    private static string FormatSync(DateTimeOffset? lastSync)
+    {
+        if (lastSync is null) { return "never synced"; }
+        var age = DateTimeOffset.UtcNow - lastSync.Value;
+        return age switch
+        {
+            { TotalMinutes: < 2 }  => "synced just now",
+            { TotalHours: < 2 }    => $"synced {(int)age.TotalMinutes} min ago",
+            { TotalDays: < 2 }     => $"synced {(int)age.TotalHours} h ago",
+            _                      => $"synced {(int)age.TotalDays} d ago",
+        };
     }
 
     private sealed class Card
@@ -357,14 +458,17 @@
         public string Icon { get; init; } = "extension";
         public string? LogoUrl { get; init; }
         public string? Category { get; init; }
+        public string? PackageBadge { get; init; }
         public string ButtonLabel { get; init; } = "Add Step";
         public string ButtonIcon { get; init; } = "add";
+        public CardSection Section { get; init; }
         public bool IsFeatured { get; init; }
-        public bool IsInstalled { get; init; }
-        public bool IsBuiltIn { get; init; }
-        public bool IsBlank { get; init; }
         public bool IsStepGroup { get; init; }
-        public StepTemplate? InstalledTemplate { get; init; }
+        public bool Unrunnable { get; init; }
+        public string? BaseType { get; init; }
+        public string? TypeId { get; init; }
+        public string? TypeDisplayName { get; init; }
+        public StepTemplate? Preset { get; init; }
         public StepTemplateCatalogEntry? CommunityEntry { get; init; }
     }
 }

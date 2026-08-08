@@ -22,7 +22,7 @@ public sealed class StepPackageManifestTests
         m.Version.Should().Be("1.0.0");
         m.DisplayName.Should().Be("Deploy to IIS");
         m.TargetFramework.Should().Be("net10.0");
-        m.StepTypes.Should().ContainSingle().Which.Should().Be("Kraken.IIS");
+        m.StepTypes.Should().ContainSingle().Which.Id.Should().Be("Kraken.IIS");
         m.ExecutorAssembly.Should().Be("Kraken.Steps.Iis.dll");
         m.ExecutorTypeName.Should().Be("Kraken.Steps.Iis.KrakenIisStepHandler");
 
@@ -122,7 +122,126 @@ public sealed class StepPackageManifestTests
 
         var m = StepPackageManifestJson.Deserialize(json);
         m.Id.Should().Be("kraken.iis");
-        m.StepTypes.Should().ContainSingle().Which.Should().Be("Kraken.IIS");
+        m.StepTypes.Should().ContainSingle().Which.Id.Should().Be("Kraken.IIS");
+    }
+
+    // ── SC1: stepTypes entries as string | object ─────────────────────────
+
+    [Fact]
+    public void StepTypes_object_entries_parse_with_per_type_metadata()
+    {
+        var json = """
+            {
+                "id": "octopus.kubernetes",
+                "version": "1.1.0",
+                "displayName": "Kubernetes",
+                "targetFramework": "net10.0",
+                "stepTypes": [
+                    "Octopus.KubernetesRunScript",
+                    {
+                        "id": "Octopus.HelmChartUpgrade",
+                        "displayName": "Deploy a Helm Chart",
+                        "category": "kubernetes",
+                        "description": "Install or upgrade a Helm release.",
+                        "featured": true,
+                        "someFutureField": { "ignored": true }
+                    }
+                ],
+                "executorAssembly": "K.dll",
+                "executorTypeName": "K.Handler"
+            }
+            """;
+
+        var m = StepPackageManifestJson.Deserialize(json);
+
+        m.StepTypes.Should().HaveCount(2);
+        m.StepTypes[0].Should().BeEquivalentTo(new StepTypeDeclaration
+        {
+            Id = "Octopus.KubernetesRunScript",
+        });
+        m.StepTypes[0].IsIdOnly.Should().BeTrue();
+        m.StepTypes[1].Should().BeEquivalentTo(new StepTypeDeclaration
+        {
+            Id          = "Octopus.HelmChartUpgrade",
+            DisplayName = "Deploy a Helm Chart",
+            Category    = "kubernetes",
+            Description = "Install or upgrade a Helm release.",
+            Featured    = true,
+        }, "unknown fields are skipped for forward-compat");
+        m.StepTypeIds.Should().Equal("Octopus.KubernetesRunScript", "Octopus.HelmChartUpgrade");
+    }
+
+    [Fact]
+    public void Id_only_stepTypes_entries_serialise_as_plain_strings()
+    {
+        // Canonical-bytes contract: a pre-SC1 manifest (string entries) must
+        // re-serialise to the exact same shape, or re-verifying an old signed
+        // archive would fail on a signature computed over different bytes.
+        var json = StepPackageManifestJson.Serialize(NewMinimalManifest());
+
+        json.Should().Contain("\"Kraken.IIS\"");
+        json.Should().NotContain("\"id\": \"Kraken.IIS\"",
+            "an id-only entry must stay a bare string, not become an object");
+    }
+
+    [Fact]
+    public void Metadata_carrying_stepTypes_entries_round_trip_as_objects()
+    {
+        var original = NewMinimalManifest() with
+        {
+            StepTypes =
+            [
+                new StepTypeDeclaration
+                {
+                    Id          = "Kraken.IIS",
+                    DisplayName = "Deploy Web Site",
+                    Category    = "iis",
+                    Featured    = true,
+                },
+                "Octopus.IIS",
+            ],
+        };
+
+        var json   = StepPackageManifestJson.Serialize(original);
+        var parsed = StepPackageManifestJson.Deserialize(json);
+
+        parsed.Should().BeEquivalentTo(original);
+        json.Should().Contain("\"displayName\": \"Deploy Web Site\"");
+        json.Should().Contain("\"Octopus.IIS\"");
+    }
+
+    [Fact]
+    public void Empty_string_stepTypes_entry_is_rejected()
+    {
+        var json = """
+            {
+                "id": "x", "version": "1.0.0", "displayName": "X",
+                "targetFramework": "net10.0",
+                "stepTypes": [""],
+                "executorAssembly": "X.dll", "executorTypeName": "X.H"
+            }
+            """;
+
+        var act = () => StepPackageManifestJson.Deserialize(json);
+        act.Should().Throw<System.Text.Json.JsonException>()
+            .WithMessage("*must not be an empty string*");
+    }
+
+    [Fact]
+    public void StepTypes_object_entry_without_id_is_rejected()
+    {
+        var json = """
+            {
+                "id": "x", "version": "1.0.0", "displayName": "X",
+                "targetFramework": "net10.0",
+                "stepTypes": [{ "displayName": "No id here" }],
+                "executorAssembly": "X.dll", "executorTypeName": "X.H"
+            }
+            """;
+
+        var act = () => StepPackageManifestJson.Deserialize(json);
+        act.Should().Throw<System.Text.Json.JsonException>()
+            .WithMessage("*missing a non-empty 'id'*");
     }
 
     [Fact]

@@ -1,0 +1,100 @@
+{
+  "id": "octopus.transferpackage",
+  "title": "Transfer a Package",
+  "description": "Copy or upload the deployed package to a file share or HTTP feed endpoint.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "destination",
+      "title": "Destination",
+      "collapsed": false
+    },
+    {
+      "id": "filter",
+      "title": "File Filter",
+      "collapsed": true
+    }
+  ],
+  "properties": {
+    "Octopus.Action.TransferPackage.DestinationType": {
+      "type": "string",
+      "widget": "select",
+      "label": "Destination type",
+      "group": "destination",
+      "default": "file",
+      "enumValues": [
+        {
+          "value": "file",
+          "label": "File system / UNC share"
+        },
+        {
+          "value": "http",
+          "label": "HTTP endpoint (PUT)"
+        }
+      ]
+    },
+    "Octopus.Action.TransferPackage.DestinationPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Destination path",
+      "helpText": "Local path or UNC share. Used when destination type is \u0027file\u0027.",
+      "placeholder": "\\\\fileserver\\deployments\\myapp",
+      "group": "destination",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.TransferPackage.DestinationType",
+        "operator": "equals",
+        "value": "file"
+      }
+    },
+    "Octopus.Action.TransferPackage.DestinationUrl": {
+      "type": "string",
+      "widget": "text",
+      "label": "Destination URL",
+      "helpText": "HTTP(S) endpoint. Files are PUT to {url}/{filename}.",
+      "placeholder": "https://feed.local/api/packages",
+      "group": "destination",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.TransferPackage.DestinationType",
+        "operator": "equals",
+        "value": "http"
+      }
+    },
+    "Octopus.Action.TransferPackage.DestinationUsername": {
+      "type": "string",
+      "widget": "text",
+      "label": "Username",
+      "helpText": "Optional. Basic-auth username for HTTP destinations.",
+      "group": "destination",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.TransferPackage.DestinationType",
+        "operator": "equals",
+        "value": "http"
+      }
+    },
+    "Octopus.Action.TransferPackage.DestinationPassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Password",
+      "helpText": "Optional. Basic-auth password for HTTP destinations.",
+      "group": "destination",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.TransferPackage.DestinationType",
+        "operator": "equals",
+        "value": "http"
+      }
+    },
+    "Octopus.Action.TransferPackage.FileNamePattern": {
+      "type": "string",
+      "widget": "text",
+      "label": "File name pattern",
+      "helpText": "Glob pattern(s), comma- or newline-separated. Defaults to all files.",
+      "group": "filter",
+      "default": "**/*",
+      "enumValues": []
+    }
+  }
+}

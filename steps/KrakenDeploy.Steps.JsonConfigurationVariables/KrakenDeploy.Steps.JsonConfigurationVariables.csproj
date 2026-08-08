@@ -6,13 +6,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>octopus.jsonconfigurationvariables</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>JSON Configuration Variables</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.JsonConfigurationVariables</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.JsonConfigurationVariables.JsonConfigurationVariablesStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes objects. -->
+  <ItemGroup>
+    <KrakenStepType Include="Octopus.JsonConfigurationVariables" DisplayName="JSON Configuration Variables" Category="package" Description="Replace values in JSON configuration files with variable values." />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />

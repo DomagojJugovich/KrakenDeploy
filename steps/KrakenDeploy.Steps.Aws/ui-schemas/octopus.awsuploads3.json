@@ -1,0 +1,114 @@
+{
+  "id": "octopus.awsuploads3",
+  "title": "Upload to Amazon S3",
+  "description": "Upload files to an Amazon S3 bucket.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "credentials",
+      "title": "AWS Credentials",
+      "collapsed": false
+    },
+    {
+      "id": "s3",
+      "title": "S3",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Aws.AccessKeyId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Access Key ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.SecretAccessKey": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Secret Access Key",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.Region": {
+      "type": "string",
+      "widget": "text",
+      "label": "Region",
+      "placeholder": "eu-west-1",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.BucketName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Bucket name",
+      "group": "s3",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Aws.TargetKeyPrefix": {
+      "type": "string",
+      "widget": "text",
+      "label": "Key prefix",
+      "helpText": "Optional prefix for uploaded object keys.",
+      "group": "s3",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.FileGlob": {
+      "type": "string",
+      "widget": "text",
+      "label": "File glob",
+      "group": "s3",
+      "default": "**/*",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.CannedAcl": {
+      "type": "string",
+      "widget": "select",
+      "label": "Canned ACL",
+      "group": "s3",
+      "default": "private",
+      "enumValues": [
+        {
+          "value": "private",
+          "label": "private"
+        },
+        {
+          "value": "public-read",
+          "label": "public-read"
+        },
+        {
+          "value": "public-read-write",
+          "label": "public-read-write"
+        },
+        {
+          "value": "bucket-owner-full-control",
+          "label": "bucket-owner-full-control"
+        }
+      ]
+    },
+    "Octopus.Action.Aws.StorageClass": {
+      "type": "string",
+      "widget": "select",
+      "label": "Storage class",
+      "group": "s3",
+      "default": "STANDARD",
+      "enumValues": [
+        {
+          "value": "STANDARD",
+          "label": "Standard"
+        },
+        {
+          "value": "STANDARD_IA",
+          "label": "Standard-IA"
+        },
+        {
+          "value": "GLACIER",
+          "label": "Glacier"
+        }
+      ]
+    }
+  }
+}

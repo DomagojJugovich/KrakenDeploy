@@ -1,0 +1,117 @@
+{
+  "id": "octopus.email",
+  "title": "Send an Email",
+  "description": "Send an email notification via SMTP.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "smtp",
+      "title": "SMTP Server",
+      "collapsed": false
+    },
+    {
+      "id": "message",
+      "title": "Message",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Email.SmtpHost": {
+      "type": "string",
+      "widget": "text",
+      "label": "SMTP host",
+      "group": "smtp",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Email.SmtpPort": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "SMTP port",
+      "group": "smtp",
+      "default": "25",
+      "enumValues": []
+    },
+    "Octopus.Action.Email.SmtpUsername": {
+      "type": "string",
+      "widget": "text",
+      "label": "Username",
+      "group": "smtp",
+      "enumValues": []
+    },
+    "Octopus.Action.Email.SmtpPassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Password",
+      "group": "smtp",
+      "enumValues": []
+    },
+    "Octopus.Action.Email.SmtpUseSsl": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Use SSL/TLS",
+      "group": "smtp",
+      "default": "false",
+      "enumValues": []
+    },
+    "Octopus.Action.Email.From": {
+      "type": "string",
+      "widget": "text",
+      "label": "From",
+      "group": "message",
+      "default": "kraken@localhost",
+      "enumValues": []
+    },
+    "Octopus.Action.Email.To": {
+      "type": "string",
+      "widget": "text",
+      "label": "To",
+      "helpText": "Comma- or semicolon-separated addresses.",
+      "group": "message",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Email.Cc": {
+      "type": "string",
+      "widget": "text",
+      "label": "CC",
+      "group": "message",
+      "enumValues": []
+    },
+    "Octopus.Action.Email.Bcc": {
+      "type": "string",
+      "widget": "text",
+      "label": "BCC",
+      "group": "message",
+      "enumValues": []
+    },
+    "Octopus.Action.Email.Subject": {
+      "type": "string",
+      "widget": "text",
+      "label": "Subject",
+      "helpText": "Octostache #{...} placeholders are resolved.",
+      "group": "message",
+      "enumValues": []
+    },
+    "Octopus.Action.Email.Body": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Body",
+      "helpText": "Octostache #{...} placeholders are resolved.",
+      "group": "message",
+      "enumValues": []
+    },
+    "Octopus.Action.Email.IsHtml": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "HTML body",
+      "group": "message",
+      "default": "false",
+      "enumValues": []
+    }
+  }
+}

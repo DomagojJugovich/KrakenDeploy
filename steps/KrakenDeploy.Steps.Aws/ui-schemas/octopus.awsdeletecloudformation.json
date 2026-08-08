@@ -1,0 +1,51 @@
+{
+  "id": "octopus.awsdeletecloudformation",
+  "title": "Delete AWS CloudFormation Stack",
+  "description": "Delete an AWS CloudFormation stack and wait for completion.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "credentials",
+      "title": "AWS Credentials",
+      "collapsed": false
+    },
+    {
+      "id": "stack",
+      "title": "Stack",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Aws.AccessKeyId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Access Key ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.SecretAccessKey": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Secret Access Key",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.Region": {
+      "type": "string",
+      "widget": "text",
+      "label": "Region",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.StackName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Stack name",
+      "group": "stack",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    }
+  }
+}

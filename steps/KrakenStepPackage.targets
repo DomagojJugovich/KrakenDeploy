@@ -13,9 +13,25 @@
       - the agent's loader after download (D-5)
 
     The pack target lays out:
-        manifest.json     ← JSON-serialised StepPackageManifest
-        executor/         ← project DLL + non-framework runtime deps
-        ui/ui-schema.json ← optional, when ui-schema.json is present in the project
+        manifest.json          ← JSON-serialised StepPackageManifest
+        executor/              ← project DLL + non-framework runtime deps
+        ui/schemas/{type}.json ← per-step-type UI schemas (SC1), from the
+                                 project's ui-schemas/ folder
+        ui/ui-schema.json      ← legacy single-schema slot, still staged when
+                                 ui-schema.json is present in the project
+
+    Step types are declared one of two ways (SC1):
+      - Legacy: <KrakenStepPackageStepTypes>A,B</KrakenStepPackageStepTypes>
+        property — emits plain-string manifest entries (id only).
+      - Preferred: KrakenStepType items with per-type picker metadata:
+            <KrakenStepType Include="Octopus.HealthCheck"
+                            DisplayName="Health Check"
+                            Category="other"
+                            Description="Probe an HTTP endpoint or TCP port."
+                            Featured="false" />
+        Items win when both are present. Metadata values must not contain
+        double quotes or semicolons (MSBuild item semantics; the JSON is
+        assembled textually) — long copy belongs in the type's schema file.
   -->
 
   <PropertyGroup>
@@ -33,6 +49,23 @@
          AWSSDK.CloudFront, ...) would break. -->
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
+
+  <!-- SC1: defaults for KrakenStepType item metadata so the manifest
+       transform below always has every placeholder populated. Empty
+       strings normalise to null at parse time (StepTypeDeclaration's
+       converter), so an item carrying only an id still round-trips as
+       an id-only entry. -->
+  <ItemDefinitionGroup>
+    <KrakenStepType>
+      <DisplayName></DisplayName>
+      <Category></Category>
+      <Description></Description>
+      <Featured>false</Featured>
+      <!-- "agent" (default, emitted as empty → null) or "server" for types
+           orchestrated server-side (e.g. Octopus.Manual's task-global gate). -->
+      <Locus></Locus>
+    </KrakenStepType>
+  </ItemDefinitionGroup>
 
   <Target Name="PackKrakenStepPackage"
           AfterTargets="Build">
@@ -75,13 +108,26 @@
     <Copy SourceFiles="@(_KrakenExecutorDlls)"
           DestinationFolder="$(KrakenStepPackageStagingDir)executor\" />
 
-    <!-- Project-supplied UI schema, if present. -->
+    <!-- Project-supplied UI schema, if present (legacy single-schema slot). -->
     <ItemGroup>
       <_KrakenStepUiSchema Include="$(MSBuildProjectDirectory)\ui-schema.json" />
     </ItemGroup>
     <Copy SourceFiles="@(_KrakenStepUiSchema)"
           DestinationFolder="$(KrakenStepPackageStagingDir)ui\"
           Condition="Exists('$(MSBuildProjectDirectory)\ui-schema.json')" />
+
+    <!-- SC1: per-step-type UI schemas — ui-schemas/{typeId}.json in the
+         project stages to ui/schemas/{typeId}.json in the archive. One
+         file per claimed step type; the SC1-d lint test enforces the
+         pairing for in-repo packages. -->
+    <ItemGroup>
+      <_KrakenStepUiSchemas Include="$(MSBuildProjectDirectory)\ui-schemas\*.json" />
+    </ItemGroup>
+    <MakeDir Directories="$(KrakenStepPackageStagingDir)ui\schemas\"
+             Condition="'@(_KrakenStepUiSchemas)' != ''" />
+    <Copy SourceFiles="@(_KrakenStepUiSchemas)"
+          DestinationFolder="$(KrakenStepPackageStagingDir)ui\schemas\"
+          Condition="'@(_KrakenStepUiSchemas)' != ''" />
 
     <!-- manifest.json. We synthesise it here from the .csproj properties so
          every package gets a canonical shape — same JSON the server's
@@ -92,14 +138,22 @@
          comma-sentinel ILIKE match then never finds the type. -->
     <PropertyGroup>
       <_KrakenStepTypesNormalized>$([System.Text.RegularExpressions.Regex]::Replace('$(KrakenStepPackageStepTypes)', '\s*,\s*', ',').Trim())</_KrakenStepTypesNormalized>
+
+      <!-- SC1: KrakenStepType items (object entries with per-type picker
+           metadata) win over the legacy comma-list property (plain-string
+           entries). Empty metadata strings normalise to null at parse time. -->
+      <_KrakenStepTypesJson Condition="'@(KrakenStepType)' != ''">@(KrakenStepType->'{ "id": "%(Identity)", "displayName": "%(DisplayName)", "category": "%(Category)", "description": "%(Description)", "featured": %(Featured), "executionLocus": "%(Locus)" }', ', ')</_KrakenStepTypesJson>
+      <_KrakenStepTypesJson Condition="'@(KrakenStepType)' == ''">"$(_KrakenStepTypesNormalized.Replace(`,`, `", "`))"</_KrakenStepTypesJson>
     </PropertyGroup>
+    <Error Condition="'@(KrakenStepType)' == '' AND '$(_KrakenStepTypesNormalized)' == ''"
+           Text="Declare step types via KrakenStepType items or the KrakenStepPackageStepTypes property." />
     <ItemGroup>
       <_KrakenManifestLines Include="{" />
       <_KrakenManifestLines Include="  &quot;id&quot;: &quot;$(KrakenStepPackageId)&quot;," />
       <_KrakenManifestLines Include="  &quot;version&quot;: &quot;$(KrakenStepPackageVersion)&quot;," />
       <_KrakenManifestLines Include="  &quot;displayName&quot;: &quot;$(KrakenStepPackageDisplayName)&quot;," />
       <_KrakenManifestLines Include="  &quot;targetFramework&quot;: &quot;$(TargetFramework)&quot;," />
-      <_KrakenManifestLines Include="  &quot;stepTypes&quot;: [ &quot;$(_KrakenStepTypesNormalized.Replace(`,`, `&quot;, &quot;`))&quot; ]," />
+      <_KrakenManifestLines Include="  &quot;stepTypes&quot;: [ $(_KrakenStepTypesJson) ]," />
       <_KrakenManifestLines Include="  &quot;executorAssembly&quot;: &quot;$(TargetFileName)&quot;," />
       <_KrakenManifestLines Include="  &quot;executorTypeName&quot;: &quot;$(KrakenStepPackageExecutorTypeName)&quot;," />
       <_KrakenManifestLines Include="  &quot;signedBy&quot;: &quot;kraken-project&quot;," />

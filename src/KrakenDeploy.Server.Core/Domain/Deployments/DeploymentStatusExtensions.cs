@@ -12,11 +12,21 @@ namespace KrakenDeploy.Server.Core.Domain.Deployments;
 /// </summary>
 public static class DeploymentStatusExtensions
 {
-    public static bool IsTerminal(this DeploymentStatus status) => status is
-        DeploymentStatus.Succeeded or
-        DeploymentStatus.SucceededWithWarnings or
-        DeploymentStatus.Failed or
-        DeploymentStatus.Cancelled;
+    /// <summary>
+    /// The terminal set as data, for LINQ predicates EF must translate to SQL
+    /// (the <see cref="IsTerminal"/> extension method cannot be translated).
+    /// Kept as the single definition — <see cref="IsTerminal"/> reads it.
+    /// </summary>
+    public static readonly DeploymentStatus[] TerminalStatuses =
+    [
+        DeploymentStatus.Succeeded,
+        DeploymentStatus.SucceededWithWarnings,
+        DeploymentStatus.Failed,
+        DeploymentStatus.Cancelled,
+    ];
+
+    public static bool IsTerminal(this DeploymentStatus status)
+        => Array.IndexOf(TerminalStatuses, status) >= 0;
 
     /// <summary>
     /// The non-terminal states a task occupies AFTER it has been claimed — it is

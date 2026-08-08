@@ -67,14 +67,24 @@ public sealed record StepPackageManifest
     public required string TargetFramework { get; init; }
 
     /// <summary>
-    /// Step-type strings the executor's <see cref="IStepHandler.CanHandle"/>
+    /// Step types the executor's <see cref="IStepHandler.CanHandle"/>
     /// claims. Multi-claim is supported so a single package can implement
     /// alias types (e.g. <c>"Kraken.Script"</c> + <c>"Octopus.Script"</c>).
     /// At runtime the executor's <c>CanHandle</c> must agree with this list —
     /// the loader uses the list to register the package against each
     /// declared type, then trusts the C# logic to gate execution.
+    /// <para>
+    /// SC1: entries are <see cref="StepTypeDeclaration"/>s — in JSON either a
+    /// plain string (id only) or an object carrying per-type picker metadata.
+    /// C# call sites can keep writing <c>StepTypes = ["A", "B"]</c> via the
+    /// declaration's implicit string conversion.
+    /// </para>
     /// </summary>
-    public required IReadOnlyList<string> StepTypes { get; init; }
+    public required IReadOnlyList<StepTypeDeclaration> StepTypes { get; init; }
+
+    /// <summary>The claimed step-type ids, without metadata.</summary>
+    [JsonIgnore]
+    public IEnumerable<string> StepTypeIds => StepTypes.Select(t => t.Id);
 
     /// <summary>
     /// Minimum agent version that can load this package, semver string. The
@@ -227,8 +237,14 @@ public static class StepPackageFiles
     /// <summary>Directory containing the declarative UI schema.</summary>
     public const string UiDirectory = "ui";
 
-    /// <summary>The UI schema filename inside <see cref="UiDirectory"/>.</summary>
+    /// <summary>The legacy single UI schema filename inside <see cref="UiDirectory"/>.</summary>
     public const string UiSchemaFileName = "ui-schema.json";
+
+    /// <summary>
+    /// Directory (inside the zip, forward slashes) holding per-step-type UI
+    /// schemas: <c>ui/schemas/{typeId}.json</c>, one per claimed type (SC1).
+    /// </summary>
+    public const string UiSchemasDirectory = "ui/schemas";
 
     /// <summary>Optional README at the zip root.</summary>
     public const string ReadmeFileName = "README.md";

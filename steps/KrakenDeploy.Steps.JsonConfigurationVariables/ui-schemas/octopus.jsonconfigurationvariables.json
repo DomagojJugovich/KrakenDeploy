@@ -1,0 +1,20 @@
+{
+  "id": "octopus.jsonconfigurationvariables",
+  "title": "Apply JSON configuration variables",
+  "description": "Walks each variable name like \u0027A.B.C\u0027 and applies it to the JSON path A \u2192 B \u2192 C in the target files.",
+  "version": "1.0.0",
+  "groups": [],
+  "properties": {
+    "Octopus.Action.Package.JsonConfigurationVariablesTargets": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Target files",
+      "helpText": "Newline- or comma-separated globs (e.g. appsettings*.json).",
+      "placeholder": "appsettings.json\nappsettings.*.json",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    }
+  }
+}

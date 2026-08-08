@@ -1,0 +1,62 @@
+{
+  "id": "octopus.wildflycertificatedeploy",
+  "title": "Deploy Certificate to WildFly",
+  "description": "Import a certificate into a WildFly keystore.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "keystore",
+      "title": "Keystore",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Java.KeystorePath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Keystore path",
+      "group": "keystore",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Java.KeystorePassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Keystore password",
+      "group": "keystore",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.CertificatePath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Certificate file path",
+      "helpText": "Path to a .pfx/.p12 file. Auto-detected from package if empty.",
+      "group": "keystore",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.CertificatePassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Certificate password",
+      "group": "keystore",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.KeystoreAlias": {
+      "type": "string",
+      "widget": "text",
+      "label": "Alias",
+      "group": "keystore",
+      "default": "wildfly",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.JavaHome": {
+      "type": "string",
+      "widget": "text",
+      "label": "JAVA_HOME",
+      "group": "keystore",
+      "enumValues": []
+    }
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "id": "octopus.terraformapply",
+  "title": "Apply a Terraform Template",
+  "description": "Run terraform init and apply to provision infrastructure.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "general",
+      "title": "General",
+      "collapsed": false
+    },
+    {
+      "id": "variables",
+      "title": "Variables",
+      "collapsed": true
+    },
+    {
+      "id": "advanced",
+      "title": "Advanced",
+      "collapsed": true
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Terraform.WorkingDirectory": {
+      "type": "string",
+      "widget": "text",
+      "label": "Working directory",
+      "helpText": "Directory containing .tf files. Defaults to the package extract dir.",
+      "group": "general",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.Workspace": {
+      "type": "string",
+      "widget": "text",
+      "label": "Workspace",
+      "helpText": "Terraform workspace to select (created if it doesn\u0027t exist).",
+      "group": "general",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.AutoApprove": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Auto-approve",
+      "group": "general",
+      "default": "true",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.Vars": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Variables",
+      "helpText": "One per line: key=value. Octostache #{...} placeholders are resolved. TF_VAR_* deployment variables are also passed as env vars.",
+      "group": "variables",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.VarFile": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Var files",
+      "helpText": "One per line: path to a .tfvars file.",
+      "group": "variables",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.BackendConfig": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Backend config",
+      "helpText": "One per line: key=value pairs passed to terraform init -backend-config.",
+      "group": "advanced",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.AdditionalInitArgs": {
+      "type": "string",
+      "widget": "text",
+      "label": "Additional init args",
+      "group": "advanced",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.AdditionalActionArgs": {
+      "type": "string",
+      "widget": "text",
+      "label": "Additional plan args",
+      "group": "advanced",
+      "enumValues": []
+    },
+    "Octopus.Action.Terraform.SkipInit": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Skip terraform init",
+      "group": "advanced",
+      "default": "false",
+      "enumValues": []
+    }
+  }
+}

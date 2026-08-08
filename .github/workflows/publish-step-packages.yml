@@ -1,0 +1,122 @@
+# SC7 — the packages lane of the kraken-steps community catalog (SD-13).
+#
+# Maintainer-triggered: builds every steps/* package in Release, signs each
+# archive with the Kraken signing key (SignKrakenStepPackage target), and
+# publishes one GitHub Release per (id, version) to the community repo in
+# exactly the shape StepPackageCatalogService discovers:
+#   - one .kdeploy-step asset
+#   - the manifest as a fenced ```json block in the notes
+#   - a "SHA-256: <hex>" line in the notes
+#   - not draft, not prerelease
+# Releases that already exist are skipped, so re-runs are idempotent and a
+# version bump is the only way to ship changed bytes — the same immutability
+# contract the in-server seeder relies on.
+#
+# Required repository secrets:
+#   KRAKEN_SIGNING_KEY — RSA private key PEM (the counterpart public key is
+#                        what servers/agents configure as
+#                        StepPackages:TrustedPublicKey).
+#   KRAKEN_STEPS_TOKEN — token with contents:write on the community repo
+#                        (a fine-grained PAT scoped to that single repo).
+name: Publish step packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: Community repo receiving the Releases
+        default: DomagojJugovich/kraken-steps
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-step-packages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build, sign, release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Materialise signing key
+        env:
+          KRAKEN_SIGNING_KEY: ${{ secrets.KRAKEN_SIGNING_KEY }}
+        run: |
+          if [ -z "$KRAKEN_SIGNING_KEY" ]; then
+            echo "::error::KRAKEN_SIGNING_KEY secret is not set — refusing to publish unsigned packages."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$KRAKEN_SIGNING_KEY" > "$RUNNER_TEMP/signing.pem"
+
+      - name: Build kraken CLI (the signing tool the pack targets invoke)
+        run: dotnet build src/KrakenDeploy.Cli/KrakenDeploy.Cli.csproj -c Release --nologo -v:q
+
+      - name: Build + sign every step package
+        run: |
+          for proj in steps/KrakenDeploy.Steps.*/KrakenDeploy.Steps.*.csproj; do
+            case "$proj" in *Steps.Common*) continue ;; esac
+            echo "── $proj"
+            dotnet build "$proj" -c Release --nologo -v:q \
+              -p:KrakenSigningKey="$RUNNER_TEMP/signing.pem"
+          done
+
+      - name: Publish releases to the community repo
+        env:
+          GH_TOKEN: ${{ secrets.KRAKEN_STEPS_TOKEN }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::KRAKEN_STEPS_TOKEN secret is not set."
+            exit 1
+          fi
+          shopt -s nullglob
+          published=0 skipped=0
+          for archive in steps/KrakenDeploy.Steps.*/bin/Release/net10.0/*.kdeploy-step; do
+            file="$(basename "$archive")"
+            # Take id/version from the manifest, NOT the filename: both the
+            # ".kdeploy-step" extension and a "-prerelease" version segment contain
+            # dashes, so any filename split mis-parses (e.g. 2.2.0-beta.1 -> "1").
+            # The manifest is the authoritative source the catalog also reads.
+            manifest="$(unzip -p "$archive" manifest.json)"
+            id="$(printf '%s' "$manifest" | jq -r '.id')"
+            version="$(printf '%s' "$manifest" | jq -r '.version')"
+            tag="${id}-v${version}"
+
+            if [ -z "$id" ] || [ "$id" = "null" ] || [ -z "$version" ] || [ "$version" = "null" ]; then
+              echo "::error::Cannot read id/version from manifest in '$file'."
+              exit 1
+            fi
+
+            if gh release view "$tag" --repo "$TARGET_REPO" >/dev/null 2>&1; then
+              echo "skip   $tag (already published — bump the version to ship changes)"
+              skipped=$((skipped+1))
+              continue
+            fi
+
+            sha256="$(sha256sum "$archive" | cut -d' ' -f1)"
+
+            notes="$RUNNER_TEMP/notes-$tag.md"
+            {
+              printf '```json\n%s\n```\n\n' "$manifest"
+              printf 'SHA-256: %s\n' "$sha256"
+            } > "$notes"
+
+            gh release create "$tag" "$archive" \
+              --repo "$TARGET_REPO" \
+              --title "$id $version" \
+              --notes-file "$notes"
+            echo "publish $tag"
+            published=$((published+1))
+          done
+          echo "Done: $published published, $skipped skipped."

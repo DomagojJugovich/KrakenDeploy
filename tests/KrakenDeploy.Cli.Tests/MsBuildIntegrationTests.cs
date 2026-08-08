@@ -38,10 +38,7 @@ public sealed class MsBuildIntegrationTests : IDisposable
         var manualProject = FindRepoFile(
             Path.Combine("steps", "KrakenDeploy.Steps.Manual",
                          "KrakenDeploy.Steps.Manual.csproj"));
-        var manualArchive = Path.Combine(
-            Path.GetDirectoryName(manualProject)!,
-            "bin", "Debug", "net10.0",
-            "octopus.manual-1.0.0.kdeploy-step");
+        var manualArchive = ExpectedArchivePath(manualProject);
 
         // Generate a fresh key + write the PEM the targets file will hand
         // to `kraken pack --key`.
@@ -85,10 +82,7 @@ public sealed class MsBuildIntegrationTests : IDisposable
         var manualProject = FindRepoFile(
             Path.Combine("steps", "KrakenDeploy.Steps.Manual",
                          "KrakenDeploy.Steps.Manual.csproj"));
-        var manualArchive = Path.Combine(
-            Path.GetDirectoryName(manualProject)!,
-            "bin", "Debug", "net10.0",
-            "octopus.manual-1.0.0.kdeploy-step");
+        var manualArchive = ExpectedArchivePath(manualProject);
 
         var (exitCode, output) = await RunDotnetBuildAsync(manualProject, pemPath: null);
         exitCode.Should().Be(0, output);
@@ -128,6 +122,22 @@ public sealed class MsBuildIntegrationTests : IDisposable
         await proc.WaitForExitAsync();
         var output = (await stdoutTask) + "\n" + (await stderrTask);
         return (proc.ExitCode, output);
+    }
+
+    /// <summary>
+    /// Derives the archive path the pack target will produce from the
+    /// project's own <c>KrakenStepPackageId</c>/<c>Version</c> properties —
+    /// hardcoding a version here broke on every bump.
+    /// </summary>
+    private static string ExpectedArchivePath(string project)
+    {
+        var doc = System.Xml.Linq.XDocument.Load(project);
+        var id      = doc.Descendants("KrakenStepPackageId").Single().Value.Trim();
+        var version = doc.Descendants("KrakenStepPackageVersion").Single().Value.Trim();
+        return Path.Combine(
+            Path.GetDirectoryName(project)!,
+            "bin", "Debug", "net10.0",
+            $"{id}-{version}.kdeploy-step");
     }
 
     /// <summary>

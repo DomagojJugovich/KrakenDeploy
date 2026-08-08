@@ -1,0 +1,88 @@
+{
+  "id": "aws-ecs",
+  "title": "Deploy Amazon ECS Service",
+  "description": "Update an Amazon ECS service with a new task definition or desired count.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "credentials",
+      "title": "AWS Credentials",
+      "collapsed": false
+    },
+    {
+      "id": "ecs",
+      "title": "ECS",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Aws.AccessKeyId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Access Key ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.SecretAccessKey": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Secret Access Key",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.Region": {
+      "type": "string",
+      "widget": "text",
+      "label": "Region",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.ClusterName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Cluster name",
+      "group": "ecs",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Aws.ServiceName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Service name",
+      "group": "ecs",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Aws.TaskDefinition": {
+      "type": "string",
+      "widget": "text",
+      "label": "Task definition",
+      "helpText": "Family:revision or full ARN. Leave empty to keep current.",
+      "group": "ecs",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.DesiredCount": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Desired count",
+      "group": "ecs",
+      "enumValues": [],
+      "validation": {
+        "required": false,
+        "min": 0
+      }
+    },
+    "Octopus.Action.Aws.ForceNewDeployment": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Force new deployment",
+      "group": "ecs",
+      "default": "false",
+      "enumValues": []
+    }
+  }
+}

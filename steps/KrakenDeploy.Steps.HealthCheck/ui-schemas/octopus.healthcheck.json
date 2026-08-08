@@ -1,0 +1,136 @@
+{
+  "id": "octopus.healthcheck",
+  "title": "Health Check",
+  "description": "Probe an HTTP endpoint or TCP port and retry on failure.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "target",
+      "title": "Target",
+      "collapsed": false
+    },
+    {
+      "id": "retries",
+      "title": "Retries \u0026 Failure",
+      "collapsed": true
+    }
+  ],
+  "properties": {
+    "Octopus.Action.HealthCheck.Uri": {
+      "type": "string",
+      "widget": "text",
+      "label": "URI",
+      "helpText": "Full URL (http/https) or hostname for TCP probes. Mutually exclusive with Host/Protocol/Port.",
+      "placeholder": "https://myapp.local/health",
+      "group": "target",
+      "enumValues": []
+    },
+    "Octopus.Action.HealthCheck.Protocol": {
+      "type": "string",
+      "widget": "select",
+      "label": "Protocol",
+      "group": "target",
+      "default": "http",
+      "enumValues": [
+        {
+          "value": "http",
+          "label": "HTTP"
+        },
+        {
+          "value": "tcp",
+          "label": "TCP"
+        }
+      ]
+    },
+    "Octopus.Action.HealthCheck.Host": {
+      "type": "string",
+      "widget": "text",
+      "label": "Host",
+      "helpText": "Used when URI is empty. Combined with Protocol and Port.",
+      "group": "target",
+      "enumValues": []
+    },
+    "Octopus.Action.HealthCheck.Port": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Port",
+      "helpText": "TCP port. Defaults to 80 for HTTP when omitted.",
+      "group": "target",
+      "enumValues": [],
+      "validation": {
+        "required": false,
+        "min": 1,
+        "max": 65535
+      }
+    },
+    "Octopus.Action.HealthCheck.ExpectedStatusCode": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Expected HTTP status code",
+      "group": "target",
+      "default": "200",
+      "enumValues": []
+    },
+    "Octopus.Action.HealthCheck.ExpectedBodyContains": {
+      "type": "string",
+      "widget": "text",
+      "label": "Body must contain",
+      "helpText": "Optional substring the response body must include (HTTP only).",
+      "group": "target",
+      "enumValues": []
+    },
+    "Octopus.Action.HealthCheck.TimeoutSeconds": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Timeout (seconds)",
+      "group": "retries",
+      "default": "30",
+      "enumValues": [],
+      "validation": {
+        "required": false,
+        "min": 1
+      }
+    },
+    "Octopus.Action.HealthCheck.RetryAttempts": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Retry attempts",
+      "group": "retries",
+      "default": "3",
+      "enumValues": [],
+      "validation": {
+        "required": false,
+        "min": 1
+      }
+    },
+    "Octopus.Action.HealthCheck.RetryDelaySeconds": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Retry delay (seconds)",
+      "group": "retries",
+      "default": "5",
+      "enumValues": [],
+      "validation": {
+        "required": false,
+        "min": 0
+      }
+    },
+    "Octopus.Action.HealthCheck.FailureAction": {
+      "type": "string",
+      "widget": "select",
+      "label": "On failure",
+      "group": "retries",
+      "default": "fail",
+      "enumValues": [
+        {
+          "value": "fail",
+          "label": "Fail the deployment"
+        },
+        {
+          "value": "warn",
+          "label": "Log a warning and continue"
+        }
+      ]
+    }
+  }
+}

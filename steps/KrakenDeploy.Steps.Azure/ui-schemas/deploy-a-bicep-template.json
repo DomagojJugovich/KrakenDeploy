@@ -1,0 +1,107 @@
+{
+  "id": "deploy-a-bicep-template",
+  "title": "Deploy a Bicep Template",
+  "description": "Deploy an Azure Bicep template to a resource group.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "credentials",
+      "title": "Azure Credentials",
+      "collapsed": false
+    },
+    {
+      "id": "deployment",
+      "title": "Deployment",
+      "collapsed": false
+    },
+    {
+      "id": "bicep",
+      "title": "Bicep",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Azure.ServicePrincipalAppId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Service Principal App ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.ServicePrincipalPassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Service Principal Password",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.TenantId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Tenant ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.SubscriptionId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Subscription ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.ResourceGroupName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Resource group",
+      "group": "deployment",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Azure.DeploymentName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Deployment name",
+      "group": "deployment",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.DeploymentMode": {
+      "type": "string",
+      "widget": "select",
+      "label": "Deployment mode",
+      "group": "deployment",
+      "default": "Incremental",
+      "enumValues": [
+        {
+          "value": "Incremental",
+          "label": "Incremental"
+        },
+        {
+          "value": "Complete",
+          "label": "Complete"
+        },
+        {
+          "value": "Validate",
+          "label": "Validate"
+        }
+      ]
+    },
+    "Octopus.Action.Azure.BicepFile": {
+      "type": "string",
+      "widget": "text",
+      "label": "Bicep file path",
+      "helpText": "Path to a .bicep file. Auto-detected from package if empty.",
+      "group": "bicep",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.TemplateParameters": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Parameters",
+      "helpText": "One per line: Key=Value",
+      "group": "bicep",
+      "enumValues": []
+    }
+  }
+}

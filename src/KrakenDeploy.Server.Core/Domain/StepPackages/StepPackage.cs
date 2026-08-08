@@ -41,13 +41,6 @@ public class StepPackage : AuditableEntity
     public required string ManifestJson { get; set; }
 
     /// <summary>
-    /// The package's <c>ui/ui-schema.json</c> contents as <c>jsonb</c>. The
-    /// schema-driven renderer (Phase C-4) consumes this directly — no need
-    /// to re-read the extracted file on every editor load.
-    /// </summary>
-    public string? UiSchemaJson { get; set; }
-
-    /// <summary>
     /// Optional release notes for this version, taken from the
     /// <c>CHANGELOG.md</c> file at the zip root (Phase D-12.4). Surfaced
     /// in the "Update available" dialog when a process step is pinned to
@@ -83,4 +76,21 @@ public enum StepPackageSource
 
     /// <summary>Seeded by the fresh-install bundle (Phase D-8 built-ins).</summary>
     Preinstalled = 2,
+}
+
+/// <summary><see cref="StepPackageSource"/> helpers.</summary>
+public static class StepPackageSourceExtensions
+{
+    /// <summary>
+    /// Whether packages of this source own the step types they claim — i.e.
+    /// which sources are trusted to define a type. Built-ins (Preinstalled)
+    /// and the official GitHub catalog (CatalogPull) are trusted; an admin
+    /// <see cref="StepPackageSource.LocalUpload"/> is not, so it cannot claim
+    /// (hijack) a type a trusted source already serves. The single source of
+    /// truth for both the upload-time reserved-type guard
+    /// (<c>StepPackageService.UploadAsync</c>) and the registry ownership pick
+    /// (<c>StepTypeRegistry.RebuildAsync</c>), so the two never drift.
+    /// </summary>
+    public static bool OwnsClaimedTypes(this StepPackageSource source)
+        => source is StepPackageSource.Preinstalled or StepPackageSource.CatalogPull;
 }

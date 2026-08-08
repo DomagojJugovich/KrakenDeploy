@@ -1,0 +1,64 @@
+{
+  "id": "octopus.dockerstop",
+  "title": "Stop a Docker Resource",
+  "description": "Stop or remove a container or network created by a previous deployment.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "target",
+      "title": "Target",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Docker.ResourceType": {
+      "type": "string",
+      "widget": "select",
+      "label": "Resource type",
+      "group": "target",
+      "default": "container",
+      "enumValues": [
+        {
+          "value": "container",
+          "label": "Container"
+        },
+        {
+          "value": "network",
+          "label": "Network"
+        }
+      ]
+    },
+    "Octopus.Action.Docker.ResourceName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Resource name",
+      "helpText": "Name of the container or network to stop/remove.",
+      "group": "target",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Docker.RemoveOnStop": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Remove after stopping",
+      "helpText": "Also remove the container after stopping it.",
+      "group": "target",
+      "default": "false",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.StopTimeout": {
+      "type": "integer",
+      "widget": "number-input",
+      "label": "Stop timeout (seconds)",
+      "group": "target",
+      "default": "10",
+      "enumValues": [],
+      "validation": {
+        "required": false,
+        "min": 0
+      }
+    }
+  }
+}

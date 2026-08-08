@@ -1,0 +1,114 @@
+{
+  "id": "octopus.tentaclepackage",
+  "title": "Deploy a package (Octopus.TentaclePackage)",
+  "description": "Extracts a package and optionally applies the standard Octopus configuration features.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "general",
+      "title": "General",
+      "collapsed": false
+    },
+    {
+      "id": "custom-dir",
+      "title": "Custom installation directory",
+      "collapsed": false
+    },
+    {
+      "id": "config-vars",
+      "title": "Configuration variables (XML)",
+      "collapsed": false
+    },
+    {
+      "id": "config-xforms",
+      "title": "Configuration transforms (XDT)",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Package.PackageId": {
+      "type": "string",
+      "widget": "package-ref",
+      "label": "Package",
+      "group": "general",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Package.FeedId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Feed id",
+      "helpText": "Kraken only models the built-in feed today; the value is preserved verbatim for round-trip.",
+      "group": "general",
+      "default": "feeds-builtin",
+      "enumValues": []
+    },
+    "Octopus.Action.Package.DownloadOnTentacle": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Download on the target",
+      "group": "general",
+      "default": "false",
+      "enumValues": []
+    },
+    "Octopus.Action.EnabledFeatures": {
+      "type": "string",
+      "widget": "text",
+      "label": "Enabled features (comma-separated)",
+      "helpText": "Octopus feature ids (e.g. Octopus.Features.CustomDirectory). Per-feature config blocks below appear when the matching feature is listed.",
+      "group": "general",
+      "enumValues": []
+    },
+    "Octopus.Action.Package.CustomInstallationDirectory": {
+      "type": "string",
+      "widget": "text",
+      "label": "Installation directory",
+      "helpText": "Where the extracted package is copied. Required when Octopus.Features.CustomDirectory is enabled.",
+      "group": "custom-dir",
+      "enumValues": []
+    },
+    "Octopus.Action.Package.CustomInstallationDirectoryShouldBePurgedBeforeDeployment": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Purge before copy",
+      "group": "custom-dir",
+      "default": "false",
+      "enumValues": []
+    },
+    "Octopus.Action.Package.CustomInstallationDirectoryPurgeExclusions": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Purge exclusions",
+      "helpText": "Comma- or newline-separated top-level entry names to keep (e.g. App_Data).",
+      "group": "custom-dir",
+      "enumValues": []
+    },
+    "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Automatically update appSettings \u002B connectionStrings",
+      "group": "config-vars",
+      "default": "false",
+      "enumValues": []
+    },
+    "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Automatically run XDT transforms",
+      "helpText": "Applies *.\u003Cenv\u003E.config transforms over their base file.",
+      "group": "config-xforms",
+      "default": "false",
+      "enumValues": []
+    },
+    "Octopus.Action.Package.AdditionalXmlConfigurationTransforms": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Additional XDT transform mappings",
+      "helpText": "Newline-separated. Per line: \u003Ctransform-file\u003E =\u003E \u003Ctarget-file\u003E. (Not yet honoured at runtime; preserved for round-trip.)",
+      "group": "config-xforms",
+      "enumValues": []
+    }
+  }
+}

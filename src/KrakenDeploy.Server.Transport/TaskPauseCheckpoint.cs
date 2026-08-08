@@ -31,6 +31,21 @@ internal sealed record TaskPauseCheckpoint
     /// holding the manual-intervention step that caused the pause.</summary>
     public int ResumeWaveIndex { get; init; }
 
+    /// <summary>
+    /// Each wave's <c>WaveKind</c> at pause time, by index. Wave GROUPING is a pure
+    /// function of the frozen snapshot's StartTrigger values, but a wave's SIDE is
+    /// not: it is read from the step-type registry at dispatch, which an operator can
+    /// change during the approval window by installing a package version declaring a
+    /// different <c>executionLocus</c>. Without this the wave count still matches and
+    /// later waves silently flip Target -> Server, executing on the Kraken server box
+    /// instead of the targets a human approved.
+    /// <para>
+    /// Empty on checkpoints written before this field existed — the comparison is
+    /// then skipped rather than failing every pause in flight across the upgrade.
+    /// </para>
+    /// </summary>
+    public string[] WaveKinds { get; init; } = [];
+
     /// <summary>The deployment-global failing flag. Drives
     /// <c>Condition=Success/Failure/Always</c> evaluation for every later wave, so
     /// losing it would silently run cleanup steps as if nothing had failed.</summary>

@@ -1,0 +1,176 @@
+{
+  "id": "octopus.dockerrun",
+  "title": "Run a Docker Container",
+  "description": "Pull and run a container from a registry.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "image",
+      "title": "Image",
+      "collapsed": false
+    },
+    {
+      "id": "container",
+      "title": "Container Settings",
+      "collapsed": false
+    },
+    {
+      "id": "network",
+      "title": "Network \u0026 Ports",
+      "collapsed": true
+    },
+    {
+      "id": "registry",
+      "title": "Registry Auth",
+      "collapsed": true
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Docker.Image": {
+      "type": "string",
+      "widget": "text",
+      "label": "Image",
+      "placeholder": "nginx",
+      "group": "image",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Docker.Tag": {
+      "type": "string",
+      "widget": "text",
+      "label": "Tag",
+      "placeholder": "latest",
+      "group": "image",
+      "default": "latest",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.ContainerName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Container name",
+      "helpText": "Optional. Defaults to a Docker-generated name.",
+      "group": "container",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.Command": {
+      "type": "string",
+      "widget": "text",
+      "label": "Command",
+      "helpText": "Optional command to run inside the container.",
+      "group": "container",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.EntryPoint": {
+      "type": "string",
+      "widget": "text",
+      "label": "Entry point override",
+      "group": "container",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.Detach": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Run detached",
+      "group": "container",
+      "default": "true",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.RestartPolicy": {
+      "type": "string",
+      "widget": "select",
+      "label": "Restart policy",
+      "group": "container",
+      "default": "unless-stopped",
+      "enumValues": [
+        {
+          "value": "no",
+          "label": "no"
+        },
+        {
+          "value": "always",
+          "label": "always"
+        },
+        {
+          "value": "unless-stopped",
+          "label": "unless-stopped"
+        },
+        {
+          "value": "on-failure",
+          "label": "on-failure"
+        }
+      ]
+    },
+    "Octopus.Action.Docker.EnvVars": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Environment variables",
+      "helpText": "One per line: KEY=VALUE",
+      "group": "container",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.Volumes": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Volume mounts",
+      "helpText": "One per line: host_path:container_path[:ro]",
+      "group": "container",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.Ports": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Port mappings",
+      "helpText": "One per line: host_port:container_port",
+      "group": "network",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.Network": {
+      "type": "string",
+      "widget": "text",
+      "label": "Network",
+      "helpText": "Docker network to attach the container to.",
+      "group": "network",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.Labels": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Labels",
+      "helpText": "One per line: key=value",
+      "group": "container",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.RegistryUrl": {
+      "type": "string",
+      "widget": "text",
+      "label": "Registry URL",
+      "helpText": "Leave empty for Docker Hub.",
+      "group": "registry",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.RegistryUsername": {
+      "type": "string",
+      "widget": "text",
+      "label": "Username",
+      "group": "registry",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.RegistryPassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Password / token",
+      "group": "registry",
+      "enumValues": []
+    },
+    "Octopus.Action.Docker.AdditionalArgs": {
+      "type": "string",
+      "widget": "text",
+      "label": "Additional docker run arguments",
+      "helpText": "Appended verbatim before the image name.",
+      "group": "container",
+      "enumValues": []
+    }
+  }
+}
