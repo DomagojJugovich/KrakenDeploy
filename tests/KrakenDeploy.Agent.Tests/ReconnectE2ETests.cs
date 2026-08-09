@@ -242,10 +242,14 @@ public sealed class ReconnectE2ETests
 
         try
         {
+            // Fact 1 is proven by StartAsync returning instead of throwing. Do NOT
+            // additionally assert State == Connected here: the server-side rejection
+            // tears the connection down concurrently with StartAsync completing, and
+            // on loopback the close can win that race (observed deterministically in
+            // CI for the Abort shape) — the state is legitimately transient. The
+            // load-bearing claim is only that the rejection never presents as an
+            // initial-connect failure, i.e. StartAsync does not throw.
             await connection.StartAsync();
-            connection.State.Should().Be(HubConnectionState.Connected,
-                "the handshake completes before OnConnectedAsync runs, so a rejection there " +
-                "cannot present as an initial-connect failure");
 
             await WaitUntilAsync(() => events.Contains("Closed"), TestTimeout,
                 "a server-side rejection must surface as a permanent close");

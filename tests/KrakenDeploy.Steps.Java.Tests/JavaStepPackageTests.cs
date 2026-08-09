@@ -207,7 +207,7 @@ public sealed class JavaStepPackageTests
     public void Built_archive_exists_at_the_expected_path()
     {
         FindBuiltArchive().Should().NotBeNull(
-            "the pack target must produce octopus.java-1.0.0.kdeploy-step");
+            "the pack target must produce octopus.java-<version>.kdeploy-step");
     }
 
     [Fact]
@@ -226,16 +226,18 @@ public sealed class JavaStepPackageTests
         var manifest = StepPackageManifestJson.Deserialize(reader.ReadToEnd());
 
         manifest.Id.Should().Be("octopus.java");
-        manifest.Version.Should().Be("1.0.0");
+        manifest.Version.Should().Be(ArchiveVersion(FindBuiltArchive()!),
+            "the manifest version and the archive filename both come from "
+            + "KrakenStepPackageVersion in the csproj and must agree");
         manifest.StepTypes.Should().HaveCount(8);
-        manifest.StepTypes.Should().Contain("Octopus.JavaArchive");
-        manifest.StepTypes.Should().Contain("Octopus.TomcatDeploy");
-        manifest.StepTypes.Should().Contain("Octopus.TomcatState");
-        manifest.StepTypes.Should().Contain("Octopus.TomcatDeployCertificate");
-        manifest.StepTypes.Should().Contain("Octopus.WildFlyDeploy");
-        manifest.StepTypes.Should().Contain("Octopus.WildFlyState");
-        manifest.StepTypes.Should().Contain("Octopus.WildFlyCertificateDeploy");
-        manifest.StepTypes.Should().Contain("Octopus.JavaDeployCertificate");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.JavaArchive");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.TomcatDeploy");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.TomcatState");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.TomcatDeployCertificate");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.WildFlyDeploy");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.WildFlyState");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.WildFlyCertificateDeploy");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.JavaDeployCertificate");
         manifest.ExecutorTypeName.Should().Be(typeof(JavaStepHandler).FullName!);
         manifest.ExecutorAssembly.Should().Be("KrakenDeploy.Steps.Java.dll");
 
@@ -314,8 +316,17 @@ public sealed class JavaStepPackageTests
             here, "..", "..", "..", "..", "..",
             "steps", "KrakenDeploy.Steps.Java", "bin"));
         return Directory.Exists(binRoot)
-            ? Directory.EnumerateFiles(binRoot, "octopus.java-1.0.0.kdeploy-step",
-                SearchOption.AllDirectories).FirstOrDefault()
+            ? Directory.EnumerateFiles(binRoot, "octopus.java-*.kdeploy-step",
+                SearchOption.AllDirectories)
+                .OrderByDescending(p => Version.Parse(ArchiveVersion(p)))
+                .FirstOrDefault()
             : null;
+    }
+
+    // "<id>-<version>.kdeploy-step" -> "<version>" (the id itself may contain dashes).
+    private static string ArchiveVersion(string path)
+    {
+        var stem = Path.GetFileNameWithoutExtension(path);
+        return stem[(stem.LastIndexOf('-') + 1)..];
     }
 }

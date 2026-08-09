@@ -136,7 +136,7 @@ public sealed class PackageRunnerStepPackageTests
     public void Built_archive_exists_at_the_expected_path()
     {
         FindBuiltArchive().Should().NotBeNull(
-            "the pack target must produce kraken.packagerunner-1.0.0.kdeploy-step");
+            "the pack target must produce kraken.packagerunner-<version>.kdeploy-step");
     }
 
     [Fact]
@@ -155,10 +155,12 @@ public sealed class PackageRunnerStepPackageTests
         var manifest = StepPackageManifestJson.Deserialize(reader.ReadToEnd());
 
         manifest.Id.Should().Be("kraken.packagerunner");
-        manifest.Version.Should().Be("1.0.0");
+        manifest.Version.Should().Be(ArchiveVersion(FindBuiltArchive()!),
+            "the manifest version and the archive filename both come from "
+            + "KrakenStepPackageVersion in the csproj and must agree");
         manifest.StepTypes.Should().HaveCount(2);
-        manifest.StepTypes.Should().Contain("Kraken.RunPackageExecutable");
-        manifest.StepTypes.Should().Contain("Kraken.RunPackageAssembly");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Kraken.RunPackageExecutable");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Kraken.RunPackageAssembly");
         manifest.ExecutorTypeName.Should().Be(typeof(PackageRunnerStepHandler).FullName!);
         manifest.ExecutorAssembly.Should().Be("KrakenDeploy.Steps.PackageRunner.dll");
 
@@ -235,8 +237,17 @@ public sealed class PackageRunnerStepPackageTests
             here, "..", "..", "..", "..", "..",
             "steps", "KrakenDeploy.Steps.PackageRunner", "bin"));
         return Directory.Exists(binRoot)
-            ? Directory.EnumerateFiles(binRoot, "kraken.packagerunner-1.0.0.kdeploy-step",
-                SearchOption.AllDirectories).FirstOrDefault()
+            ? Directory.EnumerateFiles(binRoot, "kraken.packagerunner-*.kdeploy-step",
+                SearchOption.AllDirectories)
+                .OrderByDescending(p => Version.Parse(ArchiveVersion(p)))
+                .FirstOrDefault()
             : null;
+    }
+
+    // "<id>-<version>.kdeploy-step" -> "<version>" (the id itself may contain dashes).
+    private static string ArchiveVersion(string path)
+    {
+        var stem = Path.GetFileNameWithoutExtension(path);
+        return stem[(stem.LastIndexOf('-') + 1)..];
     }
 }

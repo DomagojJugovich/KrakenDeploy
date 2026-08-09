@@ -13,10 +13,10 @@ namespace KrakenDeploy.Steps.Manual.Tests;
 ///   <item>The handler class itself — <c>CanHandle</c>, <c>RequiresPackage</c>,
 ///         the no-server fallback path with various property bags (WP3: the real
 ///         gate is server-side; this handler only warns).</item>
-///   <item>The produced <c>octopus.manual-1.0.0.kdeploy-step</c> archive —
+///   <item>The produced <c>octopus.manual-*.kdeploy-step</c> archive —
 ///         layout matches what the loader + server-side validator expect.</item>
 /// </list>
-/// The archive test reads <c>bin/Debug/net10.0/octopus.manual-1.0.0.kdeploy-step</c>
+/// The archive test reads <c>bin/Debug/net10.0/octopus.manual-*.kdeploy-step</c>
 /// directly so any broken pack target shows up here, not at runtime on a
 /// real agent.
 /// </summary>
@@ -121,7 +121,7 @@ public sealed class ManualStepPackageTests
     public void Built_archive_exists_at_the_expected_path()
     {
         FindBuiltArchive().Should().NotBeNull(
-            "the project's pack target must produce octopus.manual-1.0.0.kdeploy-step " +
+            "the project's pack target must produce octopus.manual-<version>.kdeploy-step " +
             "next to KrakenDeploy.Steps.Manual.dll in the output directory");
     }
 
@@ -141,8 +141,10 @@ public sealed class ManualStepPackageTests
         var manifest     = StepPackageManifestJson.Deserialize(reader.ReadToEnd());
 
         manifest.Id.Should().Be("octopus.manual");
-        manifest.Version.Should().Be("1.0.0");
-        manifest.StepTypes.Should().ContainSingle().Which.Should().Be("Octopus.Manual");
+        manifest.Version.Should().Be(ArchiveVersion(FindBuiltArchive()!),
+            "the manifest version and the archive filename both come from "
+            + "KrakenStepPackageVersion in the csproj and must agree");
+        manifest.StepTypes.Should().ContainSingle().Which.Id.Should().Be("Octopus.Manual");
         manifest.ExecutorTypeName.Should().Be(typeof(ManualInterventionStepHandler).FullName!);
         manifest.ExecutorAssembly.Should().Be("KrakenDeploy.Steps.Manual.dll");
 
@@ -251,8 +253,17 @@ public sealed class ManualStepPackageTests
         // Configuration-agnostic: CI builds Release, local builds Debug — locate
         // the packed archive under bin/<Config>/<tfm>/ wherever it landed.
         return Directory.Exists(binRoot)
-            ? Directory.EnumerateFiles(binRoot, "octopus.manual-1.0.0.kdeploy-step",
-                SearchOption.AllDirectories).FirstOrDefault()
+            ? Directory.EnumerateFiles(binRoot, "octopus.manual-*.kdeploy-step",
+                SearchOption.AllDirectories)
+                .OrderByDescending(p => Version.Parse(ArchiveVersion(p)))
+                .FirstOrDefault()
             : null;
+    }
+
+    // "<id>-<version>.kdeploy-step" -> "<version>" (the id itself may contain dashes).
+    private static string ArchiveVersion(string path)
+    {
+        var stem = Path.GetFileNameWithoutExtension(path);
+        return stem[(stem.LastIndexOf('-') + 1)..];
     }
 }

@@ -135,7 +135,7 @@ public sealed class TransferPackageStepPackageTests
     public void Built_archive_exists_at_the_expected_path()
     {
         FindBuiltArchive().Should().NotBeNull(
-            "the pack target must produce octopus.transferpackage-1.0.0.kdeploy-step");
+            "the pack target must produce octopus.transferpackage-<version>.kdeploy-step");
     }
 
     [Fact]
@@ -154,8 +154,10 @@ public sealed class TransferPackageStepPackageTests
         var manifest = StepPackageManifestJson.Deserialize(reader.ReadToEnd());
 
         manifest.Id.Should().Be("octopus.transferpackage");
-        manifest.Version.Should().Be("1.0.0");
-        manifest.StepTypes.Should().ContainSingle().Which.Should().Be("Octopus.TransferPackage");
+        manifest.Version.Should().Be(ArchiveVersion(FindBuiltArchive()!),
+            "the manifest version and the archive filename both come from "
+            + "KrakenStepPackageVersion in the csproj and must agree");
+        manifest.StepTypes.Should().ContainSingle().Which.Id.Should().Be("Octopus.TransferPackage");
         manifest.ExecutorTypeName.Should().Be(typeof(TransferPackageStepHandler).FullName!);
         manifest.ExecutorAssembly.Should().Be("KrakenDeploy.Steps.TransferPackage.dll");
 
@@ -203,8 +205,17 @@ public sealed class TransferPackageStepPackageTests
             here, "..", "..", "..", "..", "..",
             "steps", "KrakenDeploy.Steps.TransferPackage", "bin"));
         return Directory.Exists(binRoot)
-            ? Directory.EnumerateFiles(binRoot, "octopus.transferpackage-1.0.0.kdeploy-step",
-                SearchOption.AllDirectories).FirstOrDefault()
+            ? Directory.EnumerateFiles(binRoot, "octopus.transferpackage-*.kdeploy-step",
+                SearchOption.AllDirectories)
+                .OrderByDescending(p => Version.Parse(ArchiveVersion(p)))
+                .FirstOrDefault()
             : null;
+    }
+
+    // "<id>-<version>.kdeploy-step" -> "<version>" (the id itself may contain dashes).
+    private static string ArchiveVersion(string path)
+    {
+        var stem = Path.GetFileNameWithoutExtension(path);
+        return stem[(stem.LastIndexOf('-') + 1)..];
     }
 }

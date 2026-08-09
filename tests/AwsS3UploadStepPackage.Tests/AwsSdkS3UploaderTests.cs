@@ -64,7 +64,7 @@ public sealed class AwsS3UploadArchiveTests
         var archivePath = FindBuiltArchive();
         archivePath.Should().NotBeNull(
             "the sample's pack target must produce " +
-            "kraken.steps.aws-s3-upload-1.0.0.kdeploy-step");
+            "kraken.steps.aws-s3-upload-<version>.kdeploy-step");
 
         using var fs  = File.OpenRead(archivePath!);
         using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
@@ -91,8 +91,17 @@ public sealed class AwsS3UploadArchiveTests
         // Configuration-agnostic: CI builds Release, local builds Debug — locate
         // the packed archive under bin/<Config>/<tfm>/ wherever it landed.
         return Directory.Exists(binRoot)
-            ? Directory.EnumerateFiles(binRoot, "kraken.steps.aws-s3-upload-1.0.0.kdeploy-step",
-                SearchOption.AllDirectories).FirstOrDefault()
+            ? Directory.EnumerateFiles(binRoot, "kraken.steps.aws-s3-upload-*.kdeploy-step",
+                SearchOption.AllDirectories)
+                .OrderByDescending(p => Version.Parse(ArchiveVersion(p)))
+                .FirstOrDefault()
             : null;
+    }
+
+    // "<id>-<version>.kdeploy-step" -> "<version>" (the id itself may contain dashes).
+    private static string ArchiveVersion(string path)
+    {
+        var stem = Path.GetFileNameWithoutExtension(path);
+        return stem[(stem.LastIndexOf('-') + 1)..];
     }
 }

@@ -160,7 +160,7 @@ public sealed class KubernetesStepPackageTests
     public void Built_archive_exists_at_the_expected_path()
     {
         FindBuiltArchive().Should().NotBeNull(
-            "the pack target must produce octopus.kubernetes-1.0.0.kdeploy-step");
+            "the pack target must produce octopus.kubernetes-<version>.kdeploy-step");
     }
 
     [Fact]
@@ -179,17 +179,19 @@ public sealed class KubernetesStepPackageTests
         var manifest = StepPackageManifestJson.Deserialize(reader.ReadToEnd());
 
         manifest.Id.Should().Be("octopus.kubernetes");
-        manifest.Version.Should().Be("1.0.0");
+        manifest.Version.Should().Be(ArchiveVersion(FindBuiltArchive()!),
+            "the manifest version and the archive filename both come from "
+            + "KrakenStepPackageVersion in the csproj and must agree");
         manifest.StepTypes.Should().HaveCount(9);
-        manifest.StepTypes.Should().Contain("Octopus.KubernetesDeployRawYaml");
-        manifest.StepTypes.Should().Contain("Octopus.KubernetesDeployContainers");
-        manifest.StepTypes.Should().Contain("Octopus.KubernetesDeployService");
-        manifest.StepTypes.Should().Contain("Octopus.KubernetesDeployIngress");
-        manifest.StepTypes.Should().Contain("Octopus.KubernetesDeployConfigMap");
-        manifest.StepTypes.Should().Contain("Octopus.KubernetesDeploySecret");
-        manifest.StepTypes.Should().Contain("Octopus.Kubernetes.Kustomize");
-        manifest.StepTypes.Should().Contain("Octopus.HelmChartUpgrade");
-        manifest.StepTypes.Should().Contain("Octopus.KubernetesRunScript");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.KubernetesDeployRawYaml");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.KubernetesDeployContainers");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.KubernetesDeployService");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.KubernetesDeployIngress");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.KubernetesDeployConfigMap");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.KubernetesDeploySecret");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.Kubernetes.Kustomize");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.HelmChartUpgrade");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.KubernetesRunScript");
         manifest.ExecutorTypeName.Should().Be(typeof(KubernetesStepHandler).FullName!);
         manifest.ExecutorAssembly.Should().Be("KrakenDeploy.Steps.Kubernetes.dll");
 
@@ -267,8 +269,17 @@ public sealed class KubernetesStepPackageTests
             here, "..", "..", "..", "..", "..",
             "steps", "KrakenDeploy.Steps.Kubernetes", "bin"));
         return Directory.Exists(binRoot)
-            ? Directory.EnumerateFiles(binRoot, "octopus.kubernetes-1.0.0.kdeploy-step",
-                SearchOption.AllDirectories).FirstOrDefault()
+            ? Directory.EnumerateFiles(binRoot, "octopus.kubernetes-*.kdeploy-step",
+                SearchOption.AllDirectories)
+                .OrderByDescending(p => Version.Parse(ArchiveVersion(p)))
+                .FirstOrDefault()
             : null;
+    }
+
+    // "<id>-<version>.kdeploy-step" -> "<version>" (the id itself may contain dashes).
+    private static string ArchiveVersion(string path)
+    {
+        var stem = Path.GetFileNameWithoutExtension(path);
+        return stem[(stem.LastIndexOf('-') + 1)..];
     }
 }

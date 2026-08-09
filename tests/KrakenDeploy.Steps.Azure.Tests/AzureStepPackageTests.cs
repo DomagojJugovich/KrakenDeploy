@@ -120,7 +120,7 @@ public sealed class AzureStepPackageTests
     public void Built_archive_exists_at_the_expected_path()
     {
         FindBuiltArchive().Should().NotBeNull(
-            "the pack target must produce octopus.azure-1.0.0.kdeploy-step");
+            "the pack target must produce octopus.azure-<version>.kdeploy-step");
     }
 
     [Fact]
@@ -139,13 +139,15 @@ public sealed class AzureStepPackageTests
         var manifest = StepPackageManifestJson.Deserialize(reader.ReadToEnd());
 
         manifest.Id.Should().Be("octopus.azure");
-        manifest.Version.Should().Be("1.0.0");
+        manifest.Version.Should().Be(ArchiveVersion(FindBuiltArchive()!),
+            "the manifest version and the archive filename both come from "
+            + "KrakenStepPackageVersion in the csproj and must agree");
         manifest.StepTypes.Should().HaveCount(5);
-        manifest.StepTypes.Should().Contain("Octopus.AzureWebApp");
-        manifest.StepTypes.Should().Contain("Octopus.AzureAppService");
-        manifest.StepTypes.Should().Contain("Octopus.AzurePowerShell");
-        manifest.StepTypes.Should().Contain("Octopus.AzureResourceGroup");
-        manifest.StepTypes.Should().Contain("deploy-a-bicep-template");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.AzureWebApp");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.AzureAppService");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.AzurePowerShell");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.AzureResourceGroup");
+        manifest.StepTypes.Should().Contain(t => t.Id == "deploy-a-bicep-template");
         manifest.ExecutorTypeName.Should().Be(typeof(AzureStepHandler).FullName!);
         manifest.ExecutorAssembly.Should().Be("KrakenDeploy.Steps.Azure.dll");
 
@@ -223,8 +225,17 @@ public sealed class AzureStepPackageTests
             here, "..", "..", "..", "..", "..",
             "steps", "KrakenDeploy.Steps.Azure", "bin"));
         return Directory.Exists(binRoot)
-            ? Directory.EnumerateFiles(binRoot, "octopus.azure-1.0.0.kdeploy-step",
-                SearchOption.AllDirectories).FirstOrDefault()
+            ? Directory.EnumerateFiles(binRoot, "octopus.azure-*.kdeploy-step",
+                SearchOption.AllDirectories)
+                .OrderByDescending(p => Version.Parse(ArchiveVersion(p)))
+                .FirstOrDefault()
             : null;
+    }
+
+    // "<id>-<version>.kdeploy-step" -> "<version>" (the id itself may contain dashes).
+    private static string ArchiveVersion(string path)
+    {
+        var stem = Path.GetFileNameWithoutExtension(path);
+        return stem[(stem.LastIndexOf('-') + 1)..];
     }
 }

@@ -126,7 +126,7 @@ public sealed class TerraformStepPackageTests
     public void Built_archive_exists_at_the_expected_path()
     {
         FindBuiltArchive().Should().NotBeNull(
-            "the pack target must produce octopus.terraform-1.0.0.kdeploy-step");
+            "the pack target must produce octopus.terraform-<version>.kdeploy-step");
     }
 
     [Fact]
@@ -145,12 +145,14 @@ public sealed class TerraformStepPackageTests
         var manifest = StepPackageManifestJson.Deserialize(reader.ReadToEnd());
 
         manifest.Id.Should().Be("octopus.terraform");
-        manifest.Version.Should().Be("1.0.0");
+        manifest.Version.Should().Be(ArchiveVersion(FindBuiltArchive()!),
+            "the manifest version and the archive filename both come from "
+            + "KrakenStepPackageVersion in the csproj and must agree");
         manifest.StepTypes.Should().HaveCount(4);
-        manifest.StepTypes.Should().Contain("Octopus.TerraformApply");
-        manifest.StepTypes.Should().Contain("Octopus.TerraformPlan");
-        manifest.StepTypes.Should().Contain("Octopus.TerraformDestroy");
-        manifest.StepTypes.Should().Contain("Octopus.TerraformPlanDestroy");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.TerraformApply");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.TerraformPlan");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.TerraformDestroy");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.TerraformPlanDestroy");
         manifest.ExecutorTypeName.Should().Be(typeof(TerraformStepHandler).FullName!);
         manifest.ExecutorAssembly.Should().Be("KrakenDeploy.Steps.Terraform.dll");
 
@@ -229,8 +231,17 @@ public sealed class TerraformStepPackageTests
             here, "..", "..", "..", "..", "..",
             "steps", "KrakenDeploy.Steps.Terraform", "bin"));
         return Directory.Exists(binRoot)
-            ? Directory.EnumerateFiles(binRoot, "octopus.terraform-1.0.0.kdeploy-step",
-                SearchOption.AllDirectories).FirstOrDefault()
+            ? Directory.EnumerateFiles(binRoot, "octopus.terraform-*.kdeploy-step",
+                SearchOption.AllDirectories)
+                .OrderByDescending(p => Version.Parse(ArchiveVersion(p)))
+                .FirstOrDefault()
             : null;
+    }
+
+    // "<id>-<version>.kdeploy-step" -> "<version>" (the id itself may contain dashes).
+    private static string ArchiveVersion(string path)
+    {
+        var stem = Path.GetFileNameWithoutExtension(path);
+        return stem[(stem.LastIndexOf('-') + 1)..];
     }
 }

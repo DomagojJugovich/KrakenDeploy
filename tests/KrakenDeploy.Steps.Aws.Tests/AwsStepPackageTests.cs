@@ -150,7 +150,7 @@ public sealed class AwsStepPackageTests
     public void Built_archive_exists_at_the_expected_path()
     {
         FindBuiltArchive().Should().NotBeNull(
-            "the pack target must produce octopus.aws-1.0.0.kdeploy-step");
+            "the pack target must produce octopus.aws-<version>.kdeploy-step");
     }
 
     [Fact]
@@ -169,16 +169,18 @@ public sealed class AwsStepPackageTests
         var manifest = StepPackageManifestJson.Deserialize(reader.ReadToEnd());
 
         manifest.Id.Should().Be("octopus.aws");
-        manifest.Version.Should().Be("1.0.0");
+        manifest.Version.Should().Be(ArchiveVersion(FindBuiltArchive()!),
+            "the manifest version and the archive filename both come from "
+            + "KrakenStepPackageVersion in the csproj and must agree");
         manifest.StepTypes.Should().HaveCount(8);
-        manifest.StepTypes.Should().Contain("Octopus.AwsUploadS3");
-        manifest.StepTypes.Should().Contain("Octopus.AwsCreateS3");
-        manifest.StepTypes.Should().Contain("Octopus.AwsRunCloudFormation");
-        manifest.StepTypes.Should().Contain("Octopus.AwsApplyCloudFormationChangeSet");
-        manifest.StepTypes.Should().Contain("Octopus.AwsDeleteCloudFormation");
-        manifest.StepTypes.Should().Contain("aws-ecs");
-        manifest.StepTypes.Should().Contain("aws-ecs-update-service");
-        manifest.StepTypes.Should().Contain("Octopus.AwsRunScript");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.AwsUploadS3");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.AwsCreateS3");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.AwsRunCloudFormation");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.AwsApplyCloudFormationChangeSet");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.AwsDeleteCloudFormation");
+        manifest.StepTypes.Should().Contain(t => t.Id == "aws-ecs");
+        manifest.StepTypes.Should().Contain(t => t.Id == "aws-ecs-update-service");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.AwsRunScript");
         manifest.ExecutorTypeName.Should().Be(typeof(AwsStepHandler).FullName!);
         manifest.ExecutorAssembly.Should().Be("KrakenDeploy.Steps.Aws.dll");
 
@@ -256,8 +258,17 @@ public sealed class AwsStepPackageTests
             here, "..", "..", "..", "..", "..",
             "steps", "KrakenDeploy.Steps.Aws", "bin"));
         return Directory.Exists(binRoot)
-            ? Directory.EnumerateFiles(binRoot, "octopus.aws-1.0.0.kdeploy-step",
-                SearchOption.AllDirectories).FirstOrDefault()
+            ? Directory.EnumerateFiles(binRoot, "octopus.aws-*.kdeploy-step",
+                SearchOption.AllDirectories)
+                .OrderByDescending(p => Version.Parse(ArchiveVersion(p)))
+                .FirstOrDefault()
             : null;
+    }
+
+    // "<id>-<version>.kdeploy-step" -> "<version>" (the id itself may contain dashes).
+    private static string ArchiveVersion(string path)
+    {
+        var stem = Path.GetFileNameWithoutExtension(path);
+        return stem[(stem.LastIndexOf('-') + 1)..];
     }
 }

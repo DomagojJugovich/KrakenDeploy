@@ -128,7 +128,7 @@ public sealed class JsonConfigurationVariablesPackageTests : IDisposable
     {
         var path = FindBuiltArchive();
         path.Should().NotBeNull(
-            "the pack target must produce octopus.jsonconfigurationvariables-1.0.0.kdeploy-step");
+            "the pack target must produce octopus.jsonconfigurationvariables-<version>.kdeploy-step");
 
         using var fs  = File.OpenRead(path!);
         using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
@@ -137,8 +137,10 @@ public sealed class JsonConfigurationVariablesPackageTests : IDisposable
         var manifest = StepPackageManifestJson.Deserialize(r.ReadToEnd());
 
         manifest.Id.Should().Be("octopus.jsonconfigurationvariables");
-        manifest.Version.Should().Be("1.0.0");
-        manifest.StepTypes.Should().ContainSingle().Which.Should().Be("Octopus.JsonConfigurationVariables");
+        manifest.Version.Should().Be(ArchiveVersion(FindBuiltArchive()!),
+            "the manifest version and the archive filename both come from "
+            + "KrakenStepPackageVersion in the csproj and must agree");
+        manifest.StepTypes.Should().ContainSingle().Which.Id.Should().Be("Octopus.JsonConfigurationVariables");
         manifest.ExecutorTypeName.Should().Be(typeof(JsonConfigurationVariablesStepHandler).FullName!);
     }
 
@@ -184,8 +186,17 @@ public sealed class JsonConfigurationVariablesPackageTests : IDisposable
         // Configuration-agnostic: CI builds Release, local builds Debug — locate
         // the packed archive under bin/<Config>/<tfm>/ wherever it landed.
         return Directory.Exists(binRoot)
-            ? Directory.EnumerateFiles(binRoot, "octopus.jsonconfigurationvariables-1.0.0.kdeploy-step",
-                SearchOption.AllDirectories).FirstOrDefault()
+            ? Directory.EnumerateFiles(binRoot, "octopus.jsonconfigurationvariables-*.kdeploy-step",
+                SearchOption.AllDirectories)
+                .OrderByDescending(p => Version.Parse(ArchiveVersion(p)))
+                .FirstOrDefault()
             : null;
+    }
+
+    // "<id>-<version>.kdeploy-step" -> "<version>" (the id itself may contain dashes).
+    private static string ArchiveVersion(string path)
+    {
+        var stem = Path.GetFileNameWithoutExtension(path);
+        return stem[(stem.LastIndexOf('-') + 1)..];
     }
 }

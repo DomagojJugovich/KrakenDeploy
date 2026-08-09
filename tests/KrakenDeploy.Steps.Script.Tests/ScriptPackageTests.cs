@@ -148,7 +148,7 @@ public sealed class ScriptPackageTests
     {
         var path = FindBuiltArchive();
         path.Should().NotBeNull(
-            "the pack target must produce kraken.script-1.0.0.kdeploy-step");
+            "the pack target must produce kraken.script-<version>.kdeploy-step");
 
         using var fs  = File.OpenRead(path!);
         using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
@@ -157,14 +157,16 @@ public sealed class ScriptPackageTests
         var manifest = StepPackageManifestJson.Deserialize(r.ReadToEnd());
 
         manifest.Id.Should().Be("kraken.script");
-        manifest.Version.Should().Be("1.0.0");
+        manifest.Version.Should().Be(ArchiveVersion(FindBuiltArchive()!),
+            "the manifest version and the archive filename both come from "
+            + "KrakenStepPackageVersion in the csproj and must agree");
         manifest.ExecutorTypeName.Should().Be(typeof(ScriptStepHandler).FullName!);
 
         manifest.StepTypes.Should().HaveCount(2,
             "the multi-step-type comma split in KrakenStepPackage.targets must " +
             "produce a JSON array with both names");
-        manifest.StepTypes.Should().Contain("Kraken.Script");
-        manifest.StepTypes.Should().Contain("Octopus.Script");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Kraken.Script");
+        manifest.StepTypes.Should().Contain(t => t.Id == "Octopus.Script");
     }
 
     private static string? FindBuiltArchive()
@@ -176,8 +178,17 @@ public sealed class ScriptPackageTests
         // Configuration-agnostic: CI builds Release, local builds Debug — locate
         // the packed archive under bin/<Config>/<tfm>/ wherever it landed.
         return Directory.Exists(binRoot)
-            ? Directory.EnumerateFiles(binRoot, "kraken.script-1.0.0.kdeploy-step",
-                SearchOption.AllDirectories).FirstOrDefault()
+            ? Directory.EnumerateFiles(binRoot, "kraken.script-*.kdeploy-step",
+                SearchOption.AllDirectories)
+                .OrderByDescending(p => Version.Parse(ArchiveVersion(p)))
+                .FirstOrDefault()
             : null;
+    }
+
+    // "<id>-<version>.kdeploy-step" -> "<version>" (the id itself may contain dashes).
+    private static string ArchiveVersion(string path)
+    {
+        var stem = Path.GetFileNameWithoutExtension(path);
+        return stem[(stem.LastIndexOf('-') + 1)..];
     }
 }
