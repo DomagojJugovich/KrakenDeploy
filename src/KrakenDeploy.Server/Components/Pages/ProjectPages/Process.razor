@@ -26,7 +26,7 @@
                           Icon="@(_asideOpen ? "menu_open" : "view_sidebar")"
                           ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
                           Click="@(() => _asideOpen = !_asideOpen)"
-                          title="Show or hide the Lifecycle and Script Modules panel" />
+                          title="Show or hide the Lifecycle panel" />
             <h2 class="section-title" style="margin: 0; align-self: center;">
                 Deployment process · @_steps.Count step@(_steps.Count == 1 ? "" : "s")
             </h2>
@@ -295,9 +295,9 @@
             }
         </div>
 
-        @* ── Right: lifecycle + script modules sidebar ────────────────── *@
+        @* ── Right: lifecycle sidebar ─────────────────────────────────── *@
         <aside class="kraken-process-sidebar">
-            <RadzenCard class="rz-mb-3">
+            <RadzenCard>
                 <RadzenStack Orientation="Orientation.Horizontal"
                              JustifyContent="JustifyContent.SpaceBetween"
                              AlignItems="AlignItems.Center" class="rz-mb-2">
@@ -340,20 +340,6 @@
                     </RadzenText>
                 }
             </RadzenCard>
-
-            <RadzenCard>
-                <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H3" class="rz-mb-2">
-                    Script Modules
-                </RadzenText>
-                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-2">
-                    No script modules have been included.
-                </RadzenText>
-                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-3">
-                    Script modules are reusable code libraries — pending.
-                </RadzenText>
-                <RadzenButton Text="Include" ButtonStyle="ButtonStyle.Light"
-                              Size="ButtonSize.Small" Disabled="true" />
-            </RadzenCard>
         </aside>
     </div>
     }
@@ -394,7 +380,7 @@
     private bool _assistantEnabled;
 
     /// <summary>
-    /// Forces the Lifecycle / Script Modules aside visible on narrow viewports
+    /// Forces the Lifecycle aside visible on narrow viewports
     /// where it auto-collapses (see .kraken-process-layout--aside-open in
     /// app.css). No effect on wide viewports — the aside is always shown there.
     /// </summary>

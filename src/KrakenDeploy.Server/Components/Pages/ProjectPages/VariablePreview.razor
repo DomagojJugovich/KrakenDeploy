@@ -1,0 +1,335 @@
+@page "/s/{SpaceSlug}/projects/{Slug}/variable-preview"
+@inherits SpaceScopedComponentBase
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Projects
+@using KrakenDeploy.Server.Core.Domain.Variables
+@using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Core.Domain.Targets
+@using KrakenDeploy.Server.Core.Domain.Tenants
+@using KrakenDeploy.Server.Core.Domain.Channels
+@inject ProjectService ProjectSvc
+@inject VariableService VariableSvc
+@inject EnvironmentService EnvironmentSvc
+@inject TenantService TenantSvc
+@inject TargetService TargetSvc
+@inject ChannelService ChannelSvc
+@inject ProcessService ProcessSvc
+@inject NotificationService Notifications
+
+<ProjectShell Slug="@Slug">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-3">
+        Variable Preview
+    </RadzenText>
+
+    @if (!_loaded)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
+    }
+    else if (_loadError is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+            Failed to load: @_loadError
+        </RadzenAlert>
+    }
+    else if (_project is null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            Project '@Slug' was not found.
+        </RadzenAlert>
+    }
+    else
+    {
+        <RadzenCard class="rz-mb-3">
+            <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">Resolve variables for a deployment context</RadzenText>
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem" AlignItems="AlignItems.End" Wrap="FlexWrap.Wrap">
+                <div>
+                    <RadzenLabel Text="Environment" />
+                    <RadzenDropDown TValue="Guid?" @bind-Value="_envId"
+                                    Data="@_environments" TextProperty="Name" ValueProperty="Id"
+                                    AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                    Placeholder="Select..." Style="width: 180px;" />
+                </div>
+                @if (_channels.Count > 0)
+                {
+                    <div>
+                        <RadzenLabel Text="Channel" />
+                        <RadzenDropDown TValue="Guid?" @bind-Value="_channelId"
+                                        Data="@_channels" TextProperty="Name" ValueProperty="Id"
+                                        AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                        Placeholder="(any channel)" Style="width: 160px;" />
+                    </div>
+                }
+                <div>
+                    <RadzenLabel Text="Target" />
+                    <RadzenDropDown TValue="Guid?" @bind-Value="_targetId"
+                                    Data="@_targets" TextProperty="Name" ValueProperty="Id"
+                                    AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                    Placeholder="(any)" Style="width: 180px;" />
+                </div>
+                @if (_connectedTenants.Count > 0)
+                {
+                    <div>
+                        <RadzenLabel Text="Tenant" />
+                        <RadzenDropDown TValue="Guid?" @bind-Value="_tenantId"
+                                        Data="@_connectedTenants" TextProperty="Name" ValueProperty="Id"
+                                        AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                        Placeholder="(any)" Style="width: 160px;" />
+                    </div>
+                }
+                <RadzenButton Text="Resolve" Icon="play_arrow" ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                              Disabled="@(!_envId.HasValue)"
+                              Click="RunPreviewAsync" />
+            </RadzenStack>
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mt-2 rz-mb-0">
+                Resolves the project's <strong>live</strong> variables exactly as a new deployment
+                would see them. Deployments of an existing release resolve from the release's
+                frozen variable snapshot, which can differ if variables changed since the release
+                was created. Prompted-variable form values are applied on top at deploy time.
+            </RadzenText>
+        </RadzenCard>
+
+        @if (_previewLoading)
+        {
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Resolving...</RadzenText>
+        }
+        else if (_previewRan)
+        {
+            <RadzenCard>
+                <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">Resolved variables (@_previewRows.Count)</RadzenText>
+                @if (_previewRows.Count == 0)
+                {
+                    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">No variables match the selected context.</RadzenText>
+                }
+                else
+                {
+                    var ambiguousCount = _previewRows.Count(r => r.Ambiguous);
+                    @if (ambiguousCount > 0)
+                    {
+                        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false" class="rz-mb-2">
+                            @ambiguousCount variable@(ambiguousCount == 1 ? "" : "s") resolve ambiguously: two or more
+                            definitions tie at the same specificity <strong>and</strong> source with differing values, so the
+                            deployed value is not deterministic. See the marked rows and narrow those scopes to disambiguate.
+                        </RadzenAlert>
+                    }
+                    <KrakenGrid SettingsKey="project-var-preview" Data="@_previewRows" TItem="VariablePreviewRow"
+                                AllowSorting="true" AllowPaging="true" PageSize="50"
+                                AllowColumnResize="true" AllowFiltering="true" FilterMode="FilterMode.Simple"
+                                GridLines="DataGridGridLines.Horizontal">
+                        <Columns>
+                            <RadzenDataGridColumn TItem="VariablePreviewRow" Property="Name" Title="Name" Width="260px">
+                                <Template Context="r">
+                                    @if (r.Ambiguous)
+                                    {
+                                        <RadzenIcon Icon="warning"
+                                                    Style="font-size:0.95rem; color: var(--rz-warning); margin-right:4px; vertical-align:middle;"
+                                                    title="@($"Ambiguous — {r.TiedCount} definitions tie at this specificity and source with differing values. The winner is chosen arbitrarily; narrow the scopes to make it deterministic.")" />
+                                    }
+                                    @r.Name
+                                </Template>
+                            </RadzenDataGridColumn>
+                            <RadzenDataGridColumn TItem="VariablePreviewRow" Property="Value" Title="Value">
+                                <Template Context="r">
+                                    @if (r.Sensitive)
+                                    {
+                                        <RadzenBadge Text="*** sensitive ***" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                                    }
+                                    else
+                                    {
+                                        <code class="kraken-var-value">@r.Value</code>
+                                    }
+                                </Template>
+                            </RadzenDataGridColumn>
+                            <RadzenDataGridColumn TItem="VariablePreviewRow" Property="Source" Title="Source" Width="150px">
+                                <Template Context="r">
+                                    <span class="@(r.Source == "Project" ? "" : "rz-color-secondary")">@r.Source</span>
+                                </Template>
+                            </RadzenDataGridColumn>
+                            <RadzenDataGridColumn TItem="VariablePreviewRow" Title="Winning scope" Sortable="false" Filterable="false" UniqueID="winning-scope">
+                                <Template Context="r">
+                                    @if (r.Scope.IsUnscoped)
+                                    {
+                                        <span class="rz-color-secondary" style="font-size:12px;">unscoped</span>
+                                    }
+                                    else
+                                    {
+                                        <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="0.3rem" AlignItems="AlignItems.Center">
+                                            @if (r.Scope.EnvironmentId is { } pEnvId)
+                                            {
+                                                <RadzenBadge Text="@($"env: {EnvName(pEnvId)}")" BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                                            }
+                                            @if (r.Scope.TenantId is { } pTenantId)
+                                            {
+                                                <RadzenBadge Text="@($"tenant: {TenantName(pTenantId)}")" BadgeStyle="BadgeStyle.Success" IsPill="true" />
+                                            }
+                                            @if (r.Scope.TargetId is { } pTargetId)
+                                            {
+                                                <RadzenBadge Text="@($"target: {TargetName(pTargetId)}")" BadgeStyle="BadgeStyle.Secondary" IsPill="true" />
+                                            }
+                                            @if (r.Scope.ChannelId is { } pChannelId)
+                                            {
+                                                <RadzenBadge Text="@($"channel: {ChannelName(pChannelId)}")" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                                            }
+                                            @if (r.Scope.ProcessStepId is { } pStepId)
+                                            {
+                                                <RadzenBadge Text="@($"step: {StepName(pStepId)}")" BadgeStyle="BadgeStyle.Primary" IsPill="true" />
+                                            }
+                                            @if (r.Scope.Roles is { Count: > 0 })
+                                            {
+                                                @foreach (var role in r.Scope.Roles)
+                                                {
+                                                    <RadzenBadge Text="@($"role: {role}")" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                                                }
+                                            }
+                                            @if (r.Scope.TenantTagIds is { Count: > 0 } ptt)
+                                            {
+                                                <RadzenBadge Text="@($"tenant-tag ×{ptt.Count}")" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                                            }
+                                        </RadzenStack>
+                                    }
+                                </Template>
+                            </RadzenDataGridColumn>
+                            <RadzenDataGridColumn TItem="VariablePreviewRow" Property="Specificity" Title="Spec." Width="90px" TextAlign="TextAlign.Right">
+                                <Template Context="r">
+                                    <span title="@($"Scope specificity — higher wins. {r.CandidateCount} candidate definition(s) matched this context.")"
+                                          class="@(r.CandidateCount > 1 ? "" : "rz-color-secondary")">
+                                        @r.Specificity@(r.CandidateCount > 1 ? $" ({r.CandidateCount})" : "")
+                                    </span>
+                                </Template>
+                            </RadzenDataGridColumn>
+                        </Columns>
+                    </KrakenGrid>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mt-2">
+                        Spec. = scope specificity of the winning definition (higher wins); (n) = number of definitions that
+                        matched this context for the name. A <RadzenIcon Icon="warning" Style="font-size:0.85rem; vertical-align:middle;" />
+                        marks a name whose winner is ambiguous — tied at the same specificity and source with differing values.
+                    </RadzenText>
+                }
+            </RadzenCard>
+        }
+    }
+</ProjectShell>
+
+@code {
+    [Parameter] public string Slug { get; set; } = "";
+
+    private Project? _project;
+    private bool _loaded;
+    private string? _loadError;
+
+    private List<DeploymentEnvironment> _environments = [];
+    private List<DeploymentTarget> _targets = [];
+    private List<Tenant> _connectedTenants = [];
+    private List<Channel> _channels = [];
+
+    private Guid? _envId;
+    private Guid? _targetId;
+    private Guid? _tenantId;
+    // Channel is release-level: the real deploy path resolves with the
+    // release's ChannelId, so previewing without it would silently hide every
+    // channel-scoped override. "(any channel)" = null = the base resolution.
+    private Guid? _channelId;
+
+    private bool _previewLoading;
+    private bool _previewRan;
+    private List<VariablePreviewRow> _previewRows = [];
+
+    private Dictionary<Guid, string> _envNames = [];
+    private Dictionary<Guid, string> _tenantNames = [];
+    private Dictionary<Guid, string> _targetNames = [];
+    private Dictionary<Guid, string> _channelNames = [];
+    private Dictionary<Guid, string> _stepNames = [];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            _project = await ProjectSvc.GetBySlugAsync(Slug);
+            if (_project is null) return;
+
+            _environments = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: false);
+            _envNames = _environments.ToDictionary(e => e.Id, e => e.Name);
+            _targets = await TargetSvc.GetAllAsync();
+            _targetNames = _targets.ToDictionary(t => t.Id, t => t.Name);
+            _channels = await ChannelSvc.GetForProjectAsync(_project.Id);
+            _channelNames = _channels.ToDictionary(c => c.Id, c => c.Name);
+
+            // Only tenants connected to this project are offered — a deployment
+            // can't run for an unconnected tenant, so previewing one would show
+            // a context that can never occur.
+            var allTenants = await TenantSvc.GetAllAsync();
+            _tenantNames = allTenants.ToDictionary(t => t.Id, t => t.Name);
+            _connectedTenants = [];
+            foreach (var tenant in allTenants)
+            {
+                var withProjects = await TenantSvc.GetWithProjectsAsync(tenant.Id);
+                if (withProjects?.Projects.Any(p => p.Id == _project.Id) == true)
+                {
+                    _connectedTenants.Add(tenant);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    private async Task RunPreviewAsync()
+    {
+        if (_project is null || !_envId.HasValue) return;
+        _previewLoading = true;
+        _previewRan = false;
+        _previewRows = [];
+        StateHasChanged();
+
+        try
+        {
+            var targetRoles = _targetId.HasValue
+                ? _targets.FirstOrDefault(t => t.Id == _targetId)?.Roles ?? []
+                : [];
+
+            IReadOnlyList<Guid>? tenantTagIds = null;
+            if (_tenantId.HasValue)
+            {
+                tenantTagIds = await VariableSvc.GetTenantTagIdsAsync(_tenantId.Value);
+            }
+
+            // Provenance-aware resolution: winner value + source set + winning
+            // scope + specificity per name. Sensitive winners arrive masked —
+            // the plaintext is never decrypted for previews.
+            _previewRows = await VariableSvc.PreviewResolveAsync(
+                _project.Id, _envId.Value, _targetId,
+                targetRoles, tenantId: _tenantId, channelId: _channelId,
+                tenantTagIds: tenantTagIds);
+
+            // Preview has no step dimension, so a step-scoped winner can't
+            // surface here — but resolve its name defensively if one ever does.
+            if (_stepNames.Count == 0 && _previewRows.Any(r => r.Scope.ProcessStepId.HasValue))
+            {
+                var process = await ProcessSvc.GetAsync(_project.Id);
+                _stepNames = process?.Steps.ToDictionary(s => s.Id, s => s.Name) ?? [];
+            }
+
+            _previewRan = true;
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Preview failed", ex.Message, 5000);
+        }
+        finally
+        {
+            _previewLoading = false;
+        }
+    }
+
+    private string EnvName(Guid id) => _envNames.TryGetValue(id, out var n) ? n : "?";
+    private string TenantName(Guid id) => _tenantNames.TryGetValue(id, out var n) ? n : "?";
+    private string TargetName(Guid id) => _targetNames.TryGetValue(id, out var n) ? n : "?";
+    private string ChannelName(Guid id) => _channelNames.TryGetValue(id, out var n) ? n : "?";
+    private string StepName(Guid id) => _stepNames.TryGetValue(id, out var n) ? n : "?";
+}

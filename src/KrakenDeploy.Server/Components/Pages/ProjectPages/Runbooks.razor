@@ -1,17 +1,197 @@
 @page "/s/{SpaceSlug}/projects/{Slug}/runbooks"
 @inherits SpaceScopedComponentBase
-@rendermode InteractiveServer
 @attribute [Authorize]
 
+@using KrakenDeploy.Server.Core.Domain.Projects
+@using KrakenDeploy.Server.Core.Domain.Runbooks
+@inject ProjectService ProjectSvc
+@inject RunbookService RunbookSvc
+@inject NavigationManager Nav
+@inject NotificationService Notify
+@inject UiActionGuard Guard
+
 <ProjectShell Slug="@Slug">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-3">
-        Runbooks
-    </RadzenText>
-    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
-        Project runbooks list — pending.
-    </RadzenAlert>
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-3">
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+            Runbooks
+        </RadzenText>
+        @if (_project is not null)
+        {
+            <RequirePermission Permission="Permission.RunbookEdit">
+                <RadzenButton Text="New Runbook" Icon="add_circle_outline" ButtonStyle="ButtonStyle.Primary"
+                              Size="ButtonSize.Small"
+                              Click="@(() => { _createOpen = true; _name = ""; _description = null; })" />
+            </RequirePermission>
+        }
+    </RadzenStack>
+
+    @if (!_loaded)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
+    }
+    else if (_loadError is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+            Failed to load: @_loadError
+        </RadzenAlert>
+    }
+    else if (_project is null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            Project '@Slug' was not found.
+        </RadzenAlert>
+    }
+    else
+    {
+        @if (_createOpen)
+        {
+            <RadzenCard class="rz-mb-4">
+                <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">New Runbook</RadzenText>
+                <RadzenFormField Text="Name" class="rz-mb-3" style="width:100%">
+                    <RadzenTextBox @bind-Value="_name" Placeholder="Database Backup" style="width:100%" />
+                </RadzenFormField>
+                <RadzenFormField Text="Description (optional)" class="rz-mb-3" style="width:100%">
+                    <RadzenTextBox @bind-Value="_description" style="width:100%" />
+                </RadzenFormField>
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                    <RadzenButton Text="Create" ButtonStyle="ButtonStyle.Primary" Click="@CreateAsync" />
+                    <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                                  Click="@(() => _createOpen = false)" />
+                </RadzenStack>
+            </RadzenCard>
+        }
+
+        <KrakenGrid SettingsKey="project-runbooks" Data="@_runbooks" TItem="Runbook"
+                        AllowPaging="true" PageSize="20"
+                        AllowSorting="true"
+                        AllowColumnResize="true"
+                        RowClick="@(args => { if (args.Data is { } r) Nav.NavigateTo(Sp($"/runbooks/{r.Id}")); })"
+                        EmptyText="No runbooks yet — create one to automate tasks without a release.">
+            <Columns>
+                <RadzenDataGridColumn TItem="Runbook" Property="Name" Title="Name" />
+                <RadzenDataGridColumn TItem="Runbook" Property="Description" Title="Description" />
+                <RadzenDataGridColumn TItem="Runbook" Property="CreatedUtc" Title="Created"
+                                      Width="140px" FormatString="{0:yyyy-MM-dd}" />
+                <RadzenDataGridColumn TItem="Runbook" Title="" Width="70px" TextAlign="TextAlign.Center">
+                    <Template Context="rb">
+                        <RequirePermission Permission="Permission.RunbookEdit">
+                            <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
+                                          Variant="Variant.Text"
+                                          Click="@(async _ => await DeleteAsync(rb))"
+                                          title="Delete" />
+                        </RequirePermission>
+                    </Template>
+                </RadzenDataGridColumn>
+            </Columns>
+        </KrakenGrid>
+    }
 </ProjectShell>
 
 @code {
     [Parameter] public string Slug { get; set; } = "";
+
+    private Project? _project;
+    private List<Runbook> _runbooks = [];
+    private bool _loaded;
+    private string? _loadError;
+    private bool _createOpen;
+    private string _name = "";
+    private string? _description;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            _project = await ProjectSvc.GetBySlugAsync(Slug);
+            if (_project is not null)
+            {
+                _runbooks = await RunbookSvc.GetAllAsync(_project.Id);
+            }
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        if (_project is null || string.IsNullOrWhiteSpace(_name))
+        {
+            return;
+        }
+
+        if (!await Guard.AllowAsync(Permission.RunbookEdit)) return;
+
+        try
+        {
+            var rb = await RunbookSvc.CreateAsync(
+                _project.Id, _name.Trim(), _description?.Trim(),
+                await Guard.CurrentCallerAsync());
+            _runbooks   = [.. _runbooks.Append(rb).OrderBy(r => r.Name)];
+            _createOpen = false;
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary  = "Runbook created",
+                Detail   = rb.Name,
+                Duration = 3000,
+            });
+        }
+        catch (AuthorizationException)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Not allowed",
+                Detail   = "You don't have permission to create a runbook in this project.",
+                Duration = 5000,
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Error",
+                Detail   = ex.Message,
+                Duration = 5000,
+            });
+        }
+    }
+
+    private async Task DeleteAsync(Runbook rb)
+    {
+        if (!await Guard.AllowAsync(Permission.RunbookEdit)) return;
+        try
+        {
+            var deleted = await RunbookSvc.DeleteAsync(rb.Id, await Guard.CurrentCallerAsync());
+            if (deleted)
+            {
+                _runbooks = _runbooks.Where(r => r.Id != rb.Id).ToList();
+                Notify.Notify(new NotificationMessage
+                {
+                    Severity = NotificationSeverity.Info,
+                    Summary  = "Deleted",
+                    Detail   = rb.Name,
+                    Duration = 3000,
+                });
+            }
+        }
+        catch (AuthorizationException)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Not allowed",
+                Detail   = "You don't have permission to delete this runbook.",
+                Duration = 5000,
+            });
+        }
+    }
 }

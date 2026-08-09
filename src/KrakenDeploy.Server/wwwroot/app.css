@@ -1161,11 +1161,11 @@ table.dg tbody tr.row-accent td:first-child { box-shadow: inset 3px 0 0 var(--c,
     min-width: 0;
 }
 
-/* Narrow content area: collapse the Lifecycle / Script Modules aside so the
-   step list gets the full width (otherwise the fixed 300px aside starves it and
-   step titles wrap one word per line). Container-query based, so it triggers on
-   the real available width rather than the viewport. The .kraken-aside-toggle
-   toolbar button forces it back open, mirroring the left nav's collapse. */
+/* Narrow content area: collapse the Lifecycle aside so the step list gets the
+   full width (otherwise the fixed 300px aside starves it and step titles wrap
+   one word per line). Container-query based, so it triggers on the real
+   available width rather than the viewport. The .kraken-aside-toggle toolbar
+   button forces it back open, mirroring the left nav's collapse. */
 @container (max-width: 900px) {
     .kraken-process-layout {
         flex-direction: column;
