@@ -1,14 +1,59 @@
+using System.Globalization;
 using System.IO.Compression;
 using FluentAssertions;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.StepPackages;
 using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Steps.HealthCheck;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 
 namespace KrakenDeploy.Steps.HealthCheck.Tests;
 
 public sealed class HealthCheckStepPackageTests
+    : IClassFixture<HealthCheckStepPackageTests.LocalStatusServer>
 {
+    /// <summary>
+    /// Loopback stand-in for httpbin.org's <c>/status/{code}</c>. The probe
+    /// tests used to hit the live service, which made them fail whenever
+    /// httpbin.org itself was degraded (503s took CI down on 2026-08-09) —
+    /// a health-check HANDLER test must not depend on a third party's health.
+    /// </summary>
+    public sealed class LocalStatusServer : IAsyncLifetime
+    {
+        private WebApplication? _app;
+
+        public string BaseUrl { get; private set; } = "";
+        public int Port { get; private set; }
+
+        public async Task InitializeAsync()
+        {
+            var builder = WebApplication.CreateSlimBuilder();
+            builder.WebHost.UseUrls("http://127.0.0.1:0");
+            builder.Logging.ClearProviders();
+            _app = builder.Build();
+            _app.MapGet("/", () => Results.Ok());
+            _app.MapGet("/status/{code:int}", (int code) => Results.StatusCode(code));
+            await _app.StartAsync();
+            Port    = new Uri(_app.Urls.First()).Port;
+            BaseUrl = $"http://127.0.0.1:{Port}";
+        }
+
+        public async Task DisposeAsync()
+        {
+            if (_app is not null)
+            {
+                await _app.DisposeAsync();
+            }
+        }
+    }
+
+    private readonly LocalStatusServer _server;
+
+    public HealthCheckStepPackageTests(LocalStatusServer server) => _server = server;
+
     [Theory]
     [InlineData("Octopus.HealthCheck", true)]
     [InlineData("octopus.healthcheck", true)]
@@ -44,7 +89,7 @@ public sealed class HealthCheckStepPackageTests
         var logs = new List<(string Level, string Message)>();
         var context = NewContext(new Dictionary<string, string>
         {
-            [HealthCheckConfigKeys.Uri] = "https://httpbin.org/status/200",
+            [HealthCheckConfigKeys.Uri] = $"{_server.BaseUrl}/status/200",
             [HealthCheckConfigKeys.RetryAttempts] = "1",
             [HealthCheckConfigKeys.TimeoutSeconds] = "10",
         }, logs);
@@ -62,7 +107,7 @@ public sealed class HealthCheckStepPackageTests
         var logs = new List<(string Level, string Message)>();
         var context = NewContext(new Dictionary<string, string>
         {
-            [HealthCheckConfigKeys.Uri] = "https://httpbin.org/status/500",
+            [HealthCheckConfigKeys.Uri] = $"{_server.BaseUrl}/status/500",
             [HealthCheckConfigKeys.ExpectedStatusCode] = "200",
             [HealthCheckConfigKeys.RetryAttempts] = "1",
             [HealthCheckConfigKeys.TimeoutSeconds] = "10",
@@ -81,7 +126,7 @@ public sealed class HealthCheckStepPackageTests
         var logs = new List<(string Level, string Message)>();
         var context = NewContext(new Dictionary<string, string>
         {
-            [HealthCheckConfigKeys.Uri] = "https://httpbin.org/status/500",
+            [HealthCheckConfigKeys.Uri] = $"{_server.BaseUrl}/status/500",
             [HealthCheckConfigKeys.RetryAttempts] = "1",
             [HealthCheckConfigKeys.TimeoutSeconds] = "10",
             [HealthCheckConfigKeys.FailureAction] = "warn",
@@ -100,9 +145,9 @@ public sealed class HealthCheckStepPackageTests
         var logs = new List<(string Level, string Message)>();
         var context = NewContext(new Dictionary<string, string>
         {
-            [HealthCheckConfigKeys.Host] = "httpbin.org",
+            [HealthCheckConfigKeys.Host] = "127.0.0.1",
             [HealthCheckConfigKeys.Protocol] = "http",
-            [HealthCheckConfigKeys.Port] = "80",
+            [HealthCheckConfigKeys.Port] = _server.Port.ToString(CultureInfo.InvariantCulture),
             [HealthCheckConfigKeys.RetryAttempts] = "1",
             [HealthCheckConfigKeys.TimeoutSeconds] = "10",
         }, logs);
@@ -110,7 +155,7 @@ public sealed class HealthCheckStepPackageTests
         var success = await handler.HandleAsync(context, CancellationToken.None);
 
         success.Should().BeTrue();
-        logs.Should().Contain(l => l.Message.Contains("http://httpbin.org"));
+        logs.Should().Contain(l => l.Message.Contains($"http://127.0.0.1:{_server.Port}"));
     }
 
     [Fact]
@@ -120,7 +165,7 @@ public sealed class HealthCheckStepPackageTests
         var logs = new List<(string Level, string Message)>();
         var context = NewContext(new Dictionary<string, string>
         {
-            [HealthCheckConfigKeys.Uri] = "https://httpbin.org/status/500",
+            [HealthCheckConfigKeys.Uri] = $"{_server.BaseUrl}/status/500",
             [HealthCheckConfigKeys.RetryAttempts] = "3",
             [HealthCheckConfigKeys.RetryDelaySeconds] = "0",
             [HealthCheckConfigKeys.TimeoutSeconds] = "10",
