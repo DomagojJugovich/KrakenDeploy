@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.OctopusWindowsService\KrakenDeploy.Steps.OctopusWindowsService.csproj" />
+    <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
   </ItemGroup>
 
 </Project>
