@@ -216,6 +216,7 @@
     private Project? _project;
     private bool _loaded;
     private string? _loadError;
+    private string? _loadedSlug;
 
     private List<DeploymentEnvironment> _environments = [];
     private List<DeploymentTarget> _targets = [];
@@ -242,6 +243,20 @@
 
     protected override async Task OnParametersSetAsync()
     {
+        _loadError = null;
+        if (!string.Equals(_loadedSlug, Slug, StringComparison.OrdinalIgnoreCase))
+        {
+            // The router reuses this component instance across same-route
+            // navigations — drop the previous project's context and results.
+            _envId = null;
+            _targetId = null;
+            _tenantId = null;
+            _channelId = null;
+            _previewRan = false;
+            _previewRows = [];
+            _stepNames = [];
+            _loadedSlug = Slug;
+        }
         try
         {
             _project = await ProjectSvc.GetBySlugAsync(Slug);
@@ -256,18 +271,10 @@
 
             // Only tenants connected to this project are offered — a deployment
             // can't run for an unconnected tenant, so previewing one would show
-            // a context that can never occur.
-            var allTenants = await TenantSvc.GetAllAsync();
-            _tenantNames = allTenants.ToDictionary(t => t.Id, t => t.Name);
-            _connectedTenants = [];
-            foreach (var tenant in allTenants)
-            {
-                var withProjects = await TenantSvc.GetWithProjectsAsync(tenant.Id);
-                if (withProjects?.Projects.Any(p => p.Id == _project.Id) == true)
-                {
-                    _connectedTenants.Add(tenant);
-                }
-            }
+            // a context that can never occur. A tenant-scoped winner can only be
+            // the selected (connected) tenant, so the name map needs no more.
+            _connectedTenants = await TenantSvc.GetForProjectAsync(_project.Id);
+            _tenantNames = _connectedTenants.ToDictionary(t => t.Id, t => t.Name);
         }
         catch (Exception ex)
         {

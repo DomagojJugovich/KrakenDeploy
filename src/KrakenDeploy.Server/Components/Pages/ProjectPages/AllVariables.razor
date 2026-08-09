@@ -173,6 +173,9 @@
 
     protected override async Task OnParametersSetAsync()
     {
+        // The router reuses this instance across same-route navigations — a
+        // stale error from a previous load must not shadow a successful one.
+        _loadError = null;
         try
         {
             _project = await ProjectSvc.GetBySlugAsync(Slug);
@@ -199,14 +202,16 @@
 
             // Tenant-common sets of connected tenants — the weakest origin. The
             // resolver reads Tenant.VariableSetId; the kind is reserved with no
-            // authoring path today, so this section is usually empty.
-            var allTenants = await TenantSvc.GetAllAsync();
-            _tenantNames = allTenants.ToDictionary(t => t.Id, t => t.Name);
-            foreach (var tenant in allTenants)
+            // authoring path today, so this section is usually empty. The name
+            // map still needs ALL tenants: scope chips on library-set rows (and
+            // rows scoped before a disconnect) can reference any tenant id.
+            _tenantNames = (await TenantSvc.GetAllAsync()).ToDictionary(t => t.Id, t => t.Name);
+            foreach (var tenant in await TenantSvc.GetForProjectAsync(_project.Id))
             {
-                if (tenant.VariableSetId is not { } setId) continue;
-                var withProjects = await TenantSvc.GetWithProjectsAsync(tenant.Id);
-                if (withProjects?.Projects.Any(p => p.Id == _project.Id) != true) continue;
+                if (tenant.VariableSetId is not { } setId)
+                {
+                    continue;
+                }
 
                 var href = Sp($"/variable-sets/{setId}");
                 foreach (var v in await VariableSvc.GetVariablesInSetAsync(setId))

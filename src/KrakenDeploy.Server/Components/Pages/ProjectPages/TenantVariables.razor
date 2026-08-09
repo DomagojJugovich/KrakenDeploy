@@ -244,6 +244,10 @@
     private bool _loaded;
     private string? _loadError;
     private Guid? _selectedTenantId;
+    // Which Slug the page state belongs to — the router reuses this component
+    // instance across same-route navigations, so per-project state (selected
+    // tenant, open form) must be reset when the Slug actually changes.
+    private string? _loadedSlug;
 
     // Only Text and Sensitive are offered — StringArray values are edited on
     // the Variables page, which has the dedicated array editor.
@@ -265,25 +269,26 @@
 
     protected override async Task OnParametersSetAsync()
     {
+        _loadError = null;
+        if (!string.Equals(_loadedSlug, Slug, StringComparison.OrdinalIgnoreCase))
+        {
+            _selectedTenantId = null;
+            _formOpen = false;
+            _editId = null;
+            _loadedSlug = Slug;
+        }
         try
         {
             _project = await ProjectSvc.GetBySlugAsync(Slug);
             if (_project is null) return;
 
-            _environments = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: false);
+            // includeArchived: values scoped to a since-archived environment must
+            // still resolve their badge and survive an edit round-trip unchanged
+            // (see VariableFormDialog for the same trap).
+            _environments = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
             _envNames = _environments.ToDictionary(e => e.Id, e => e.Name);
             _variables = await VariableSvc.GetVariablesAsync(_project.Id);
-
-            var allTenants = await TenantSvc.GetAllAsync();
-            _connectedTenants = [];
-            foreach (var tenant in allTenants)
-            {
-                var withProjects = await TenantSvc.GetWithProjectsAsync(tenant.Id);
-                if (withProjects?.Projects.Any(p => p.Id == _project.Id) == true)
-                {
-                    _connectedTenants.Add(tenant);
-                }
-            }
+            _connectedTenants = await TenantSvc.GetForProjectAsync(_project.Id);
         }
         catch (Exception ex)
         {
@@ -327,10 +332,28 @@
     private async Task SaveAsync()
     {
         if (_project is null || _selectedTenantId is null) return;
+        // The service stores the scope unvalidated; make sure the stamped tenant
+        // is actually connected to THIS project (stale selection can survive a
+        // same-route navigation to another project).
+        if (!_connectedTenants.Any(t => t.Id == _selectedTenantId))
+        {
+            Notifications.Notify(NotificationSeverity.Warning, "Tenant not connected",
+                "Pick a tenant that is connected to this project first.", 4000);
+            return;
+        }
         if (string.IsNullOrWhiteSpace(_formName))
         {
             Notifications.Notify(NotificationSeverity.Warning, "Name required",
                 "Enter a variable name.", 3000);
+            return;
+        }
+        // Blank is only meaningful on EDIT of a Sensitive variable ("keep stored
+        // value") — a new Sensitive variable must carry one (VariableFormDialog rule).
+        if (_formType == VariableType.Sensitive && _editId is null
+            && string.IsNullOrEmpty(_formValue))
+        {
+            Notifications.Notify(NotificationSeverity.Warning, "Value required",
+                "A sensitive variable requires a value.", 4000);
             return;
         }
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
@@ -340,10 +363,10 @@
             TenantId      = _selectedTenantId,
             EnvironmentId = _formEnvId,
             TargetId      = _editScope?.TargetId,
-            Roles         = _editScope?.Roles,
+            Roles         = _editScope?.Roles is { } roles ? [.. roles] : null,
             ChannelId     = _editScope?.ChannelId,
             ProcessStepId = _editScope?.ProcessStepId,
-            TenantTagIds  = _editScope?.TenantTagIds,
+            TenantTagIds  = _editScope?.TenantTagIds is { } tags ? [.. tags] : null,
         };
 
         try
@@ -354,8 +377,16 @@
                 var value = _formType == VariableType.Sensitive && _formValue.Length == 0
                     ? null
                     : _formValue;
-                await VariableSvc.UpdateVariableAsync(id, _formName.Trim(), value,
+                var updated = await VariableSvc.UpdateVariableAsync(id, _formName.Trim(), value,
                     _formType, scope, await Guard.CurrentCallerAsync());
+                if (updated is null)
+                {
+                    _variables = await VariableSvc.GetVariablesAsync(_project.Id);
+                    _formOpen = false;
+                    Notifications.Notify(NotificationSeverity.Warning, "Not saved",
+                        $"'{_formName.Trim()}' no longer exists — it was deleted by someone else.", 5000);
+                    return;
+                }
             }
             else
             {

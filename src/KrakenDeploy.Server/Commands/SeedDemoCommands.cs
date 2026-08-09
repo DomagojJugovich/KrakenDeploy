@@ -689,7 +689,14 @@ internal static class SeedDemoCommands
         await using var db = await dbFactory.CreateDbContextAsync();
         db.Deployments.RemoveRange(await db.Deployments.ToListAsync());
         db.Releases.RemoveRange(await db.Releases.ToListAsync());
+        // Runbook runs first: runbook_runs -> runbooks is ON DELETE RESTRICT
+        // (run history never cascades), so leaving them aborts the whole clear.
+        db.RunbookRuns.RemoveRange(await db.RunbookRuns.ToListAsync());
         db.Runbooks.RemoveRange(await db.Runbooks.ToListAsync());
+        // Processes are polymorphic (no FK to their owner) — the owning service
+        // normally deletes them. Every project and runbook goes below, so every
+        // process row of either owner kind would otherwise be orphaned.
+        db.Processes.RemoveRange(await db.Processes.ToListAsync());
         db.Projects.RemoveRange(await db.Projects.ToListAsync());
         // Project variable sets cascade with their project; the shared demo
         // library set is project-independent and needs explicit removal.
@@ -703,11 +710,22 @@ internal static class SeedDemoCommands
     private const string DemoLibrarySetName = "Company Defaults";
 
     /// <summary>
+    /// One demo variable definition. Environment/tenant scope is carried as a
+    /// NAME and resolved at insert time — a lookup miss skips the spec with a
+    /// warning instead of silently collapsing it to an unscoped duplicate
+    /// (an all-null <see cref="VariableScope"/> matches every context).
+    /// </summary>
+    private sealed record DemoVarSpec(
+        string Project, string Name, string Value, VariableType Type,
+        string? EnvName = null, string? TenantSlug = null,
+        string[]? Roles = null, Guid? ChannelId = null);
+
+    /// <summary>
     /// Variables for the demo projects: unscoped + environment-scoped +
     /// role-scoped + channel-scoped + sensitive project variables, a shared
     /// library set included by two projects, and tenant-scoped values for the
-    /// connected demo tenants. Idempotent: skips names that already exist in
-    /// the target set.
+    /// connected demo tenants. Idempotent on (name, env, tenant, channel), so
+    /// a partially-seeded project converges on re-run.
     /// </summary>
     private static async Task SeedVariablesAsync(
         IDbContextFactory<KrakenDbContext> dbFactory, VariableService variableSvc)
@@ -720,11 +738,54 @@ internal static class SeedDemoCommands
         var tenantIds = await db.Tenants.Where(t => DemoTenantSlugs.Contains(t.Slug))
             .ToDictionaryAsync(t => t.Slug, t => t.Id);
 
-        Guid? EnvId(string name) => envIds.TryGetValue(name, out var id) ? id : null;
-        Guid? TenantId(string slug) => tenantIds.TryGetValue(slug, out var id) ? id : null;
+        // Scope-aware idempotency key: name-only skipping would freeze a
+        // half-seeded name group (e.g. only the Dev-scoped variant) forever.
+        static string Key(string name, Guid? envId, Guid? tenantId, Guid? channelId) =>
+            $"{name.ToLowerInvariant()}|{envId}|{tenantId}|{channelId}";
 
-        // (project, name, value, type, scope) — value is a demo placeholder.
-        var specs = new List<(string Project, string Name, string Value, VariableType Type, VariableScope? Scope)>();
+        // Resolves a spec's scope; returns false (with a console warning) when a
+        // named environment/tenant doesn't exist in this database.
+        bool TryResolveScope(DemoVarSpec spec, out VariableScope? scope,
+            out Guid? envId, out Guid? tenantId)
+        {
+            scope = null;
+            envId = null;
+            tenantId = null;
+            if (spec.EnvName is not null)
+            {
+                if (!envIds.TryGetValue(spec.EnvName, out var e))
+                {
+                    Console.WriteLine(
+                        $"WARNING: skipping demo variable '{spec.Name}' — no environment named " +
+                        $"'{spec.EnvName}' exists (environments are only auto-created into an empty database).");
+                    return false;
+                }
+                envId = e;
+            }
+            if (spec.TenantSlug is not null)
+            {
+                if (!tenantIds.TryGetValue(spec.TenantSlug, out var t))
+                {
+                    Console.WriteLine(
+                        $"WARNING: skipping demo variable '{spec.Name}' — demo tenant '{spec.TenantSlug}' not found.");
+                    return false;
+                }
+                tenantId = t;
+            }
+            if (envId is not null || tenantId is not null || spec.Roles is not null || spec.ChannelId is not null)
+            {
+                scope = new VariableScope
+                {
+                    EnvironmentId = envId,
+                    TenantId      = tenantId,
+                    Roles         = spec.Roles is { } roles ? [.. roles] : null,
+                    ChannelId     = spec.ChannelId,
+                };
+            }
+            return true;
+        }
+
+        var specs = new List<DemoVarSpec>();
 
         if (projectIds.TryGetValue("argosy-web", out var argosyWebId))
         {
@@ -734,30 +795,21 @@ internal static class SeedDemoCommands
 
             specs.AddRange(
             [
-                ("argosy-web", "Database.Name", "argosy_web", VariableType.Text, null),
-                ("argosy-web", "Database.Password", "demo-P@ssw0rd-web", VariableType.Sensitive, null),
-                ("argosy-web", "Api.BaseUrl", "https://dev.argosy.example/api", VariableType.Text,
-                    new VariableScope { EnvironmentId = EnvId("Development") }),
-                ("argosy-web", "Api.BaseUrl", "https://argosy.example/api", VariableType.Text,
-                    new VariableScope { EnvironmentId = EnvId("Production") }),
-                ("argosy-web", "Log.Level", "Warning", VariableType.Text, null),
-                ("argosy-web", "Log.Level", "Debug", VariableType.Text,
-                    new VariableScope { EnvironmentId = EnvId("Development") }),
-                ("argosy-web", "IIS.AppPool", "argosy-web-pool", VariableType.Text,
-                    new VariableScope { Roles = ["web-server"] }),
-                ("argosy-web", "Tenant.DisplayName", "Grad Dubrovnik", VariableType.Text,
-                    new VariableScope { TenantId = TenantId("grad-dubrovnik") }),
-                ("argosy-web", "Tenant.DisplayName", "Grad Split", VariableType.Text,
-                    new VariableScope { TenantId = TenantId("grad-split") }),
-                ("argosy-web", "Tenant.DbSchema", "dbk", VariableType.Text,
-                    new VariableScope { TenantId = TenantId("grad-dubrovnik") }),
-                ("argosy-web", "Tenant.DbSchema", "st", VariableType.Text,
-                    new VariableScope { TenantId = TenantId("grad-split") }),
+                new("argosy-web", "Database.Name", "argosy_web", VariableType.Text),
+                new("argosy-web", "Database.Password", "demo-P@ssw0rd-web", VariableType.Sensitive),
+                new("argosy-web", "Api.BaseUrl", "https://dev.argosy.example/api", VariableType.Text, EnvName: "Development"),
+                new("argosy-web", "Api.BaseUrl", "https://argosy.example/api", VariableType.Text, EnvName: "Production"),
+                new("argosy-web", "Log.Level", "Warning", VariableType.Text),
+                new("argosy-web", "Log.Level", "Debug", VariableType.Text, EnvName: "Development"),
+                new("argosy-web", "IIS.AppPool", "argosy-web-pool", VariableType.Text, Roles: ["web-server"]),
+                new("argosy-web", "Tenant.DisplayName", "Grad Dubrovnik", VariableType.Text, TenantSlug: "grad-dubrovnik"),
+                new("argosy-web", "Tenant.DisplayName", "Grad Split", VariableType.Text, TenantSlug: "grad-split"),
+                new("argosy-web", "Tenant.DbSchema", "dbk", VariableType.Text, TenantSlug: "grad-dubrovnik"),
+                new("argosy-web", "Tenant.DbSchema", "st", VariableType.Text, TenantSlug: "grad-split"),
             ]);
             if (hotfixChannelId is not null)
             {
-                specs.Add(("argosy-web", "Deploy.Ring", "hotfix", VariableType.Text,
-                    new VariableScope { ChannelId = hotfixChannelId }));
+                specs.Add(new("argosy-web", "Deploy.Ring", "hotfix", VariableType.Text, ChannelId: hotfixChannelId));
             }
         }
 
@@ -765,12 +817,10 @@ internal static class SeedDemoCommands
         {
             specs.AddRange(
             [
-                ("argosy-api", "Api.TimeoutSeconds", "30", VariableType.Text, null),
-                ("argosy-api", "Database.Password", "demo-P@ssw0rd-api", VariableType.Sensitive, null),
-                ("argosy-api", "Tenant.ApiKey", "demo-key-dbk", VariableType.Sensitive,
-                    new VariableScope { TenantId = TenantId("grad-dubrovnik") }),
-                ("argosy-api", "Tenant.ApiKey", "demo-key-st", VariableType.Sensitive,
-                    new VariableScope { TenantId = TenantId("grad-split") }),
+                new("argosy-api", "Api.TimeoutSeconds", "30", VariableType.Text),
+                new("argosy-api", "Database.Password", "demo-P@ssw0rd-api", VariableType.Sensitive),
+                new("argosy-api", "Tenant.ApiKey", "demo-key-dbk", VariableType.Sensitive, TenantSlug: "grad-dubrovnik"),
+                new("argosy-api", "Tenant.ApiKey", "demo-key-st", VariableType.Sensitive, TenantSlug: "grad-split"),
             ]);
         }
 
@@ -778,9 +828,8 @@ internal static class SeedDemoCommands
         {
             specs.AddRange(
             [
-                ("billing-service", "Billing.Currency", "EUR", VariableType.Text, null),
-                ("billing-service", "Tenant.InvoicePrefix", "MF", VariableType.Text,
-                    new VariableScope { TenantId = TenantId("ministarstvo-financija") }),
+                new("billing-service", "Billing.Currency", "EUR", VariableType.Text),
+                new("billing-service", "Tenant.InvoicePrefix", "MF", VariableType.Text, TenantSlug: "ministarstvo-financija"),
             ]);
         }
 
@@ -788,14 +837,19 @@ internal static class SeedDemoCommands
         {
             var projectId = projectIds[group.Key];
             var existing = (await variableSvc.GetVariablesAsync(projectId).ConfigureAwait(false))
-                .Select(v => v.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var (_, name, value, type, scope) in group)
+                .Select(v => Key(v.Name, v.Scope.EnvironmentId, v.Scope.TenantId, v.Scope.ChannelId))
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (var spec in group)
             {
-                if (existing.Contains(name))
+                if (!TryResolveScope(spec, out var scope, out var envId, out var tenantId))
                 {
                     continue;
                 }
-                await variableSvc.CreateVariableAsync(projectId, name, value, type, scope, system)
+                if (existing.Contains(Key(spec.Name, envId, tenantId, spec.ChannelId)))
+                {
+                    continue;
+                }
+                await variableSvc.CreateVariableAsync(projectId, spec.Name, spec.Value, spec.Type, scope, system)
                     .ConfigureAwait(false);
             }
         }
@@ -809,24 +863,28 @@ internal static class SeedDemoCommands
                 "Shared demo defaults (SMTP, branding)").ConfigureAwait(false);
 
         var setExisting = (await variableSvc.GetVariablesInSetAsync(librarySet.Id).ConfigureAwait(false))
-            .Select(v => v.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        (string Name, string Value, VariableType Type, VariableScope? Scope)[] setSpecs =
+            .Select(v => Key(v.Name, v.Scope.EnvironmentId, v.Scope.TenantId, v.Scope.ChannelId))
+            .ToHashSet(StringComparer.Ordinal);
+        DemoVarSpec[] setSpecs =
         [
-            ("Company.Name", "Kraken Demo d.o.o.", VariableType.Text, null),
-            ("Smtp.Host", "smtp.demo.local", VariableType.Text, null),
-            ("Smtp.Host", "smtp.prod.demo.local", VariableType.Text,
-                new VariableScope { EnvironmentId = EnvId("Production") }),
+            new("", "Company.Name", "Kraken Demo d.o.o.", VariableType.Text),
+            new("", "Smtp.Host", "smtp.demo.local", VariableType.Text),
+            new("", "Smtp.Host", "smtp.prod.demo.local", VariableType.Text, EnvName: "Production"),
             // Same name as the project-level variable: the project definition
             // wins on an origin tiebreak — visible in the Preview tab.
-            ("Log.Level", "Information", VariableType.Text, null),
+            new("", "Log.Level", "Information", VariableType.Text),
         ];
-        foreach (var (name, value, type, scope) in setSpecs)
+        foreach (var spec in setSpecs)
         {
-            if (setExisting.Contains(name))
+            if (!TryResolveScope(spec, out var scope, out var envId, out var tenantId))
             {
                 continue;
             }
-            await variableSvc.CreateVariableInSetAsync(librarySet.Id, name, value, type, scope, system)
+            if (setExisting.Contains(Key(spec.Name, envId, tenantId, spec.ChannelId)))
+            {
+                continue;
+            }
+            await variableSvc.CreateVariableInSetAsync(librarySet.Id, spec.Name, spec.Value, spec.Type, scope, system)
                 .ConfigureAwait(false);
         }
 
