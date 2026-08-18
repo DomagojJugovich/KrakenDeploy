@@ -55,6 +55,14 @@ else
                 </div>
             </div>
         </div>
+        <div class="page-head-actions">
+            @* F6 — deep link into the Tasks page's assignment-joined ?target=
+               filter: everything queued for / running on / finished on this
+               machine, both kinds. *@
+            <RadzenButton Text="View tasks for this machine" Icon="checklist"
+                          ButtonStyle="ButtonStyle.Light"
+                          Click="@(() => Nav.NavigateTo(Sp($"/tasks?target={Id}")))" />
+        </div>
     </div>
 
     @if (Target.IsRetired)

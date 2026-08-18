@@ -63,6 +63,28 @@
             <RadzenNumeric TValue="int?" @bind-Value="_editRetentionKeepRuns"
                            Min="0" style="width:100%" />
         </RadzenFormField>
+        @* F6 — author consent for per-plan target sharing. Off by default: a run
+           of this runbook holds each target exclusively for the whole plan.
+           Consent is mutual — it only co-runs with other consenting work. *@
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="10px" AlignItems="AlignItems.Center"
+                     class="rz-mb-2">
+            <RadzenCheckBox @bind-Value="_editAllowParallelTaskExecution"
+                            Name="runbookAllowParallel"
+                            aria-label="Allow parallel task execution" />
+            <RadzenLabel Component="runbookAllowParallel"
+                         Text="This runbook process is self-contained — it may run alongside other consenting work on a machine" />
+        </RadzenStack>
+        @if (_editAllowParallelTaskExecution)
+        {
+            <div class="kraken-health kraken-health--warn kraken-health--inline rz-mb-3">
+                <RadzenIcon Icon="warning" />
+                <div>
+                    Two tasks running at once on one machine can interleave file, IIS and
+                    Windows service operations. Only consent here if this runbook touches
+                    nothing another process might touch — its own folders, sites and services.
+                </div>
+            </div>
+        }
         <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
             <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary" Click="@SaveEditRunbookAsync" />
             <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
@@ -404,6 +426,7 @@
     private string _editName = "";
     private string? _editDescription;
     private int? _editRetentionKeepRuns;
+    private bool _editAllowParallelTaskExecution;
 
     private void OpenEditRunbook()
     {
@@ -411,6 +434,7 @@
         _editName = _runbook.Name;
         _editDescription = _runbook.Description;
         _editRetentionKeepRuns = _runbook.RetentionKeepRuns;
+        _editAllowParallelTaskExecution = _runbook.AllowParallelTaskExecution;
         _editOpen = true;
     }
 
@@ -432,23 +456,29 @@
             _runbook.Name = updated.Name;
             _runbook.Description = updated.Description;
 
-            // The retention override is a separate call (its own DbContext). If it
-            // fails, name/description already persisted — surface a partial-success
-            // warning rather than a misleading "save failed" error.
+            // The retention override and the concurrency consent are separate calls
+            // (each its own DbContext). If one fails, name/description already
+            // persisted — surface a partial-success warning rather than a
+            // misleading "save failed" error.
             try
             {
                 var withRetention = await RunbookSvc.SetRetentionOverrideAsync(
                     Id, _editRetentionKeepRuns, caller);
                 _runbook.RetentionKeepRuns = withRetention?.RetentionKeepRuns ?? _editRetentionKeepRuns;
+
+                var withConsent = await RunbookSvc.SetAllowParallelTaskExecutionAsync(
+                    Id, _editAllowParallelTaskExecution, caller);
+                _runbook.AllowParallelTaskExecution =
+                    withConsent?.AllowParallelTaskExecution ?? _editAllowParallelTaskExecution;
             }
-            catch (Exception retentionEx) when (retentionEx is InvalidOperationException or AuthorizationException)
+            catch (Exception settingsEx) when (settingsEx is InvalidOperationException or AuthorizationException)
             {
                 _editOpen = false;
                 Notify.Notify(new NotificationMessage
                 {
                     Severity = NotificationSeverity.Warning,
-                    Summary  = "Runbook updated, retention override failed",
-                    Detail   = retentionEx.Message,
+                    Summary  = "Runbook updated, execution settings failed",
+                    Detail   = settingsEx.Message,
                     Duration = 5000,
                 });
                 return;

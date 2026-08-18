@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.5 |
-| **Date** | 2026-07-30 |
+| **Version** | 1.6 |
+| **Date** | 2026-08-18 |
 | **Authors** | Domagoj Jugović, Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Approved |
 | **Technologies** | .NET 10, SignalR, async reader-writer lock, NTFS/ext4 atomic rename |
@@ -87,7 +87,7 @@ to shared, never an actual bypass.
 | Mode | Who takes it | Co-runs with |
 | --- | --- | --- |
 | **EXCLUSIVE** (write) | default for a dispatched sub-plan; an ad-hoc command with `AllowParallelTaskExecution = false` (WP16 console default); the self-upgrade swap window | nothing |
-| **SHARED** (read) | a sub-plan whose target sets `AllowParallelTaskExecution`; an ad-hoc command with the flag `true` (the AI session flow, always) | other SHARED holders only |
+| **SHARED** (read) | a sub-plan whose plan flag is `true` — since F6 the OR of the target's `AllowParallelTaskExecution` and the source's consent (project / runbook), stamped at plan build; an ad-hoc command with the flag `true` (the AI session flow, always) | other SHARED holders only |
 
 Co-running requires that **no writer is present**, in either direction, so consent is
 MUTUAL (locked decision P2): one side opting into sharing cannot force the other to.
@@ -376,25 +376,33 @@ extractions → one complete dir, no temp survivors);
   its own gate (deliberately uncoordinated with a live agent).
 - The gate's unit is the dispatched sub-plan, i.e. one WAVE — the server
   dispatches per wave, so the lease is released and re-taken at each wave
-  boundary. An ad-hoc script can therefore still slot in between two waves of
-  one deployment. F5 does **not** close this (`MachineExecutionGate` is deliberately
-  not the place to hold a lease across a server round-trip); **F6** does, with
-  server-side per-plan target exclusion at claim time. The wave-gap for ad-hoc work
-  specifically is an ACCEPTED risk — locked decision P5, no dispatch-time check.
+  boundary. F5 does **not** close this (`MachineExecutionGate` is deliberately
+  not the place to hold a lease across a server round-trip); **F6 closed it**
+  with server-side per-plan target exclusion at claim time
+  (`ServerTaskTargetExclusion` — see execution-engine.md §7), so the wave-gap
+  residual now applies to **ad-hoc scripts only**: deployments and runbook runs
+  are refused at claim while a serial plan holds the target, but an ad-hoc
+  script is not a `server_task`, stays invisible to the claim predicate, and can
+  still slot in between two waves. That ad-hoc gap is an ACCEPTED risk — locked
+  decision P5, no dispatch-time check.
 - No per-target fairness across agents: the cap is node-global, FIFO.
 - The reader-writer modes are **type-blind**, exactly as Octopus's are: nothing on the
   wire says "this is a deployment" vs "this is a script". Mode comes only from the
   consent flags, so two mutually-consenting SHARED units co-run even if one is a
   full deployment.
-- Because a gate serves ONE target, every deployment through it carries the same
-  `AllowParallelTaskExecution`, so mutual consent between two *deployments* is
-  degenerate — the mixed-mode pairs that actually occur are ad-hoc-vs-deployment and
-  updater-vs-anything. Ad-hoc-vs-ad-hoc is the only pair F5 newly lets co-run on a
-  default box, and it includes **mutating vs mutating**: an ACCEPTED RISK, see
+- Since F6, a plan's `AllowParallelTaskExecution` is the OR of the target's flag
+  and the SOURCE's consent (project / runbook), so two deployments through one
+  gate can carry DIFFERENT modes (pre-F6 the flag was target-only and
+  deployment-vs-deployment mutual consent was degenerate). In practice the pair
+  rarely reaches the gate: the F6 claim exclusion already refuses a second plan
+  on a serial target, and co-claiming requires the same mutual consent the gate
+  would check — the gate remains the enforcement for ad-hoc-vs-anything and
+  updater-vs-anything. Ad-hoc-vs-ad-hoc is the only pair F5 newly lets co-run on
+  a default box, and it includes **mutating vs mutating**: an ACCEPTED RISK, see
   `docs/adhoc-actions.md` §2.
 - The updater's server-side idle check closes the wave-boundary hole for the SELF-UPGRADE
-  only. Other work can still slot between two waves of one plan (P5 accepts this for
-  ad-hoc); **F6** closes it generally, server-side at claim time.
+  only. **F6** closed it generally, server-side at claim time — what can still slot
+  between two waves of one plan is ad-hoc work alone (P5 accepts this).
 
 ## References
 

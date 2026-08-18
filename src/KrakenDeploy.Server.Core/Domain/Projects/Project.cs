@@ -44,4 +44,23 @@ public class Project : AuditableEntity, ISpaceScoped
 
     /// <summary>Channels defined for this project (at least one default always exists).</summary>
     public ICollection<Channel> Channels { get; set; } = [];
+
+    /// <summary>
+    /// F6 — author consent that this project's deployment process is
+    /// self-contained (own folders, services, sites) and may run alongside other
+    /// CONSENTING work on a shared machine. Feeds two composition points:
+    /// <list type="bullet">
+    ///   <item>Claim time (server): a deployment's per-target mode is
+    ///   <c>Shared</c> when the target's own flag OR this flag is set; the
+    ///   claim-time exclusion in <c>ServerTaskLease</c> only defers on a shared
+    ///   target where at least one side is Exclusive.</item>
+    ///   <item>Plan build (agent gate): OR-composed into
+    ///   <c>DeploymentPlan.AllowParallelTaskExecution</c>, selecting the SHARED
+    ///   side of the agent's reader-writer machine gate (F5).</item>
+    /// </list>
+    /// Default <c>false</c> — safe without author effort: deployments hold each
+    /// target exclusively for the whole plan. Consent is mutual: setting this
+    /// never lets the project's work interleave with a task that did not opt in.
+    /// </summary>
+    public bool AllowParallelTaskExecution { get; set; }
 }

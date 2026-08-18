@@ -237,6 +237,28 @@ public class ProjectService(IDbContextFactory<KrakenDbContext> dbFactory)
         return project;
     }
 
+    /// <summary>
+    /// F6 — sets the project's "allow parallel task execution" consent (see
+    /// <see cref="Project.AllowParallelTaskExecution"/>). A separate setter so the
+    /// name/slug edit path never carries (or accidentally clears) a concurrency
+    /// decision. Applies to the NEXT claim/dispatch — work already queued or in
+    /// flight keeps the mode it was claimed with.
+    /// </summary>
+    public async Task<Project?> SetAllowParallelTaskExecutionAsync(
+        Guid id, bool allow, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var project = await db.Projects.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
+        if (project is null)
+        {
+            return null;
+        }
+
+        project.AllowParallelTaskExecution = allow;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return project;
+    }
+
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);

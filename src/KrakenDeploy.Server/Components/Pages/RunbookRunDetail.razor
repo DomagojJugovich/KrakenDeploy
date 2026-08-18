@@ -63,7 +63,7 @@ else
                       FailedMessage="@_lastErrorLine"
                       DefaultFailedMessage="Runbook run failed."
                       FinishedDuration="@FormatDuration()"
-                      QueuedMessage="@ScheduledMessage()"
+                      QueuedMessage="@QueuedMessage()"
                       PausedMessage="Paused for manual intervention — see the approval card below."
                       HasRun="@(Run.StartedUtc is not null)" />
 
@@ -137,6 +137,11 @@ else
     private List<TaskLogLine> _log = [];
     // Computed once when _log loads (not per render) — see DeploymentDetail.
     private string? _lastErrorLine;
+
+    // F6 — non-null while this Queued run is held by the per-plan target
+    // exclusion; carries the blocker + queue position for the banner. Refreshed
+    // with each reload (the page polls every 5 s while non-terminal).
+    private KrakenDeploy.Server.Data.ServerTaskTargetExclusion.TargetConflict? _targetConflict;
 
     private bool _cancelling;
 
@@ -271,6 +276,11 @@ else
             _stepOutcomes    = outcomesTask.Result;
             _log             = logTask.Result;
             _lastErrorLine   = ComputeLastErrorLine();
+
+            // F6 — the target-wait reason, only meaningful while still Queued.
+            _targetConflict = Run.Status == DeploymentStatus.Queued
+                ? await RunbookSvc.GetTargetConflictAsync(Id)
+                : null;
         }
     }
 
@@ -347,6 +357,22 @@ else
         => Run?.ScheduledFor is { } s
             ? $"Scheduled for {s.ToLocalTime():yyyy-MM-dd HH:mm}."
             : null;
+
+    // F6 — the reason a Queued run is waiting: a future schedule first (the run
+    // is intentionally held), then the per-plan target exclusion. Runbook runs
+    // are exempt from the F1 (project,env,tenant) rule, so unlike
+    // DeploymentDetail there is no in-flight-peer arm. Null → the banner falls
+    // back to its generic "Waiting to start." text.
+    private string? QueuedMessage()
+    {
+        if (ScheduledMessage() is { } scheduled)
+        {
+            return scheduled;
+        }
+        return _targetConflict is { } conflict
+            ? QueueWaitMessage.TargetWait(conflict)
+            : null;
+    }
 
     private string FormatDuration()
         => TaskFormatting.Elapsed(Run?.StartedUtc, Run?.CompletedUtc);

@@ -196,6 +196,21 @@ public sealed class DeploymentWorker(
             return;
         }
 
+        // F6 — per-plan target exclusion, same pre-gate treatment for BOTH kinds:
+        // a task whose serial target is held stays Queued without a slot or the
+        // prep I/O. Racy by design like the F1 skip (the advisory-locked claim is
+        // authoritative); this path is where the common blocked case lands, so it
+        // also records the reason + the one-time first-deferral log line.
+        if (probe is { IsTargetBlocked: true })
+        {
+            logger.LogDebug(
+                "DeploymentWorker: task {Id} waiting — a serial target in its assignment set " +
+                "is held by another task; staying Queued (no gate slot taken).",
+                deploymentId);
+            await RecordTargetDeferralAsync(deploymentId, ct).ConfigureAwait(false);
+            return;
+        }
+
         // B7: the task-cap slot is taken BEFORE the in-flight gauge — a
         // queued-but-unstarted deployment must not block blue-green drain (it is
         // still Queued in the DB; the B1 claim + reconciler hand it to the
@@ -255,6 +270,7 @@ public sealed class DeploymentWorker(
         // sibling could never claim because the paused task holds the key. Reconciler
         // arm 3 then re-signalled it every minute forever. TryResumeAsync skips the F1
         // re-check for exactly this reason; this is the other half of that decision.
+        var now = timeProvider.GetUtcNow();
         var blocked = row.ParentTaskId is null
             && row.Kind == ServerTaskKind.Deployment
             && row.Status != DeploymentStatus.Paused
@@ -263,12 +279,29 @@ public sealed class DeploymentWorker(
                 .AnyAsync(
                     ServerTaskLease.ClaimDeferralPredicate(
                         deploymentId, row.ProjectId, row.EnvironmentId, row.TenantId,
-                        row.CreatedUtc, timeProvider.GetUtcNow()),
+                        row.CreatedUtc, now),
                     ct)
                 .ConfigureAwait(false);
 
+        // F6 — the target-conflict arm of the same pre-gate skip, BOTH kinds. A
+        // resume is exempt for the same reason as above (a Paused task holds its
+        // targets and must never defer to work that is deferring to IT); a child
+        // is exempt here because it never reaches this arm (the early return
+        // above), and the claim excludes its ancestor chain anyway. Skipped when
+        // F1 already decided — one reason is enough to leave the row Queued.
+        var targetBlocked = !blocked
+            && row.ParentTaskId is null
+            && row.Status != DeploymentStatus.Paused
+            && await ServerTaskTargetExclusion.ConflictingTasksQuery(
+                    db, deploymentId,
+                    await ServerTaskTargetExclusion.SourceConsentAsync(
+                        db, row.Kind, row.ProjectId, deploymentId, ct).ConfigureAwait(false),
+                    ancestorIds: [], row.CreatedUtc, now)
+                .AnyAsync(ct)
+                .ConfigureAwait(false);
+
         return new GateProbe(
-            row.ParentTaskId, row.Kind, row.ProjectId, row.EnvironmentId, blocked);
+            row.ParentTaskId, row.Kind, row.ProjectId, row.EnvironmentId, blocked, targetBlocked);
     }
 
     /// <summary>Pre-gate probe shape (see <see cref="ProbeGateAsync"/>).</summary>
@@ -277,7 +310,47 @@ public sealed class DeploymentWorker(
         ServerTaskKind Kind,
         Guid ProjectId,
         Guid EnvironmentId,
-        bool IsSerializationBlocked);
+        bool IsSerializationBlocked,
+        bool IsTargetBlocked);
+
+    /// <summary>
+    /// F6 reason surface — resolves the current target-wait blocker and appends
+    /// the ONE first-deferral task-log line (idempotent — see
+    /// <see cref="ServerTaskTargetExclusion.TryAppendFirstDeferralLogAsync"/>).
+    /// Called from every refusal point (pre-gate skip and the two claim sites) so
+    /// whichever path a blocked task lands on, its log carries the reason. Runs
+    /// in its OWN scope: the dispatch context may hold tracked entities, and the
+    /// log append saves changes.
+    /// </summary>
+    private async Task RecordTargetDeferralAsync(Guid taskId, CancellationToken ct)
+    {
+        try
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
+            var conflict = await ServerTaskTargetExclusion
+                .DescribeConflictAsync(db, taskId, timeProvider.GetUtcNow(), ct)
+                .ConfigureAwait(false);
+            if (conflict is null)
+            {
+                // The conflict resolved between the refusal and this read — the
+                // next wake-up will claim; nothing worth recording.
+                return;
+            }
+
+            await ServerTaskTargetExclusion.TryAppendFirstDeferralLogAsync(
+                    db, taskId, ServerTaskTargetExclusion.Format(conflict), timeProvider, ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The reason surface is advisory — it must never fail the dispatch
+            // loop (the task stays Queued and retries regardless).
+            logger.LogWarning(ex,
+                "DeploymentWorker: failed to record the target-wait reason for task {Id}.",
+                taskId);
+        }
+    }
 
     private async Task DispatchCoreAsync(Guid accountId, Guid deploymentId, CancellationToken ct)
     {
@@ -520,6 +593,15 @@ public sealed class DeploymentWorker(
                             "serialization race — another deployment of the same key started first; " +
                             "staying Queued for the minutely re-signal to retry.",
                             deploymentId);
+                    }
+                    else if (offlineClaim == ServerTaskClaimResult.TargetBlocked)
+                    {
+                        logger.LogInformation(
+                            "DeploymentWorker: offline deployment {Id} refused at claim — a serial " +
+                            "target in its assignment set is held by another task; staying Queued " +
+                            "for the minutely re-signal to retry.",
+                            deploymentId);
+                        await RecordTargetDeferralAsync(deploymentId, ct).ConfigureAwait(false);
                     }
                     else if (offlineClaim == ServerTaskClaimResult.MaintenanceBlocked)
                     {
@@ -1056,6 +1138,15 @@ public sealed class DeploymentWorker(
                         "serialization race — another deployment of the same key started first; " +
                         "staying Queued for the minutely re-signal to retry.",
                         deploymentId);
+                }
+                else if (claim == ServerTaskClaimResult.TargetBlocked)
+                {
+                    logger.LogInformation(
+                        "DeploymentWorker: task {Id} refused at claim — a serial target in its " +
+                        "assignment set is held by another task; staying Queued for the minutely " +
+                        "re-signal to retry.",
+                        deploymentId);
+                    await RecordTargetDeferralAsync(deploymentId, ct).ConfigureAwait(false);
                 }
                 else if (claim == ServerTaskClaimResult.MaintenanceBlocked)
                 {
@@ -4068,10 +4159,16 @@ public sealed class DeploymentWorker(
             Variables:       flatVars,
             ArrayVariables:  arrayVars,
             SensitiveVariableNames: stepResolution.SensitiveNames,
-            // F2 — the target's own concurrency policy, resolved at plan-build time
-            // (a flip applies to the next dispatch, not to work already queued on
-            // the agent). Never relaxes the F1 (project, env, tenant) serialization.
-            AllowParallelTaskExecution: target.AllowParallelTaskExecution);
+            // F2/F6 — the plan's concurrency mode, resolved at plan-build time (a
+            // flip applies to the next dispatch, not to work already queued on the
+            // agent): the target's own flag OR the source's author consent (the
+            // project's for a deployment, the runbook's for a run) selects the
+            // SHARED side of the agent's reader-writer gate. The same OR is what
+            // the claim-time exclusion evaluates per target, so the agent gate and
+            // the server claim can't disagree on a plan's mode. Never relaxes the
+            // F1 (project, env, tenant) serialization.
+            AllowParallelTaskExecution:
+                target.AllowParallelTaskExecution || source.AllowParallelTaskExecution);
 
         return new TargetDispatchContext(
             Target:              target,

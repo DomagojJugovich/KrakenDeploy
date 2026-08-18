@@ -2,13 +2,21 @@
 
 | | |
 |---|---|
-| **Version** | 1.2 |
-| **Date** | 2026-07-25 |
-| **Authors** | Domagoj Jugovic, Claude (Opus 4.8) |
+| **Version** | 1.3 |
+| **Date** | 2026-08-18 |
+| **Authors** | Domagoj Jugovic, Claude (Opus 4.8), Claude (Fable 5) |
 | **Status** | Approved |
 | **Technologies** | .NET 10, SignalR, EF Core 10, PostgreSQL |
 | **Projects** | KrakenDeploy.Server.Transport, KrakenDeploy.Server.Data, KrakenDeploy.Server |
 
+> v1.3 (2026-08-18): note for F6 — the per-plan target-exclusion deferral
+> happens at CLAIM time, BEFORE dispatch: a target-blocked task stays `Queued`
+> and never arms a wave deadline, so F2's two-stage queue-wait backstop
+> arithmetic in §1 is untouched. `Engine:MaxTargetQueueWait` continues to bound
+> only the AGENT-side machine-gate queue of a dispatched sub-plan (in practice
+> now contended by ad-hoc work and cross-process gates only — a competing plan
+> is already refused at claim).
+>
 > v1.2 (2026-07-25): §1 updated for F2 — the wave deadline now arms in TWO
 > stages (dispatch-time backstop, then a clamped re-arm on the agent's
 > gate-acquisition report) and `Engine:MaxTargetQueueWait` is documented. All

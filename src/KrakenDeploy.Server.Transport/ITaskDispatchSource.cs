@@ -43,6 +43,16 @@ internal interface ITaskDispatchSource
     TaskAuditVocabulary Audit { get; }
 
     /// <summary>
+    /// F6 — the SOURCE side of the parallel-execution consent: the owning
+    /// project's flag for a deployment, the runbook's own flag for a run.
+    /// OR-composed with each target's flag into
+    /// <c>DeploymentPlan.AllowParallelTaskExecution</c> at plan build (and read
+    /// by the claim-time exclusion through the same entities). Wire shape
+    /// unchanged — the agent still receives one bool per plan.
+    /// </summary>
+    bool AllowParallelTaskExecution { get; }
+
+    /// <summary>
     /// Deployment: returns a failure message when the release has no variable
     /// snapshot (<c>VariableSnapshotUpdatedUtc == null</c>) so dispatch is
     /// refused; returns <c>null</c> to proceed. Runbook: always <c>null</c>
@@ -80,6 +90,7 @@ internal sealed class DeploymentDispatchSource(Deployment deployment) : ITaskDis
     public bool AppliesFreezeGate => true;
     public bool SupportsOfflineDrop => true;
     public TaskAuditVocabulary Audit => TaskAuditVocabulary.Deployment;
+    public bool AllowParallelTaskExecution => deployment.Release.Project.AllowParallelTaskExecution;
 
     public string? VariableSnapshotRefusal()
         => deployment.Release.VariableSnapshotUpdatedUtc is not null
@@ -133,6 +144,7 @@ internal sealed class RunbookRunDispatchSource(RunbookRun run) : ITaskDispatchSo
     public bool AppliesFreezeGate => false;
     public bool SupportsOfflineDrop => false;
     public TaskAuditVocabulary Audit => TaskAuditVocabulary.RunbookRun;
+    public bool AllowParallelTaskExecution => run.Runbook.AllowParallelTaskExecution;
 
     public string? VariableSnapshotRefusal() => null;
 

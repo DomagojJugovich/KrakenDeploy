@@ -133,25 +133,43 @@ public sealed class ServerTasksService(
     /// </summary>
     private const int RecentRowCap = 500;
 
-    public async Task<List<ServerTaskRow>> GetTasksAsync(CancellationToken ct = default)
+    /// <summary>
+    /// The unified task list, optionally narrowed to one machine. The
+    /// <paramref name="targetId"/> filter (F6 — the Tasks page's <c>?target=</c>
+    /// query) resolves through the <c>task_target_assignments</c> join in the DB
+    /// services — the single authority for a task's target set. A row's
+    /// <c>Title</c>/<c>Target</c> strings never reliably contain machine names
+    /// (multi-target rows collapse to "N targets"), so a string match would be
+    /// wrong. System jobs carry no target and are omitted from a filtered read.
+    /// </summary>
+    public async Task<List<ServerTaskRow>> GetTasksAsync(
+        Guid? targetId = null, CancellationToken ct = default)
     {
         var rows = new List<ServerTaskRow>();
 
-        var deps = await deployments.GetAllAsync(limit: RecentRowCap, ct: ct);
+        var deps = targetId is { } tid
+            ? await deployments.GetForTargetAsync(tid, limit: RecentRowCap, ct: ct)
+            : await deployments.GetAllAsync(limit: RecentRowCap, ct: ct);
         rows.AddRange(deps.Select(ToRow));
 
-        var runs = await runbooks.GetAllRunsAsync(limit: RecentRowCap, ct: ct);
+        var runs = targetId is { } tid2
+            ? await runbooks.GetRunsForTargetAsync(tid2, limit: RecentRowCap, ct: ct)
+            : await runbooks.GetAllRunsAsync(limit: RecentRowCap, ct: ct);
         rows.AddRange(runs.Select(ToRow));
 
         // Hangfire is best-effort: a storage hiccup must never blank the whole
         // page (deployments + runbook runs are the operator's primary signal).
-        try
+        // Skipped under a target filter — system jobs run on no machine.
+        if (targetId is null)
         {
-            rows.AddRange(ReadSystemJobs());
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to read Hangfire system jobs for the Tasks page");
+            try
+            {
+                rows.AddRange(ReadSystemJobs());
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to read Hangfire system jobs for the Tasks page");
+            }
         }
 
         return rows

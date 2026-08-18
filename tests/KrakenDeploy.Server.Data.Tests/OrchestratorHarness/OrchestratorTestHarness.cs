@@ -407,6 +407,30 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.AllowParallelTaskExecution, allow));
     }
 
+    /// <summary>F6 — flips a seeded project's parallel-execution consent, the
+    /// SOURCE side of the claim-time target exclusion for deployments.</summary>
+    public async Task SetProjectAllowParallelTaskExecutionAsync(Guid projectId, bool allow)
+    {
+        await using var db = _postgres.CreateContext();
+        await db.Projects.IgnoreQueryFilters()
+            .Where(p => p.Id == projectId)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.AllowParallelTaskExecution, allow));
+    }
+
+    /// <summary>F6 — flips the consent of the runbook OWNING the given run (the
+    /// harness seeds a fresh runbook per run, so tests address it via the run).</summary>
+    public async Task SetRunbookAllowParallelTaskExecutionForRunAsync(Guid runId, bool allow)
+    {
+        await using var db = _postgres.CreateContext();
+        var runbookId = await db.RunbookRuns.IgnoreQueryFilters()
+            .Where(r => r.Id == runId)
+            .Select(r => r.RunbookId)
+            .FirstAsync();
+        await db.Runbooks.IgnoreQueryFilters()
+            .Where(r => r.Id == runbookId)
+            .ExecuteUpdateAsync(s => s.SetProperty(r => r.AllowParallelTaskExecution, allow));
+    }
+
     /// <summary>
     /// Seeds a release with the given step plans. Each step is a
     /// target-side Kraken.Script step (so wave classification puts them on

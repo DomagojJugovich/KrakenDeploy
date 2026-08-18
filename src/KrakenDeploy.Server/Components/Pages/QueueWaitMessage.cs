@@ -30,4 +30,12 @@ public static class QueueWaitMessage
               + "automatically once maintenance is disabled."
             : $"Waiting: the instance is in maintenance mode ({reason.Trim()}). "
               + "This task starts automatically once maintenance is disabled.";
+
+    /// <summary>F6 — the reason shown for a Queued task held by the per-plan
+    /// target exclusion ("Waiting for target X — busy with #N (title); M ahead").
+    /// Delegates to the Data-side formatter so the banner and the one-time
+    /// first-deferral task-log line render the SAME sentence.</summary>
+    public static string TargetWait(
+        KrakenDeploy.Server.Data.ServerTaskTargetExclusion.TargetConflict conflict)
+        => KrakenDeploy.Server.Data.ServerTaskTargetExclusion.Format(conflict);
 }

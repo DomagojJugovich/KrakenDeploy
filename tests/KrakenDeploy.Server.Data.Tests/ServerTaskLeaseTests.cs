@@ -155,8 +155,12 @@ public sealed class ServerTaskLeaseTests(PostgresFixture postgres)
         var key = await SeedSharedKeyAsync(harness);
         var t1 = await harness.SeedTenantAsync("tenant-a");
         var t2 = await harness.SeedTenantAsync("tenant-b");
+        // Disjoint target per deployment: this test pins the F1 tenant-key rule
+        // alone — a shared target would trip the F6 per-plan target exclusion
+        // (covered by TargetExclusionTests) before the property under test.
+        var otherTargets = await harness.SeedTargetsAsync($"ft2-{Guid.NewGuid():N}"[..12]);
         var d1 = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets, tenantId: t1.Id);
-        var d2 = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets, tenantId: t2.Id);
+        var d2 = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, otherTargets, tenantId: t2.Id);
 
         await using var db = postgres.CreateContext();
         (await ServerTaskLease.TryClaimAsync(db, d1, TimeProvider.System))
@@ -172,7 +176,12 @@ public sealed class ServerTaskLeaseTests(PostgresFixture postgres)
         await using var harness = new OrchestratorTestHarness(postgres);
         var key = await SeedSharedKeyAsync(harness);
         var tenant = await harness.SeedTenantAsync("tenant-a");
-        var tenanted    = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets, tenantId: tenant.Id);
+        // The tenanted run gets its own target so the untenanted claim exercises
+        // ONLY the F1 null-tenant key (a shared target would hit the F6 target
+        // exclusion first). A and B keep sharing a target: their conflict is
+        // decided by F1 (checked before F6) and must read SerializationBlocked.
+        var tenantedTargets = await harness.SeedTargetsAsync($"ft2-{Guid.NewGuid():N}"[..12]);
+        var tenanted    = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, tenantedTargets, tenantId: tenant.Id);
         var untenantedA = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
         var untenantedB = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
 

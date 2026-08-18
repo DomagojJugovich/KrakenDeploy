@@ -279,6 +279,12 @@ else
     // load (below).
     private bool _blockedByInFlightPeer;
 
+    // F6 — non-null while this Queued task is held by the per-plan target
+    // exclusion (a serial target in its assignment set is busy). Carries the
+    // blocker + queue position for the "Waiting for target X" banner. Probed
+    // only when neither maintenance nor the F1 rule already explains the wait.
+    private KrakenDeploy.Server.Data.ServerTaskTargetExclusion.TargetConflict? _targetConflict;
+
     // Non-null while this Queued task is held by the instance-wide maintenance gate
     // (the claim is refused, so it cannot start until maintenance is disabled). Held
     // as the state rather than a bool so the banner can quote the operator's reason.
@@ -701,6 +707,7 @@ else
         if (Deployment is not { Status: DeploymentStatus.Queued })
         {
             _blockedByInFlightPeer = false;
+            _targetConflict = null;
             _maintenanceHold = null;
             return;
         }
@@ -713,13 +720,19 @@ else
         _blockedByInFlightPeer = _maintenanceHold is null
             && await DeploymentSvc.HasInFlightPeerAsync(
                 Deployment.Id, Deployment.ProjectId, Deployment.EnvironmentId, Deployment.TenantId);
+        // F6 — the target-wait probe, in claim order: only consulted when neither
+        // maintenance nor the F1 rule already explains the wait.
+        _targetConflict = _maintenanceHold is null && !_blockedByInFlightPeer
+            ? await DeploymentSvc.GetTargetConflictAsync(Deployment.Id)
+            : null;
     }
 
-    // F1 — the reason a Queued deployment is waiting. Maintenance mode wins (the
-    // claim is refused for every task, so nothing else it might be waiting on
-    // matters); then a future schedule (the task is intentionally held); then the
-    // (project,env,tenant) serialization rule. Null → the banner falls back to its
-    // generic "Waiting to start." text.
+    // F1/F6 — the reason a Queued deployment is waiting. Maintenance mode wins
+    // (the claim is refused for every task, so nothing else it might be waiting
+    // on matters); then a future schedule (the task is intentionally held); then
+    // the (project,env,tenant) serialization rule; then the per-plan target
+    // exclusion — the same order the claim checks them. Null → the banner falls
+    // back to its generic "Waiting to start." text.
     private string? QueuedMessage()
     {
         if (_maintenanceHold is { } hold)
@@ -730,9 +743,13 @@ else
         {
             return scheduled;
         }
-        return _blockedByInFlightPeer
-            ? QueueWaitMessage.RunningPeer(
-                Deployment?.Release?.Project?.Name, Deployment?.Environment?.Name)
+        if (_blockedByInFlightPeer)
+        {
+            return QueueWaitMessage.RunningPeer(
+                Deployment?.Release?.Project?.Name, Deployment?.Environment?.Name);
+        }
+        return _targetConflict is { } conflict
+            ? QueueWaitMessage.TargetWait(conflict)
             : null;
     }
 

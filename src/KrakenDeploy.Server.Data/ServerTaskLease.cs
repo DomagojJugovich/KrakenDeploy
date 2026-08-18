@@ -78,23 +78,32 @@ public static class ServerTaskLease
     /// <c>Running</c> or a parked <c>PendingOfflineResult</c>) AND no earlier,
     /// already-due <c>Queued</c> sibling is still waiting (FIFO — the oldest queued
     /// deployment of a key goes next, Octopus-parity; a future-scheduled sibling is
-    /// NOT yet due and never blocks). NULL tenant is its own key. The deferral
-    /// check + claim run inside <c>pg_advisory_xact_lock(hash64(project, env,
-    /// tenant))</c> so two concurrent claimants of one key cannot both proceed: the
-    /// lock-loser blocks until the winner commits, then its <b>fresh-per-statement</b>
-    /// read (READ COMMITTED) sees the winner's committed row and is refused.
-    /// <c>RunbookRun</c> is EXEMPT (operational tooling; runbooks may run
-    /// concurrently) — it takes the plain conditional claim, a single autonomous
-    /// statement.
+    /// NOT yet due and never blocks). NULL tenant is its own key.
+    /// <c>RunbookRun</c> is EXEMPT from this rule (operational tooling; runbooks
+    /// of one project may run concurrently).
+    /// </para>
+    /// <para>
+    /// <b>F6 — per-plan target exclusion.</b> BOTH kinds additionally defer when
+    /// they share a SERIAL target with any in-flight task or any older
+    /// already-due queued one (FIFO by overlap; mutual-Shared overlap neither
+    /// defers nor orders; the ancestor chain is exempt) — see
+    /// <see cref="ServerTaskTargetExclusion"/>. All checks + the claim run inside
+    /// ONE transaction under ONE GLOBAL advisory lock
+    /// (<see cref="ClaimDecisionLockKey"/> — it subsumed F1's per-key lock) so
+    /// two concurrent claimants cannot both proceed: the lock-loser blocks until
+    /// the winner commits, then its <b>fresh-per-statement</b> read
+    /// (READ COMMITTED) sees the winner's committed row and is refused.
     /// </para>
     /// <para>
     /// Returns <see cref="ServerTaskClaimResult.NotQueued"/> when the row was not
     /// <c>Queued</c> anymore (already claimed by another wake-up, cancelled, or
-    /// gone) and <see cref="ServerTaskClaimResult.SerializationBlocked"/> when a
-    /// same-key deployment is in-flight or an earlier sibling is ahead; in both
-    /// cases the caller must bail without dispatching. The task stays <c>Queued</c>
-    /// and the minutely stale-Queued re-signal
-    /// (<see cref="Jobs.ScheduledDeploymentDispatchJob"/>) retries it.
+    /// gone), <see cref="ServerTaskClaimResult.SerializationBlocked"/> when a
+    /// same-key deployment is in-flight or an earlier sibling is ahead, and
+    /// <see cref="ServerTaskClaimResult.TargetBlocked"/> when a serial target is
+    /// held (F6); in all three cases the caller must bail without dispatching.
+    /// The task stays <c>Queued</c> and the minutely stale-Queued re-signal
+    /// (<see cref="Jobs.ScheduledDeploymentDispatchJob"/> — kind-agnostic, so it
+    /// covers runbook runs too) retries it.
     /// </para>
     /// <para>
     /// <b>Maintenance gate.</b> Returns
@@ -142,51 +151,79 @@ public static class ServerTaskLease
             }
         }
 
-        // RunbookRun is exempt from serialization — plain conditional claim, one
-        // autonomous statement (retry-safe as-is; no user transaction needed).
-        if (task.Kind != ServerTaskKind.Deployment)
-        {
-            return await ClaimConditionalAsync(db, task.Id, now, ct).ConfigureAwait(false);
-        }
+        // F6 — the ancestor chain is exempt from the target-conflict check (a
+        // DeployRelease child continues an already-claimed parent). Immutable
+        // after creation, so it is safely read before the transaction; empty
+        // (zero queries) for the common top-level case.
+        var ancestors = await ServerTaskTargetExclusion.LoadAncestorChainAsync(db, task, ct)
+            .ConfigureAwait(false);
 
-        // Deployment: serialize on (project, env, tenant). The advisory lock +
-        // the deferral check + the conditional claim MUST share one transaction,
-        // so it is a user-initiated transaction — which the web host's
-        // NpgsqlRetryingExecutionStrategy only permits when driven THROUGH the
-        // execution strategy (a bare BeginTransactionAsync throws there). The
-        // strategy re-runs the whole delegate on a transient fault; the body is
-        // safe to repeat — the worst case is a false NotQueued after a
+        // Both kinds now claim inside ONE user-initiated transaction under ONE
+        // GLOBAL advisory lock (F6). The web host's NpgsqlRetryingExecutionStrategy
+        // only permits a user transaction when driven THROUGH the execution
+        // strategy (a bare BeginTransactionAsync throws there). The strategy
+        // re-runs the whole delegate on a transient fault; the body is safe to
+        // repeat — the worst case is a false NotQueued after a
         // commit-then-transient-fault, which only makes the worker bail on a row
         // it truly claimed (the reconciler then fails that ownerless Running row).
-        // It can never double-claim, so the serialization invariant holds.
-        var lockKey = SerializationLockKey(task.ProjectId, task.EnvironmentId, task.TenantId);
+        // It can never double-claim, so both serialization invariants hold.
         var strategy = db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
             await using var tx = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
 
             // Blocking, transaction-scoped advisory lock — auto-released at
-            // commit/rollback. Concurrent same-key claimants serialize here;
-            // different keys never contend. FormattableString → bound parameter.
+            // commit/rollback. ONE constant key for EVERY claim decision (F6,
+            // locked decision P1): it REPLACES F1's per-(project,env,tenant) key,
+            // subsuming it — the target-conflict predicate compares set-valued
+            // target overlaps, which per-key locks cannot serialize (two claimants
+            // with different F1 keys can still share a target). Claims hold the
+            // lock for single-digit milliseconds, so the global choke point is
+            // not a throughput hazard; correctness still comes from the
+            // fresh-per-statement READ COMMITTED reads below, never from the
+            // lock's key shape. FormattableString → bound parameter.
             await db.Database
-                .ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({lockKey})", ct)
+                .ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({ClaimDecisionLockKey})", ct)
                 .ConfigureAwait(false);
 
-            // Separate statement (fresh READ COMMITTED snapshot AFTER the lock):
-            // the lock-loser sees the winner's just-committed row here. Defer if a
-            // same-key peer is in-flight OR an earlier-queued due sibling waits.
-            var deferred = await db.ServerTasks
-                .IgnoreQueryFilters()
-                .AnyAsync(
-                    ClaimDeferralPredicate(
-                        task.Id, task.ProjectId, task.EnvironmentId, task.TenantId,
-                        task.CreatedUtc, now),
-                    ct)
+            // F1 — deployments only (runbook runs stay exempt from the
+            // (project,env,tenant) rule). Separate statement (fresh READ COMMITTED
+            // snapshot AFTER the lock): the lock-loser sees the winner's
+            // just-committed row here. Defer if a same-key peer is in-flight OR an
+            // earlier-queued due sibling waits.
+            if (task.Kind == ServerTaskKind.Deployment)
+            {
+                var deferred = await db.ServerTasks
+                    .IgnoreQueryFilters()
+                    .AnyAsync(
+                        ClaimDeferralPredicate(
+                            task.Id, task.ProjectId, task.EnvironmentId, task.TenantId,
+                            task.CreatedUtc, now),
+                        ct)
+                    .ConfigureAwait(false);
+                if (deferred)
+                {
+                    await tx.RollbackAsync(ct).ConfigureAwait(false);
+                    return ServerTaskClaimResult.SerializationBlocked;
+                }
+            }
+
+            // F6 — per-plan target exclusion, BOTH kinds (fully symmetric): defer
+            // when any in-flight task, or any older already-due Queued task,
+            // shares a serial target with this one (see
+            // ServerTaskTargetExclusion). Checked after F1 so a same-key sibling
+            // reports the more specific SerializationBlocked.
+            var sourceConsent = await ServerTaskTargetExclusion
+                .SourceConsentAsync(db, task, ct)
                 .ConfigureAwait(false);
-            if (deferred)
+            var targetConflict = await ServerTaskTargetExclusion
+                .ConflictingTasksQuery(db, task.Id, sourceConsent, ancestors, task.CreatedUtc, now)
+                .AnyAsync(ct)
+                .ConfigureAwait(false);
+            if (targetConflict)
             {
                 await tx.RollbackAsync(ct).ConfigureAwait(false);
-                return ServerTaskClaimResult.SerializationBlocked;
+                return ServerTaskClaimResult.TargetBlocked;
             }
 
             var result = await ClaimConditionalAsync(db, task.Id, now, ct).ConfigureAwait(false);
@@ -226,10 +263,11 @@ public static class ServerTaskLease
     /// cancelled while paused can never be resumed — the same TOCTOU closure
     /// <see cref="TryClaimAsync"/> gets from its <c>Queued</c> guard.
     /// <para>
-    /// <b>No F1 re-check, deliberately.</b> A <c>Paused</c> task is in
+    /// <b>No F1 (or F6) re-check, deliberately.</b> A <c>Paused</c> task is in
     /// <see cref="DeploymentStatusExtensions.InFlightAfterClaim"/>, so it never
-    /// released its <c>(project, environment, tenant)</c> key and no peer can be
-    /// holding it. Re-running the deferral predicate would only let a task lose a
+    /// released its <c>(project, environment, tenant)</c> key — nor its TARGETS:
+    /// other tasks' target-conflict checks still see it as in-flight and defer to
+    /// it. Re-running either deferral predicate would only let a task lose a
     /// slot it already owns — to a peer that, by construction, cannot exist.
     /// </para>
     /// <para>
@@ -421,53 +459,15 @@ public static class ServerTaskLease
                      && o.CreatedUtc < createdUtc));
 
     /// <summary>
-    /// Deterministic 64-bit advisory-lock key for a <c>(project, env, tenant)</c>
-    /// serialization group (FNV-1a over the three GUIDs, with a discriminator byte
-    /// so a NULL tenant hashes distinctly from any real tenant — N12). Must be
-    /// stable across processes, so it does NOT use <see cref="object.GetHashCode"/>
-    /// (randomized per run). A hash collision between two unrelated keys is
-    /// harmless: it only makes their two claims briefly serialize on the same
-    /// advisory lock — the exact-equality peer predicate is the correctness gate,
-    /// never the hash.
+    /// The ONE constant advisory-lock key every claim decision serializes on
+    /// (F6, locked decision P1) — a fixed literal (the ASCII bytes of
+    /// <c>"krakenCL"</c>, CL = claim lock), stable across processes and releases
+    /// by construction. It REPLACED F1's per-(project, env, tenant) key: the
+    /// target-conflict predicate compares set-valued target overlaps, which
+    /// per-key locks cannot serialize. Claims hold it for milliseconds; the
+    /// exact-equality predicates remain the correctness gates, never the key.
     /// </summary>
-    internal static long SerializationLockKey(Guid projectId, Guid environmentId, Guid? tenantId)
-    {
-        const ulong offset = 14695981039346656037UL;
-        const ulong prime  = 1099511628211UL;
-
-        var hash = offset;
-        Span<byte> guid = stackalloc byte[16];
-
-        projectId.TryWriteBytes(guid);
-        hash = Fold(hash, guid);
-        environmentId.TryWriteBytes(guid);
-        hash = Fold(hash, guid);
-
-        if (tenantId is { } tenant)
-        {
-            hash = FoldByte(hash, 0x01); // "tenanted" discriminator
-            tenant.TryWriteBytes(guid);
-            hash = Fold(hash, guid);
-        }
-        else
-        {
-            hash = FoldByte(hash, 0x00); // "untenanted" — its own key
-        }
-
-        // Reinterpret the unsigned hash as the signed bigint pg_advisory_xact_lock takes.
-        return unchecked((long)hash);
-
-        static ulong Fold(ulong h, ReadOnlySpan<byte> bytes)
-        {
-            foreach (var b in bytes)
-            {
-                h = FoldByte(h, b);
-            }
-            return h;
-        }
-
-        static ulong FoldByte(ulong h, byte b) => unchecked((h ^ b) * prime);
-    }
+    internal const long ClaimDecisionLockKey = unchecked((long)0x6B72616B656E434CUL);
 
     /// <summary>
     /// Extends the lease of a still-<c>Running</c> task. Returns <c>false</c>
@@ -549,6 +549,15 @@ public enum ServerTaskClaimResult
     /// <c>(project, environment, tenant)</c> is <c>Running</c>; the claim was
     /// refused to keep them serialized. Bail; the task stays <c>Queued</c>.</summary>
     SerializationBlocked,
+
+    /// <summary>F6 — the task shares a SERIAL target with an in-flight task or
+    /// an older already-due queued one (see
+    /// <c>ServerTaskTargetExclusion.ConflictingTasksQuery</c>); the claim was
+    /// refused so no two tasks operate on that machine concurrently for the
+    /// whole plan duration. Bail; the task stays <c>Queued</c> and the minutely
+    /// re-signal retries it. The worker writes the one-time first-deferral
+    /// task-log line on this result.</summary>
+    TargetBlocked,
 
     /// <summary>Instance-wide maintenance mode is on, so no NEW task may start.
     /// Bail; the task stays <c>Queued</c> and claims normally the moment the

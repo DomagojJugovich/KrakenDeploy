@@ -305,6 +305,9 @@ public class DeploymentService(
         return await db.Deployments
             .Include(d => d.Release).ThenInclude(r => r.Project)
             .Include(d => d.Environment)
+            // The full assignment set, not just the filter match — the Tasks
+            // page's ?target= rows render the target column from it (F6).
+            .Include(d => d.Targets).ThenInclude(a => a.Target)
             .Include(d => d.Tenant)
             .Where(d => d.Targets.Any(a => a.TargetId == targetId))
             .OrderByDescending(d => d.CreatedUtc)
@@ -392,6 +395,23 @@ public class DeploymentService(
                 ServerTaskLease.InFlightDeploymentPeerPredicate(
                     queuedDeploymentId, projectId, environmentId, tenantId),
                 ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// F6 read-side helper — the target-wait reason for a still-<c>Queued</c>
+    /// task, or <c>null</c> when no serial target is contended. The UI read of
+    /// the SAME query the claim refuses on (<see cref="ServerTaskTargetExclusion"/>),
+    /// so the banner can never drift from the actual gate — the
+    /// <see cref="HasInFlightPeerAsync"/> discipline extended to the target
+    /// dimension.
+    /// </summary>
+    public async Task<ServerTaskTargetExclusion.TargetConflict?> GetTargetConflictAsync(
+        Guid taskId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await ServerTaskTargetExclusion
+            .DescribeConflictAsync(db, taskId, time.GetUtcNow(), ct)
             .ConfigureAwait(false);
     }
 
