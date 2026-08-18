@@ -1,0 +1,441 @@
+@page "/s/{SpaceSlug}/projects/{Slug}/tenant-variables"
+@inherits SpaceScopedComponentBase
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Projects
+@using KrakenDeploy.Server.Core.Domain.Variables
+@using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Core.Domain.Tenants
+@inject ProjectService ProjectSvc
+@inject VariableService VariableSvc
+@inject EnvironmentService EnvironmentSvc
+@inject TenantService TenantSvc
+@inject DialogService Dialog
+@inject NotificationService Notifications
+@inject UiActionGuard Guard
+
+@*
+    Per-tenant variable values for this project.
+
+    Modelling note: the resolver overlays tenant values from TWO places —
+    (a) project variables whose jsonb scope carries TenantId (authored here and
+    on the Variables pages), and (b) a tenant-common VariableSet referenced by
+    Tenant.VariableSetId (VariableSetKind.TenantCommon). The latter is reserved:
+    nothing in the product ever assigns Tenant.VariableSetId or creates a
+    TenantCommon set, so this page deliberately authors ONLY (a) — inventing a
+    TenantCommon authoring flow is out of scope (see WP6).
+*@
+
+<ProjectShell Slug="@Slug">
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-3">
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+            Tenant Variables
+        </RadzenText>
+        @if (_project is not null && _selectedTenantId is not null)
+        {
+            <RequirePermission Permission="Permission.VariableEdit">
+                <RadzenButton Text="Add value" Icon="add_circle_outline" ButtonStyle="ButtonStyle.Primary"
+                              Size="ButtonSize.Small" Click="@OpenCreate" />
+            </RequirePermission>
+        }
+    </RadzenStack>
+    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-3">
+        Tenant values are project variables scoped to a tenant — at deploy time the resolver
+        overlays them onto the base value for that tenant's deployments. A value scoped to a
+        tenant <em>and</em> an environment applies only to that combination.
+    </RadzenText>
+
+    @if (!_loaded)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
+    }
+    else if (_loadError is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+            Failed to load: @_loadError
+        </RadzenAlert>
+    }
+    else if (_project is null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            Project '@Slug' was not found.
+        </RadzenAlert>
+    }
+    else if (_connectedTenants.Count == 0)
+    {
+        <RadzenCard class="rz-p-5 rz-text-align-center">
+            <RadzenIcon Icon="people_outline" Style="font-size: 3rem; opacity: 0.3;" />
+            <RadzenText TextStyle="TextStyle.H6" class="rz-mt-3">
+                No tenants connected to this project
+            </RadzenText>
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                Connect tenants on the
+                <RadzenLink Path="@Sp($"/projects/{Slug}/tenants")" Text="Tenants tab" />
+                first, then set per-tenant values here.
+            </RadzenText>
+        </RadzenCard>
+    }
+    else
+    {
+        <RadzenCard class="rz-mb-3">
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem" AlignItems="AlignItems.End" Wrap="FlexWrap.Wrap">
+                <div>
+                    <RadzenLabel Text="Tenant" />
+                    <RadzenDropDown TValue="Guid?" Value="@_selectedTenantId"
+                                    ValueChanged="@((Guid? v) => OnTenantChanged(v))"
+                                    Data="@_connectedTenants" TextProperty="Name" ValueProperty="Id"
+                                    AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                    Placeholder="Select a tenant..." Style="width: 260px;" />
+                </div>
+            </RadzenStack>
+        </RadzenCard>
+
+        @if (_selectedTenantId is null)
+        {
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                Select a tenant above to view and edit its variable values for this project.
+            </RadzenText>
+        }
+        else
+        {
+            @if (_formOpen)
+            {
+                <RadzenCard class="rz-mb-4">
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">
+                        @(_editId is null ? "New tenant value" : "Edit tenant value")
+                    </RadzenText>
+                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem" AlignItems="AlignItems.End" Wrap="FlexWrap.Wrap">
+                        <div>
+                            <RadzenLabel Text="Name" />
+                            <RadzenTextBox @bind-Value="_formName" Placeholder="ConnectionString"
+                                           Disabled="@(_editId is not null)" Style="width: 240px;" />
+                        </div>
+                        <div>
+                            <RadzenLabel Text="Type" />
+                            <RadzenDropDown TValue="VariableType" @bind-Value="_formType"
+                                            Data="@_formTypes" Disabled="@(_editId is not null)"
+                                            Style="width: 130px;" />
+                        </div>
+                        <div>
+                            <RadzenLabel Text="Value" />
+                            @if (_formType == VariableType.Sensitive)
+                            {
+                                <RadzenPassword @bind-Value="_formValue" autocomplete="off"
+                                                Placeholder="@(_editId is null ? "" : "(retype to change)")"
+                                                Style="width: 280px;" />
+                            }
+                            else
+                            {
+                                <RadzenTextBox @bind-Value="_formValue" Style="width: 280px;" />
+                            }
+                        </div>
+                        <div>
+                            <RadzenLabel Text="Environment (optional)" />
+                            <RadzenDropDown TValue="Guid?" @bind-Value="_formEnvId"
+                                            Data="@_environments" TextProperty="Name" ValueProperty="Id"
+                                            AllowClear="true" Placeholder="(all environments)"
+                                            Style="width: 200px;" />
+                        </div>
+                        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                            <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                                          Click="@SaveAsync" />
+                            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                                          Click="@(() => _formOpen = false)" />
+                        </RadzenStack>
+                    </RadzenStack>
+                </RadzenCard>
+            }
+
+            @if (TenantRows.Count == 0 && !_formOpen)
+            {
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                    No values scoped to this tenant yet — click "Add value" to create one.
+                </RadzenText>
+            }
+            else if (TenantRows.Count > 0)
+            {
+                <KrakenGrid SettingsKey="project-tenant-vars" Data="@TenantRows" TItem="VariableDto"
+                            AllowSorting="true" AllowPaging="true" PageSize="50"
+                            AllowColumnResize="true" AllowFiltering="true"
+                            FilterMode="FilterMode.Simple"
+                            GridLines="DataGridGridLines.Horizontal">
+                    <Columns>
+                        <RadzenDataGridColumn TItem="VariableDto" Property="Name" Title="Name" Width="240px" />
+                        <RadzenDataGridColumn TItem="VariableDto" Title="Value" Sortable="false" Filterable="false" UniqueID="value">
+                            <Template Context="v">
+                                @if (v.Type == "Sensitive")
+                                {
+                                    <RadzenBadge Text="*** sensitive ***" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                                }
+                                else if (v.Value.Length > 80)
+                                {
+                                    <span title="@v.Value">@v.Value[..80]…</span>
+                                }
+                                else
+                                {
+                                    <code class="kraken-var-value">@v.Value</code>
+                                }
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="VariableDto" Property="Type" Title="Type" Width="100px" />
+                        <RadzenDataGridColumn TItem="VariableDto" Title="Environment" Width="150px" Sortable="false" Filterable="false" UniqueID="scope-env">
+                            <Template Context="v">
+                                @if (v.Scope.EnvironmentId is { } envId)
+                                {
+                                    <RadzenBadge Text="@EnvName(envId)" BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                                }
+                                else
+                                {
+                                    <span class="rz-color-secondary">all</span>
+                                }
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="VariableDto" Title="Other scope" Width="160px" Sortable="false" Filterable="false" UniqueID="scope-other">
+                            <Template Context="v">
+                                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="0.2rem">
+                                    @if (v.Scope.TargetId.HasValue)
+                                    {
+                                        <RadzenBadge Text="target" BadgeStyle="BadgeStyle.Secondary" IsPill="true" />
+                                    }
+                                    @if (v.Scope.Roles is { Count: > 0 })
+                                    {
+                                        <RadzenBadge Text="role" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                                    }
+                                    @if (v.Scope.ChannelId.HasValue)
+                                    {
+                                        <RadzenBadge Text="channel" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                                    }
+                                    @if (v.Scope.ProcessStepId.HasValue)
+                                    {
+                                        <RadzenBadge Text="step" BadgeStyle="BadgeStyle.Primary" IsPill="true" />
+                                    }
+                                </RadzenStack>
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="VariableDto" Title="" Width="110px" Sortable="false" Filterable="false"
+                                              TextAlign="TextAlign.Right" UniqueID="actions">
+                            <Template Context="v">
+                                <RequirePermission Permission="Permission.VariableEdit">
+                                    <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                                                  Variant="Variant.Text" title="Edit"
+                                                  Click="@(() => OpenEdit(v))" />
+                                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
+                                                  Variant="Variant.Text" title="Delete"
+                                                  Click="@(async _ => await DeleteAsync(v))" />
+                                </RequirePermission>
+                            </Template>
+                        </RadzenDataGridColumn>
+                    </Columns>
+                </KrakenGrid>
+            }
+        }
+    }
+</ProjectShell>
+
+@code {
+    [Parameter] public string Slug { get; set; } = "";
+
+    private Project? _project;
+    private List<Tenant> _connectedTenants = [];
+    private List<DeploymentEnvironment> _environments = [];
+    private List<VariableDto> _variables = [];
+    private Dictionary<Guid, string> _envNames = [];
+    private bool _loaded;
+    private string? _loadError;
+    private Guid? _selectedTenantId;
+    // Which Slug the page state belongs to — the router reuses this component
+    // instance across same-route navigations, so per-project state (selected
+    // tenant, open form) must be reset when the Slug actually changes.
+    private string? _loadedSlug;
+
+    // Only Text and Sensitive are offered — StringArray values are edited on
+    // the Variables page, which has the dedicated array editor.
+    private static readonly VariableType[] _formTypes = [VariableType.Text, VariableType.Sensitive];
+
+    private bool _formOpen;
+    private Guid? _editId;
+    private string _formName = "";
+    private string _formValue = "";
+    private VariableType _formType = VariableType.Text;
+    private Guid? _formEnvId;
+    // The non-editable scope dimensions of the row being edited (target/role/
+    // channel/step/tenant-tags, authored on the Variables page) — preserved on
+    // save so this editor never silently widens a definition.
+    private VariableScope? _editScope;
+
+    private List<VariableDto> TenantRows =>
+        _variables.Where(v => v.Scope.TenantId == _selectedTenantId).ToList();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loadError = null;
+        if (!string.Equals(_loadedSlug, Slug, StringComparison.OrdinalIgnoreCase))
+        {
+            _selectedTenantId = null;
+            _formOpen = false;
+            _editId = null;
+            _loadedSlug = Slug;
+        }
+        try
+        {
+            _project = await ProjectSvc.GetBySlugAsync(Slug);
+            if (_project is null) return;
+
+            // includeArchived: values scoped to a since-archived environment must
+            // still resolve their badge and survive an edit round-trip unchanged
+            // (see VariableFormDialog for the same trap).
+            _environments = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
+            _envNames = _environments.ToDictionary(e => e.Id, e => e.Name);
+            _variables = await VariableSvc.GetVariablesAsync(_project.Id);
+            _connectedTenants = await TenantSvc.GetForProjectAsync(_project.Id);
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    private void OnTenantChanged(Guid? tenantId)
+    {
+        _selectedTenantId = tenantId;
+        _formOpen = false;
+    }
+
+    private void OpenCreate()
+    {
+        _editId = null;
+        _formName = "";
+        _formValue = "";
+        _formType = VariableType.Text;
+        _formEnvId = null;
+        _editScope = null;
+        _formOpen = true;
+    }
+
+    private void OpenEdit(VariableDto v)
+    {
+        _editId = v.Id;
+        _formName = v.Name;
+        // Sensitive: never round-trip the mask — blank means "keep stored value".
+        _formValue = v.Type == "Sensitive" ? "" : v.Value;
+        _formType = Enum.TryParse<VariableType>(v.Type, out var t) ? t : VariableType.Text;
+        _formEnvId = v.Scope.EnvironmentId;
+        _editScope = v.Scope;
+        _formOpen = true;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_project is null || _selectedTenantId is null) return;
+        // The service stores the scope unvalidated; make sure the stamped tenant
+        // is actually connected to THIS project (stale selection can survive a
+        // same-route navigation to another project).
+        if (!_connectedTenants.Any(t => t.Id == _selectedTenantId))
+        {
+            Notifications.Notify(NotificationSeverity.Warning, "Tenant not connected",
+                "Pick a tenant that is connected to this project first.", 4000);
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_formName))
+        {
+            Notifications.Notify(NotificationSeverity.Warning, "Name required",
+                "Enter a variable name.", 3000);
+            return;
+        }
+        // Blank is only meaningful on EDIT of a Sensitive variable ("keep stored
+        // value") — a new Sensitive variable must carry one (VariableFormDialog rule).
+        if (_formType == VariableType.Sensitive && _editId is null
+            && string.IsNullOrEmpty(_formValue))
+        {
+            Notifications.Notify(NotificationSeverity.Warning, "Value required",
+                "A sensitive variable requires a value.", 4000);
+            return;
+        }
+        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
+
+        var scope = new VariableScope
+        {
+            TenantId      = _selectedTenantId,
+            EnvironmentId = _formEnvId,
+            TargetId      = _editScope?.TargetId,
+            Roles         = _editScope?.Roles is { } roles ? [.. roles] : null,
+            ChannelId     = _editScope?.ChannelId,
+            ProcessStepId = _editScope?.ProcessStepId,
+            TenantTagIds  = _editScope?.TenantTagIds is { } tags ? [.. tags] : null,
+        };
+
+        try
+        {
+            if (_editId is { } id)
+            {
+                // Blank sensitive value = keep the stored ciphertext untouched.
+                var value = _formType == VariableType.Sensitive && _formValue.Length == 0
+                    ? null
+                    : _formValue;
+                var updated = await VariableSvc.UpdateVariableAsync(id, _formName.Trim(), value,
+                    _formType, scope, await Guard.CurrentCallerAsync());
+                if (updated is null)
+                {
+                    _variables = await VariableSvc.GetVariablesAsync(_project.Id);
+                    _formOpen = false;
+                    Notifications.Notify(NotificationSeverity.Warning, "Not saved",
+                        $"'{_formName.Trim()}' no longer exists — it was deleted by someone else.", 5000);
+                    return;
+                }
+            }
+            else
+            {
+                await VariableSvc.CreateVariableAsync(_project.Id, _formName.Trim(),
+                    _formValue, _formType, scope, await Guard.CurrentCallerAsync());
+            }
+
+            _variables = await VariableSvc.GetVariablesAsync(_project.Id);
+            _formOpen = false;
+            Notifications.Notify(NotificationSeverity.Success, "Saved",
+                $"'{_formName.Trim()}' was saved.", 3000);
+        }
+        catch (AuthorizationException)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Not allowed",
+                "You don't have permission to edit variables in this project.", 5000);
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Save failed", ex.Message, 5000);
+        }
+    }
+
+    private async Task DeleteAsync(VariableDto v)
+    {
+        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
+        var confirmed = await Dialog.Confirm(
+            $"Delete the tenant value '{v.Name}'? Deployments for this tenant will fall "
+            + "back to the base (non-tenant) value.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
+
+        try
+        {
+            await VariableSvc.DeleteVariableAsync(v.Id, await Guard.CurrentCallerAsync());
+            _variables = _variables.Where(x => x.Id != v.Id).ToList();
+            Notifications.Notify(NotificationSeverity.Info, "Deleted", v.Name, 3000);
+        }
+        catch (AuthorizationException)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Not allowed",
+                "You don't have permission to edit variables in this project.", 5000);
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Delete failed", ex.Message, 5000);
+        }
+    }
+
+    private string EnvName(Guid id) => _envNames.TryGetValue(id, out var n) ? n : "?";
+}

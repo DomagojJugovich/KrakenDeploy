@@ -143,7 +143,15 @@ internal static class SeedDemoCommands
         //    Projects / project dashboards ─────────────────────────────────
         await SeedChannelsAsync(dbFactory, sp.GetRequiredService<ChannelService>()).ConfigureAwait(false);
 
-        Console.WriteLine($"Seeded: {targets.Count} targets, {specs.Length} projects/releases, demo deployments, 3 tenants.");
+        // ── Variables: project vars (scoped + sensitive), a shared library
+        //    set, and per-tenant values — so the Variables tabs (Project /
+        //    Tenant / All / Preview) render populated for demo projects ─────
+        await SeedVariablesAsync(dbFactory, sp.GetRequiredService<VariableService>()).ConfigureAwait(false);
+
+        // ── Runbooks: a few per project so the project Runbooks tab has data ─
+        await SeedRunbooksAsync(dbFactory, sp.GetRequiredService<RunbookService>()).ConfigureAwait(false);
+
+        Console.WriteLine($"Seeded: {targets.Count} targets, {specs.Length} projects/releases, demo deployments, 3 tenants, variables, runbooks.");
         Console.WriteLine("Open the dashboard / deployments / targets to review. Re-run with --clear to remove.");
         return 0;
     }
@@ -681,9 +689,252 @@ internal static class SeedDemoCommands
         await using var db = await dbFactory.CreateDbContextAsync();
         db.Deployments.RemoveRange(await db.Deployments.ToListAsync());
         db.Releases.RemoveRange(await db.Releases.ToListAsync());
+        // Runbook runs first: runbook_runs -> runbooks is ON DELETE RESTRICT
+        // (run history never cascades), so leaving them aborts the whole clear.
+        db.RunbookRuns.RemoveRange(await db.RunbookRuns.ToListAsync());
+        db.Runbooks.RemoveRange(await db.Runbooks.ToListAsync());
+        // Processes are polymorphic (no FK to their owner) — the owning service
+        // normally deletes them. Every project and runbook goes below, so every
+        // process row of either owner kind would otherwise be orphaned.
+        db.Processes.RemoveRange(await db.Processes.ToListAsync());
         db.Projects.RemoveRange(await db.Projects.ToListAsync());
+        // Project variable sets cascade with their project; the shared demo
+        // library set is project-independent and needs explicit removal.
+        db.VariableSets.RemoveRange(await db.VariableSets
+            .Where(s => s.Name == DemoLibrarySetName).ToListAsync());
         db.Tenants.RemoveRange(await db.Tenants.Where(t => DemoTenantSlugs.Contains(t.Slug)).ToListAsync());
         db.DeploymentTargets.RemoveRange(await db.DeploymentTargets.Where(t => t.Name.StartsWith("demo-")).ToListAsync());
         await db.SaveChangesAsync();
+    }
+
+    private const string DemoLibrarySetName = "Company Defaults";
+
+    /// <summary>
+    /// One demo variable definition. Environment/tenant scope is carried as a
+    /// NAME and resolved at insert time — a lookup miss skips the spec with a
+    /// warning instead of silently collapsing it to an unscoped duplicate
+    /// (an all-null <see cref="VariableScope"/> matches every context).
+    /// </summary>
+    private sealed record DemoVarSpec(
+        string Project, string Name, string Value, VariableType Type,
+        string? EnvName = null, string? TenantSlug = null,
+        string[]? Roles = null, Guid? ChannelId = null);
+
+    /// <summary>
+    /// Variables for the demo projects: unscoped + environment-scoped +
+    /// role-scoped + channel-scoped + sensitive project variables, a shared
+    /// library set included by two projects, and tenant-scoped values for the
+    /// connected demo tenants. Idempotent on (name, env, tenant, channel), so
+    /// a partially-seeded project converges on re-run.
+    /// </summary>
+    private static async Task SeedVariablesAsync(
+        IDbContextFactory<KrakenDbContext> dbFactory, VariableService variableSvc)
+    {
+        var system = KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System;
+
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var projectIds = await db.Projects.ToDictionaryAsync(p => p.Slug, p => p.Id);
+        var envIds = await db.Environments.ToDictionaryAsync(e => e.Name, e => e.Id);
+        var tenantIds = await db.Tenants.Where(t => DemoTenantSlugs.Contains(t.Slug))
+            .ToDictionaryAsync(t => t.Slug, t => t.Id);
+
+        // Scope-aware idempotency key: name-only skipping would freeze a
+        // half-seeded name group (e.g. only the Dev-scoped variant) forever.
+        static string Key(string name, Guid? envId, Guid? tenantId, Guid? channelId) =>
+            $"{name.ToLowerInvariant()}|{envId}|{tenantId}|{channelId}";
+
+        // Resolves a spec's scope; returns false (with a console warning) when a
+        // named environment/tenant doesn't exist in this database.
+        bool TryResolveScope(DemoVarSpec spec, out VariableScope? scope,
+            out Guid? envId, out Guid? tenantId)
+        {
+            scope = null;
+            envId = null;
+            tenantId = null;
+            if (spec.EnvName is not null)
+            {
+                if (!envIds.TryGetValue(spec.EnvName, out var e))
+                {
+                    Console.WriteLine(
+                        $"WARNING: skipping demo variable '{spec.Name}' — no environment named " +
+                        $"'{spec.EnvName}' exists (environments are only auto-created into an empty database).");
+                    return false;
+                }
+                envId = e;
+            }
+            if (spec.TenantSlug is not null)
+            {
+                if (!tenantIds.TryGetValue(spec.TenantSlug, out var t))
+                {
+                    Console.WriteLine(
+                        $"WARNING: skipping demo variable '{spec.Name}' — demo tenant '{spec.TenantSlug}' not found.");
+                    return false;
+                }
+                tenantId = t;
+            }
+            if (envId is not null || tenantId is not null || spec.Roles is not null || spec.ChannelId is not null)
+            {
+                scope = new VariableScope
+                {
+                    EnvironmentId = envId,
+                    TenantId      = tenantId,
+                    Roles         = spec.Roles is { } roles ? [.. roles] : null,
+                    ChannelId     = spec.ChannelId,
+                };
+            }
+            return true;
+        }
+
+        var specs = new List<DemoVarSpec>();
+
+        if (projectIds.TryGetValue("argosy-web", out var argosyWebId))
+        {
+            var hotfixChannelId = await db.Channels
+                .Where(c => c.ProjectId == argosyWebId && c.Name == "hotfix")
+                .Select(c => (Guid?)c.Id).FirstOrDefaultAsync();
+
+            specs.AddRange(
+            [
+                new("argosy-web", "Database.Name", "argosy_web", VariableType.Text),
+                new("argosy-web", "Database.Password", "demo-P@ssw0rd-web", VariableType.Sensitive),
+                new("argosy-web", "Api.BaseUrl", "https://dev.argosy.example/api", VariableType.Text, EnvName: "Development"),
+                new("argosy-web", "Api.BaseUrl", "https://argosy.example/api", VariableType.Text, EnvName: "Production"),
+                new("argosy-web", "Log.Level", "Warning", VariableType.Text),
+                new("argosy-web", "Log.Level", "Debug", VariableType.Text, EnvName: "Development"),
+                new("argosy-web", "IIS.AppPool", "argosy-web-pool", VariableType.Text, Roles: ["web-server"]),
+                new("argosy-web", "Tenant.DisplayName", "Grad Dubrovnik", VariableType.Text, TenantSlug: "grad-dubrovnik"),
+                new("argosy-web", "Tenant.DisplayName", "Grad Split", VariableType.Text, TenantSlug: "grad-split"),
+                new("argosy-web", "Tenant.DbSchema", "dbk", VariableType.Text, TenantSlug: "grad-dubrovnik"),
+                new("argosy-web", "Tenant.DbSchema", "st", VariableType.Text, TenantSlug: "grad-split"),
+            ]);
+            if (hotfixChannelId is not null)
+            {
+                specs.Add(new("argosy-web", "Deploy.Ring", "hotfix", VariableType.Text, ChannelId: hotfixChannelId));
+            }
+        }
+
+        if (projectIds.ContainsKey("argosy-api"))
+        {
+            specs.AddRange(
+            [
+                new("argosy-api", "Api.TimeoutSeconds", "30", VariableType.Text),
+                new("argosy-api", "Database.Password", "demo-P@ssw0rd-api", VariableType.Sensitive),
+                new("argosy-api", "Tenant.ApiKey", "demo-key-dbk", VariableType.Sensitive, TenantSlug: "grad-dubrovnik"),
+                new("argosy-api", "Tenant.ApiKey", "demo-key-st", VariableType.Sensitive, TenantSlug: "grad-split"),
+            ]);
+        }
+
+        if (projectIds.ContainsKey("billing-service"))
+        {
+            specs.AddRange(
+            [
+                new("billing-service", "Billing.Currency", "EUR", VariableType.Text),
+                new("billing-service", "Tenant.InvoicePrefix", "MF", VariableType.Text, TenantSlug: "ministarstvo-financija"),
+            ]);
+        }
+
+        foreach (var group in specs.GroupBy(s => s.Project))
+        {
+            var projectId = projectIds[group.Key];
+            var existing = (await variableSvc.GetVariablesAsync(projectId).ConfigureAwait(false))
+                .Select(v => Key(v.Name, v.Scope.EnvironmentId, v.Scope.TenantId, v.Scope.ChannelId))
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (var spec in group)
+            {
+                if (!TryResolveScope(spec, out var scope, out var envId, out var tenantId))
+                {
+                    continue;
+                }
+                if (existing.Contains(Key(spec.Name, envId, tenantId, spec.ChannelId)))
+                {
+                    continue;
+                }
+                await variableSvc.CreateVariableAsync(projectId, spec.Name, spec.Value, spec.Type, scope, system)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        // Shared library set included by both Argosy projects — gives the All
+        // Variables tab a non-project source and the preview a lower-precedence
+        // layer to override.
+        var librarySet = (await variableSvc.GetLibrarySetsAsync().ConfigureAwait(false))
+            .FirstOrDefault(s => s.Name == DemoLibrarySetName)
+            ?? await variableSvc.CreateLibrarySetAsync(DemoLibrarySetName,
+                "Shared demo defaults (SMTP, branding)").ConfigureAwait(false);
+
+        var setExisting = (await variableSvc.GetVariablesInSetAsync(librarySet.Id).ConfigureAwait(false))
+            .Select(v => Key(v.Name, v.Scope.EnvironmentId, v.Scope.TenantId, v.Scope.ChannelId))
+            .ToHashSet(StringComparer.Ordinal);
+        DemoVarSpec[] setSpecs =
+        [
+            new("", "Company.Name", "Kraken Demo d.o.o.", VariableType.Text),
+            new("", "Smtp.Host", "smtp.demo.local", VariableType.Text),
+            new("", "Smtp.Host", "smtp.prod.demo.local", VariableType.Text, EnvName: "Production"),
+            // Same name as the project-level variable: the project definition
+            // wins on an origin tiebreak — visible in the Preview tab.
+            new("", "Log.Level", "Information", VariableType.Text),
+        ];
+        foreach (var spec in setSpecs)
+        {
+            if (!TryResolveScope(spec, out var scope, out var envId, out var tenantId))
+            {
+                continue;
+            }
+            if (setExisting.Contains(Key(spec.Name, envId, tenantId, spec.ChannelId)))
+            {
+                continue;
+            }
+            await variableSvc.CreateVariableInSetAsync(librarySet.Id, spec.Name, spec.Value, spec.Type, scope, system)
+                .ConfigureAwait(false);
+        }
+
+        foreach (var slug in new[] { "argosy-web", "argosy-api" })
+        {
+            if (projectIds.TryGetValue(slug, out var pid))
+            {
+                // IncludeSetAsync is a no-op when already included.
+                await variableSvc.IncludeSetAsync(pid, librarySet.Id, system).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// A few runbooks per demo project so the project Runbooks tab lists real
+    /// rows. Idempotent: skips names that already exist.
+    /// </summary>
+    private static async Task SeedRunbooksAsync(
+        IDbContextFactory<KrakenDbContext> dbFactory, RunbookService runbookSvc)
+    {
+        var system = KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System;
+
+        (string ProjectSlug, string Name, string Description)[] specs =
+        [
+            ("argosy-web", "Restart IIS app pool", "Recycle the argosy-web application pool on all web servers."),
+            ("argosy-web", "Rotate log files", "Archive and truncate IIS + app logs older than 14 days."),
+            ("argosy-api", "Restart API service", "Restart the argosy-api Windows service."),
+            ("billing-service", "Backup database", "Full backup of the billing database to the backup share."),
+            ("billing-service", "Reindex database", "Rebuild fragmented indexes outside business hours."),
+        ];
+
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var projectIds = await db.Projects.ToDictionaryAsync(p => p.Slug, p => p.Id);
+
+        foreach (var group in specs.GroupBy(s => s.ProjectSlug))
+        {
+            if (!projectIds.TryGetValue(group.Key, out var projectId))
+            {
+                continue;
+            }
+            var existing = (await runbookSvc.GetAllAsync(projectId).ConfigureAwait(false))
+                .Select(r => r.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var (_, name, description) in group)
+            {
+                if (existing.Contains(name))
+                {
+                    continue;
+                }
+                await runbookSvc.CreateAsync(projectId, name, description, system).ConfigureAwait(false);
+            }
+        }
     }
 }

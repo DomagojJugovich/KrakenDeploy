@@ -54,7 +54,16 @@ else if (_project is not null)
         }
     </nav>
 
-    @if (RunbooksFamily.Contains(ActiveSegment))
+    @if (VariablesFamily.Contains(ActiveSegment))
+    {
+        <div class="kraken-ptabs-sub">
+            @foreach (var sub in VariablesSubTabs)
+            {
+                <a class="kraken-ptab-sub @(ActiveSegment == sub.Seg ? "active" : null)" href="@Sub(sub.Seg)">@sub.Label</a>
+            }
+        </div>
+    }
+    else if (RunbooksFamily.Contains(ActiveSegment))
     {
         <div class="kraken-ptabs-sub">
             @foreach (var sub in RunbooksSubTabs)
@@ -93,7 +102,19 @@ else if (_project is not null)
         ("settings", "settings", "Settings"),
     ];
 
+    private static readonly string[] VariablesFamily =
+        ["variables", "tenant-variables", "variable-sets", "all-variables", "variable-preview"];
+
     private static readonly string[] RunbooksFamily = ["runbooks", "runbook-triggers"];
+
+    private static readonly (string Seg, string Label)[] VariablesSubTabs =
+    [
+        ("variables", "Project Variables"),
+        ("tenant-variables", "Tenant Variables"),
+        ("variable-sets", "Variable Sets"),
+        ("all-variables", "All Variables"),
+        ("variable-preview", "Preview"),
+    ];
 
     private static readonly (string Seg, string Label)[] RunbooksSubTabs =
     [
@@ -124,6 +145,7 @@ else if (_project is not null)
 
     private bool IsTabActive(string seg) => seg switch
     {
+        "variables" => VariablesFamily.Contains(ActiveSegment),
         "runbooks"  => RunbooksFamily.Contains(ActiveSegment),
         _           => string.Equals(ActiveSegment, seg, StringComparison.OrdinalIgnoreCase),
     };

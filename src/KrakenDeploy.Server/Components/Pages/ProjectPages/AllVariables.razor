@@ -1,0 +1,253 @@
+@page "/s/{SpaceSlug}/projects/{Slug}/all-variables"
+@inherits SpaceScopedComponentBase
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Projects
+@using KrakenDeploy.Server.Core.Domain.Variables
+@inject ProjectService ProjectSvc
+@inject VariableService VariableSvc
+@inject EnvironmentService EnvironmentSvc
+@inject TenantService TenantSvc
+@inject TargetService TargetSvc
+@inject ChannelService ChannelSvc
+@inject ProcessService ProcessSvc
+
+<ProjectShell Slug="@Slug">
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-3">
+        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.6rem">
+            <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+                All Variables
+            </RadzenText>
+            @if (_loaded && _loadError is null && _project is not null)
+            {
+                <RadzenBadge Text="@($"{_rows.Count} definitions")" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+            }
+        </RadzenStack>
+    </RadzenStack>
+    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-3">
+        Every variable definition this project can resolve from: its own variables, included
+        library variable sets (in overlay order), and tenant-common sets of connected tenants.
+        Read-only — use the source link to edit a definition.
+    </RadzenText>
+
+    @if (!_loaded)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
+    }
+    else if (_loadError is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+            Failed to load: @_loadError
+        </RadzenAlert>
+    }
+    else if (_project is null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            Project '@Slug' was not found.
+        </RadzenAlert>
+    }
+    else if (_rows.Count == 0)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            No variables are defined for this project or its included sets.
+        </RadzenText>
+    }
+    else
+    {
+        <KrakenGrid SettingsKey="project-all-variables" Data="@_rows" TItem="AllVarRow"
+                    AllowSorting="true" AllowPaging="true" PageSize="50"
+                    AllowColumnResize="true" AllowFiltering="true"
+                    FilterMode="FilterMode.Simple"
+                    GridLines="DataGridGridLines.Horizontal">
+            <Columns>
+                <RadzenDataGridColumn TItem="AllVarRow" Property="Name" Title="Name" Width="220px" />
+                <RadzenDataGridColumn TItem="AllVarRow" Title="Value" Sortable="false" Filterable="false" UniqueID="value">
+                    <Template Context="r">
+                        @if (r.Type == "Sensitive")
+                        {
+                            <RadzenBadge Text="*** sensitive ***" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                        }
+                        else if (r.Value.Length > 80)
+                        {
+                            <span title="@r.Value">@r.Value[..80]…</span>
+                        }
+                        else
+                        {
+                            <code class="kraken-var-value">@r.Value</code>
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="AllVarRow" Property="Type" Title="Type" Width="100px" />
+                <RadzenDataGridColumn TItem="AllVarRow" Property="Source" Title="Source" Width="170px">
+                    <Template Context="r">
+                        <RadzenLink Path="@r.SourceHref" Text="@r.Source" />
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="AllVarRow" Title="Environment" Width="130px" Sortable="false" Filterable="false" UniqueID="scope-env">
+                    <Template Context="r">
+                        @if (r.Scope.EnvironmentId is { } envId)
+                        {
+                            <RadzenBadge Text="@EnvName(envId)" BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="AllVarRow" Title="Tenant" Width="130px" Sortable="false" Filterable="false" UniqueID="scope-tenant">
+                    <Template Context="r">
+                        @if (r.Scope.TenantId is { } tenantId)
+                        {
+                            <RadzenBadge Text="@TenantName(tenantId)" BadgeStyle="BadgeStyle.Success" IsPill="true" />
+                        }
+                        @if (r.Scope.TenantTagIds is { Count: > 0 } tags)
+                        {
+                            <RadzenBadge Text="@($"tag ×{tags.Count}")" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="AllVarRow" Title="Target" Width="130px" Sortable="false" Filterable="false" UniqueID="scope-target">
+                    <Template Context="r">
+                        @if (r.Scope.TargetId is { } targetId)
+                        {
+                            <RadzenBadge Text="@TargetName(targetId)" BadgeStyle="BadgeStyle.Secondary" IsPill="true" />
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="AllVarRow" Title="Roles" Width="130px" Sortable="false" Filterable="false" UniqueID="scope-roles">
+                    <Template Context="r">
+                        @if (r.Scope.Roles is { Count: > 0 })
+                        {
+                            <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="0.2rem">
+                                @foreach (var role in r.Scope.Roles)
+                                {
+                                    <RadzenBadge Text="@role" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                                }
+                            </RadzenStack>
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="AllVarRow" Title="Channel" Width="120px" Sortable="false" Filterable="false" UniqueID="scope-channel">
+                    <Template Context="r">
+                        @if (r.Scope.ChannelId is { } channelId)
+                        {
+                            <RadzenBadge Text="@ChannelName(channelId)" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="AllVarRow" Title="Step" Width="130px" Sortable="false" Filterable="false"
+                                      UniqueID="scope-step" Visible="@_hasStepScoped">
+                    <Template Context="r">
+                        @if (r.Scope.ProcessStepId is { } stepId)
+                        {
+                            <RadzenBadge Text="@StepName(stepId)" BadgeStyle="BadgeStyle.Primary" IsPill="true" />
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+            </Columns>
+        </KrakenGrid>
+    }
+</ProjectShell>
+
+@code {
+    [Parameter] public string Slug { get; set; } = "";
+
+    /// <summary>
+    /// One variable definition with its origin. Name/Type/Value are lifted out
+    /// of the DTO so the grid can sort/filter them via Property paths.
+    /// Values come from the masked-DTO read APIs — sensitive is always "***".
+    /// </summary>
+    private sealed record AllVarRow(
+        string Name, string Value, string Type, VariableScope Scope,
+        string Source, string SourceHref);
+
+    private Project? _project;
+    private List<AllVarRow> _rows = [];
+    private bool _loaded;
+    private string? _loadError;
+    private bool _hasStepScoped;
+
+    private Dictionary<Guid, string> _envNames = [];
+    private Dictionary<Guid, string> _tenantNames = [];
+    private Dictionary<Guid, string> _targetNames = [];
+    private Dictionary<Guid, string> _channelNames = [];
+    private Dictionary<Guid, string> _stepNames = [];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // The router reuses this instance across same-route navigations — a
+        // stale error from a previous load must not shadow a successful one.
+        _loadError = null;
+        try
+        {
+            _project = await ProjectSvc.GetBySlugAsync(Slug);
+            if (_project is null) return;
+
+            var rows = new List<AllVarRow>();
+
+            // Project's own set — the strongest origin at equal scope specificity.
+            var ownHref = Sp($"/projects/{Slug}/variables");
+            foreach (var v in await VariableSvc.GetVariablesAsync(_project.Id))
+            {
+                rows.Add(new AllVarRow(v.Name, v.Value, v.Type, v.Scope, "Project", ownHref));
+            }
+
+            // Included library sets, in overlay order (later set wins a tie).
+            foreach (var set in await VariableSvc.GetIncludedSetsAsync(_project.Id))
+            {
+                var href = Sp($"/variable-sets/{set.Id}");
+                foreach (var v in await VariableSvc.GetVariablesInSetAsync(set.Id))
+                {
+                    rows.Add(new AllVarRow(v.Name, v.Value, v.Type, v.Scope, set.Name ?? "Library set", href));
+                }
+            }
+
+            // Tenant-common sets of connected tenants — the weakest origin. The
+            // resolver reads Tenant.VariableSetId; the kind is reserved with no
+            // authoring path today, so this section is usually empty. The name
+            // map still needs ALL tenants: scope chips on library-set rows (and
+            // rows scoped before a disconnect) can reference any tenant id.
+            _tenantNames = (await TenantSvc.GetAllAsync()).ToDictionary(t => t.Id, t => t.Name);
+            foreach (var tenant in await TenantSvc.GetForProjectAsync(_project.Id))
+            {
+                if (tenant.VariableSetId is not { } setId)
+                {
+                    continue;
+                }
+
+                var href = Sp($"/variable-sets/{setId}");
+                foreach (var v in await VariableSvc.GetVariablesInSetAsync(setId))
+                {
+                    rows.Add(new AllVarRow(v.Name, v.Value, v.Type, v.Scope,
+                        $"Tenant: {tenant.Name}", href));
+                }
+            }
+
+            _rows = rows;
+            _hasStepScoped = rows.Any(r => r.Scope.ProcessStepId.HasValue);
+
+            _envNames = (await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true))
+                .ToDictionary(e => e.Id, e => e.Name);
+            _targetNames = (await TargetSvc.GetAllAsync()).ToDictionary(t => t.Id, t => t.Name);
+            _channelNames = (await ChannelSvc.GetForProjectAsync(_project.Id))
+                .ToDictionary(c => c.Id, c => c.Name);
+            if (_hasStepScoped)
+            {
+                var process = await ProcessSvc.GetAsync(_project.Id);
+                _stepNames = process?.Steps.ToDictionary(s => s.Id, s => s.Name) ?? [];
+            }
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    private string EnvName(Guid id) => _envNames.TryGetValue(id, out var n) ? n : "?";
+    private string TenantName(Guid id) => _tenantNames.TryGetValue(id, out var n) ? n : "?";
+    private string TargetName(Guid id) => _targetNames.TryGetValue(id, out var n) ? n : "?";
+    private string ChannelName(Guid id) => _channelNames.TryGetValue(id, out var n) ? n : "?";
+    private string StepName(Guid id) => _stepNames.TryGetValue(id, out var n) ? n : "?";
+}

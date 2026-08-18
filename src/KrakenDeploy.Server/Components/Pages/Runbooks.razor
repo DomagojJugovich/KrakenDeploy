@@ -4,10 +4,12 @@
 @using KrakenDeploy.Server.Core.Domain.Projects
 @using KrakenDeploy.Server.Core.Domain.Runbooks
 @using KrakenDeploy.Server.Data.Services
+@using Microsoft.EntityFrameworkCore
 @inject ProjectService ProjectSvc
 @inject RunbookService RunbookSvc
 @inject NavigationManager Nav
 @inject NotificationService Notify
+@inject DialogService Dialog
 @inject UiActionGuard Guard
 
 <PageTitle>Runbooks - KrakenDeploy</PageTitle>
@@ -83,9 +85,12 @@ else
             <RadzenDataGridColumn TItem="Runbook" Title="" Width="70px" TextAlign="TextAlign.Center">
                 <Template Context="rb">
                     <RequirePermission Permission="Permission.RunbookEdit">
+                    @* stopPropagation: the row's RowClick navigates to detail —
+                       the button must not also trigger it. *@
                     <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
                                   Variant="Variant.Text"
                                   Click="@(async _ => await DeleteAsync(rb))"
+                                  @onclick:stopPropagation="true"
                                   title="Delete" />
                 </RequirePermission>
                 </Template>
@@ -164,6 +169,12 @@ else
     private async Task DeleteAsync(Runbook rb)
     {
         if (!await Guard.AllowAsync(Permission.RunbookEdit)) return;
+        var confirmed = await Dialog.Confirm(
+            $"Delete runbook '{rb.Name}'? Its process steps are deleted with it.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
+
         try
         {
             var deleted = await RunbookSvc.DeleteAsync(rb.Id, await Guard.CurrentCallerAsync());
@@ -187,6 +198,19 @@ else
                 Summary  = "Not allowed",
                 Detail   = "You don't have permission to delete this runbook.",
                 Duration = 5000,
+            });
+        }
+        catch (DbUpdateException)
+        {
+            // runbook_runs -> runbooks is ON DELETE RESTRICT: run history is
+            // deliberately retained, so a runbook that has been run can't be
+            // deleted. Surface that instead of crashing the circuit.
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Cannot delete",
+                Detail   = $"'{rb.Name}' has run history, which is retained. Runbooks with runs cannot be deleted.",
+                Duration = 6000,
             });
         }
     }
