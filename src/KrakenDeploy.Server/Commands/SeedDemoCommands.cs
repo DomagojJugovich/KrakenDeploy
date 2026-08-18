@@ -1,5 +1,6 @@
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data;
@@ -20,6 +21,37 @@ namespace KrakenDeploy.Server.Commands;
 /// </summary>
 internal static class SeedDemoCommands
 {
+    /// <summary>
+    /// Provenance marker stamped on every row this tool creates in a table it
+    /// shares with real data, so <c>--clear</c> can scope its deletes: it goes
+    /// into <c>CauseDetail</c> on seeded deployments and into
+    /// <c>ReleaseNotes</c> on seeded releases (releases carry no other
+    /// provenance column). Never change the value — already-seeded databases
+    /// hold the old string and their rows would stop matching.
+    /// </summary>
+    private const string SeedMarker = "seed-demo";
+
+    /// <summary>
+    /// Stamped into the Description of projects this tool creates; --clear
+    /// requires it IN ADDITION to the slug before deleting a project, so a
+    /// real project that merely collides on slug is never destroyed.
+    /// </summary>
+    private const string DemoDescriptionSuffix = " — demo project";
+
+    /// <summary>
+    /// The demo projects, single source of truth for seed AND clear. The
+    /// seeder reuses an existing project with a matching slug instead of
+    /// creating one, so by its own semantics a matching slug IS the demo
+    /// project — <c>--clear</c> deletes projects by these slugs.
+    /// </summary>
+    private static readonly (string Name, string Slug, string Version)[] DemoProjectSpecs =
+    [
+        ("Argosy Web", "argosy-web", "2026.6.4"),
+        ("Argosy API", "argosy-api", "2026.6.4"),
+        ("Billing Service", "billing-service", "4.18.0"),
+        ("Identity Provider", "identity-provider", "3.2.1"),
+    ];
+
     public static async Task<int> RunAsync(string[] args, string contentRoot)
     {
         var clear = args.Contains("--clear");
@@ -77,7 +109,9 @@ internal static class SeedDemoCommands
         if (clear)
         {
             await ClearAsync(dbFactory).ConfigureAwait(false);
-            Console.WriteLine("Demo data cleared (deployments, releases, projects, demo tenants, demo targets).");
+            Console.WriteLine(
+                "Demo data cleared: demo projects (releases, deployments, runbooks, processes), " +
+                "seed-marked releases/deployments on other projects, demo tenants, demo targets.");
             return 0;
         }
 
@@ -102,22 +136,14 @@ internal static class SeedDemoCommands
         }
 
         // ── Projects + process + releases ─────────────────────────────────
-        var specs = new[]
-        {
-            ("Argosy Web", "argosy-web", "2026.6.4"),
-            ("Argosy API", "argosy-api", "2026.6.4"),
-            ("Billing Service", "billing-service", "4.18.0"),
-            ("Identity Provider", "identity-provider", "3.2.1"),
-        };
-
         var releases = new List<(Guid ReleaseId, string Project, string Version)>();
-        foreach (var (name, slug, version) in specs)
+        foreach (var (name, slug, version) in DemoProjectSpecs)
         {
             await using var pdb = await dbFactory.CreateDbContextAsync();
             var project = await pdb.Projects.FirstOrDefaultAsync(p => p.Slug == slug);
             if (project is null)
             {
-                project = await projectSvc.CreateAsync(name, slug, $"{name} — demo project").ConfigureAwait(false);
+                project = await projectSvc.CreateAsync(name, slug, $"{name}{DemoDescriptionSuffix}").ConfigureAwait(false);
                 await processSvc.AddStepAsync(project.Id, "Deploy package to IIS", "Script", "", ["web-server"], [], KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
                 await processSvc.AddStepAsync(project.Id, "Run database migrations", "Script", "", ["db"], [], KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
                 await processSvc.AddStepAsync(project.Id, "Smoke test — health endpoint", "Script", "", ["web-server"], [], KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
@@ -125,7 +151,7 @@ internal static class SeedDemoCommands
 
             await using var rdb = await dbFactory.CreateDbContextAsync();
             var release = await rdb.Releases.FirstOrDefaultAsync(r => r.ProjectId == project.Id && r.Version == version)
-                          ?? await releaseSvc.CreateAsync(project.Id, version, KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
+                          ?? await releaseSvc.CreateAsync(project.Id, version, KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System, releaseNotes: SeedMarker).ConfigureAwait(false);
             releases.Add((release.Id, name, version));
         }
 
@@ -151,7 +177,7 @@ internal static class SeedDemoCommands
         // ── Runbooks: a few per project so the project Runbooks tab has data ─
         await SeedRunbooksAsync(dbFactory, sp.GetRequiredService<RunbookService>()).ConfigureAwait(false);
 
-        Console.WriteLine($"Seeded: {targets.Count} targets, {specs.Length} projects/releases, demo deployments, 3 tenants, variables, runbooks.");
+        Console.WriteLine($"Seeded: {targets.Count} targets, {DemoProjectSpecs.Length} projects/releases, demo deployments, 3 tenants, variables, runbooks.");
         Console.WriteLine("Open the dashboard / deployments / targets to review. Re-run with --clear to remove.");
         return 0;
     }
@@ -198,7 +224,10 @@ internal static class SeedDemoCommands
         List<DeploymentTarget> targets)
     {
         await using var db = await dbFactory.CreateDbContextAsync();
-        if (await db.Deployments.AnyAsync())
+        // Scope the double-seed guard to OUR rows: the scoped --clear leaves
+        // real deployments behind, and any one of them would otherwise make a
+        // re-seed silently skip the whole showcase.
+        if (await db.Deployments.AnyAsync(d => d.CauseDetail == SeedMarker))
         {
             return; // don't double-seed
         }
@@ -230,8 +259,8 @@ internal static class SeedDemoCommands
                 // Provenance (fix 6): seed rows are created directly (not via the
                 // service), so stamp the columns inline. Demo data = CLI seed.
                 Cause = ServerTaskCause.Cli,
-                CreatedByDisplay = "System (seed-demo)",
-                CauseDetail = "seed-demo",
+                CreatedByDisplay = $"System ({SeedMarker})",
+                CauseDetail = SeedMarker,
             };
         }
 
@@ -338,9 +367,11 @@ internal static class SeedDemoCommands
                 .Select(r => r.Version)
                 .ToListAsync();
 
+            // The marker in ReleaseNotes is what lets --clear find ladder rungs
+            // created on NON-demo projects (this loop runs over every project).
             foreach (var version in LadderVersions(existingVersions))
             {
-                await releaseSvc.CreateAsync(project.Id, version, KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
+                await releaseSvc.CreateAsync(project.Id, version, KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System, releaseNotes: SeedMarker).ConfigureAwait(false);
             }
 
             // Ladder = up to 4 newest releases by version; promotion pattern
@@ -386,6 +417,10 @@ internal static class SeedDemoCommands
                     {
                         SpaceId = WellKnown.DefaultSpaceId,
                         ReleaseId = rel.Id,
+                        // ServerTask.ProjectId is denormalized-NOT-NULL for
+                        // project-filtered reads; leaving it default persists
+                        // Guid.Empty and hides the row from those filters.
+                        ProjectId = project.Id,
                         EnvironmentId = envs[e],
                         Targets = targetId is { } t
                             ? [new TaskTargetAssignment { TargetId = t, AddedUtc = now }]
@@ -394,8 +429,8 @@ internal static class SeedDemoCommands
                         StartedUtc = started,
                         CompletedUtc = started.AddMinutes(3),
                         Cause = ServerTaskCause.Cli,
-                        CreatedByDisplay = "System (seed-demo)",
-                        CauseDetail = "seed-demo",
+                        CreatedByDisplay = $"System ({SeedMarker})",
+                        CauseDetail = SeedMarker,
                     });
                 }
             }
@@ -599,8 +634,11 @@ internal static class SeedDemoCommands
             .GroupBy(x => x.ProjectId)
             .ToDictionary(g => g.Key, g => g.Select(x => x.TenantId).ToList());
 
+        // Only OUR deployments: without the marker filter this would stamp a
+        // demo TenantId onto real, operator-created deployments of
+        // tenant-connected projects (e.g. the hand-made "argosy" project).
         var untagged = await db2.Deployments
-            .Where(d => d.TenantId == null)
+            .Where(d => d.TenantId == null && d.CauseDetail == SeedMarker)
             .Select(d => new { Deployment = d, d.Release.ProjectId })
             .OrderBy(x => x.Deployment.CreatedUtc)
             .ToListAsync();
@@ -684,27 +722,129 @@ internal static class SeedDemoCommands
         ErrorMessage = error,
     };
 
+    /// <summary>
+    /// Deletes ONLY demo-seeded rows. A database this tool ran against can
+    /// also hold real data (the matrix seeder even adds rows to non-demo
+    /// projects), so nothing here may delete a whole table: demo projects are
+    /// matched by <see cref="DemoProjectSpecs"/> slug PLUS the seeder's own
+    /// description stamp, and rows the seeder creates on OTHER projects by
+    /// their <see cref="SeedMarker"/>. Anything real history has since built
+    /// on is ADOPTED rather than deleted: a marker release an operator has
+    /// deployed, a demo target a surviving task still references (both are
+    /// RESTRICT FKs that would otherwise abort the whole clear), process
+    /// steps scaffolded onto a non-demo project, and tenant tags stamped
+    /// onto real deployments all stay.
+    /// Known limitations: ladder releases seeded BEFORE the marker existed
+    /// carry NULL notes and are not recognised on non-demo projects; a real
+    /// release whose operator-typed notes are exactly the marker text is
+    /// treated as seeded (deleted if it was never deployed).
+    /// </summary>
     private static async Task ClearAsync(IDbContextFactory<KrakenDbContext> dbFactory)
     {
         await using var db = await dbFactory.CreateDbContextAsync();
-        db.Deployments.RemoveRange(await db.Deployments.ToListAsync());
-        db.Releases.RemoveRange(await db.Releases.ToListAsync());
+        // Two flushes (the adoption queries below must see the task deletes'
+        // cascades); one transaction keeps the clear all-or-nothing.
+        await using var tx = await db.Database.BeginTransactionAsync();
+
+        // Slug alone is not identity — an operator can own a project with a
+        // colliding slug. Require the description the seeder stamps at
+        // creation, and prefer leftovers over deleting a real project.
+        var demoSlugs = DemoProjectSpecs.Select(s => s.Slug).ToArray();
+        var demoProjectIds = await db.Projects
+            .Where(p => demoSlugs.Contains(p.Slug)
+                        && p.Description != null
+                        && p.Description.EndsWith(DemoDescriptionSuffix))
+            .Select(p => p.Id)
+            .ToListAsync();
+
+        // Tasks first — they hold RESTRICT FKs to releases and targets.
+        // Marker-only matching would leave behind hand-made deployments of a
+        // demo project, and those would then block the release/project
+        // deletes below, so match either. d.ProjectId is checked besides
+        // d.Release.ProjectId because hand-made rows stamp it while
+        // matrix-seeded rows leave it default.
+        db.Deployments.RemoveRange(await db.Deployments
+            .Where(d => d.CauseDetail == SeedMarker
+                        || demoProjectIds.Contains(d.ProjectId)
+                        || demoProjectIds.Contains(d.Release.ProjectId))
+            .ToListAsync());
+
         // Runbook runs first: runbook_runs -> runbooks is ON DELETE RESTRICT
         // (run history never cascades), so leaving them aborts the whole clear.
-        db.RunbookRuns.RemoveRange(await db.RunbookRuns.ToListAsync());
-        db.Runbooks.RemoveRange(await db.Runbooks.ToListAsync());
+        var demoRunbooks = await db.Runbooks
+            .Where(r => demoProjectIds.Contains(r.ProjectId))
+            .ToListAsync();
+        var demoRunbookIds = demoRunbooks.Select(r => r.Id).ToList();
+        db.RunbookRuns.RemoveRange(await db.RunbookRuns
+            .Where(r => demoRunbookIds.Contains(r.RunbookId))
+            .ToListAsync());
+        db.Runbooks.RemoveRange(demoRunbooks);
+
         // Processes are polymorphic (no FK to their owner) — the owning service
-        // normally deletes them. Every project and runbook goes below, so every
-        // process row of either owner kind would otherwise be orphaned.
-        db.Processes.RemoveRange(await db.Processes.ToListAsync());
-        db.Projects.RemoveRange(await db.Projects.ToListAsync());
+        // normally deletes them, so the demo projects' and demo runbooks' rows
+        // would otherwise be orphaned by the deletes below.
+        db.Processes.RemoveRange(await db.Processes
+            .Where(p => (p.OwnerKind == ProcessOwnerKind.Project && demoProjectIds.Contains(p.OwnerId))
+                     || (p.OwnerKind == ProcessOwnerKind.Runbook && demoRunbookIds.Contains(p.OwnerId)))
+            .ToListAsync());
+
+        // Flush so the adoption queries below see which tasks (and their
+        // cascaded assignment/outcome rows) are actually gone.
+        await db.SaveChangesAsync();
+
+        // Demo projects' releases, plus marker-stamped ladder rungs the matrix
+        // seeder created on non-demo projects. A marker release an operator
+        // has DEPLOYED is adopted: server_tasks.release_id is RESTRICT, so
+        // deleting it would abort the whole clear — and the deployment is
+        // real history. (A demo project's releases can't be adopted: all of
+        // that project's deployments were just deleted.)
+        var adoptedReleases = await db.Releases
+            .CountAsync(r => r.ReleaseNotes == SeedMarker
+                             && db.Deployments.Any(d => d.ReleaseId == r.Id));
+        db.Releases.RemoveRange(await db.Releases
+            .Where(r => (demoProjectIds.Contains(r.ProjectId) || r.ReleaseNotes == SeedMarker)
+                        && !db.Deployments.Any(d => d.ReleaseId == r.Id))
+            .ToListAsync());
+
+        db.Projects.RemoveRange(await db.Projects
+            .Where(p => demoProjectIds.Contains(p.Id))
+            .ToListAsync());
+
         // Project variable sets cascade with their project; the shared demo
         // library set is project-independent and needs explicit removal.
         db.VariableSets.RemoveRange(await db.VariableSets
             .Where(s => s.Name == DemoLibrarySetName).ToListAsync());
         db.Tenants.RemoveRange(await db.Tenants.Where(t => DemoTenantSlugs.Contains(t.Slug)).ToListAsync());
-        db.DeploymentTargets.RemoveRange(await db.DeploymentTargets.Where(t => t.Name.StartsWith("demo-")).ToListAsync());
+
+        // Demo targets: adopt any target a SURVIVING task still references.
+        // Both task_target_assignments and task_step_outcomes carry RESTRICT
+        // FKs to targets, and deleting the reference rows instead would
+        // falsify the surviving task's recorded history.
+        var demoTargets = await db.DeploymentTargets
+            .Where(t => t.Name.StartsWith("demo-")).ToListAsync();
+        var demoTargetIds = demoTargets.Select(t => t.Id).ToList();
+        var referencedTargetIds = (await db.TaskTargetAssignments
+                .Where(a => demoTargetIds.Contains(a.TargetId))
+                .Select(a => a.TargetId).Distinct().ToListAsync())
+            .Concat(await db.TaskStepOutcomes
+                .Where(o => o.TargetId != null && demoTargetIds.Contains(o.TargetId.Value))
+                .Select(o => o.TargetId!.Value).Distinct().ToListAsync())
+            .ToHashSet();
+        db.DeploymentTargets.RemoveRange(demoTargets.Where(t => !referencedTargetIds.Contains(t.Id)));
+
         await db.SaveChangesAsync();
+        await tx.CommitAsync();
+
+        if (adoptedReleases > 0)
+        {
+            Console.WriteLine(
+                $"Kept {adoptedReleases} seed-marked release(s) that real deployments reference.");
+        }
+        if (referencedTargetIds.Count > 0)
+        {
+            Console.WriteLine(
+                $"Kept {referencedTargetIds.Count} demo target(s) that surviving task history references.");
+        }
     }
 
     private const string DemoLibrarySetName = "Company Defaults";
