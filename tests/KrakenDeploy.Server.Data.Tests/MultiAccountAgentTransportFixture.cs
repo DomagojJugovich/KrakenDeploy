@@ -57,8 +57,7 @@ public sealed class MultiAccountAgentTransportFixture : IAsyncLifetime
     // HS256 needs >= 32 bytes. Test-only key; never a real secret.
     private readonly string _signingKey = "kraken-e2e-agent-jwt-signing-key-0123456789";
 
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder()
-        .WithImage("postgres:16-alpine")
+    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:16-alpine")
         .WithDatabase("kraken_bootstrap")
         .WithUsername("postgres")
         .WithPassword("postgres")

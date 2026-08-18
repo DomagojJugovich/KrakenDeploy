@@ -16,8 +16,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 [Trait("Category", "Docker")]
 public sealed class ReleaseRegistryTests : IAsyncLifetime, IDbContextFactory<CatalogDbContext>
 {
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder()
-        .WithImage("postgres:16-alpine")
+    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:16-alpine")
         .WithDatabase("kraken_catalog_test")
         .WithUsername("postgres")
         .WithPassword("postgres")

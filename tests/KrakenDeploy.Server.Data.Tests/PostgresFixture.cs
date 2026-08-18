@@ -30,8 +30,7 @@ internal static class SharedPostgres
 {
     private const string TemplateDb = "kraken_template";
 
-    private static readonly PostgreSqlContainer Container = new PostgreSqlBuilder()
-        .WithImage("postgres:16-alpine")
+    private static readonly PostgreSqlContainer Container = new PostgreSqlBuilder("postgres:16-alpine")
         // Default/maintenance DB: admin CREATE/DROP DATABASE commands connect here
         // (you cannot create or drop the database you are connected to).
         .WithDatabase("postgres")
