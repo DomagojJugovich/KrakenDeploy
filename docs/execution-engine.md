@@ -522,12 +522,22 @@ FKs keep even unfiltered joins intra-Space by construction
     in-flight `server_tasks` rows ARE the lock state: crash-release comes free
     from the B1 lease/reconciler, and blue-green slots share one Postgres so the
     exclusion spans processes.
-  - **Exemptions:** a task never conflicts with its ANCESTOR chain
-    (`Octopus.DeployRelease` children continue an already-claimed parent), and a
-    CHILD additionally skips the queued-FIFO arm — it defers only to IN-FLIGHT
-    conflicts, because an older queued task sharing the box is itself deferring
-    to the child's in-flight parent, and waiting for it is a three-way circular
-    wait (child → queued task → parent → child), not fairness; a
+  - **Exemptions:** a CHILD task (`ParentTaskId != null`, spawned by an
+    `Octopus.DeployRelease` step) is exempt from the exclusion **outright** — the
+    claim skips the check, so a child is never `TargetBlocked`. Its targets are
+    already held by the parent that spawned it, so the parent's claim accounted
+    for them; this is the same bypass the maintenance gate and the E3
+    `NodeTaskGate` make, for the same reason. A PARTIAL exemption is not enough:
+    deferring a child to any non-ancestor task deadlocks whenever that task is
+    (transitively) waiting on the child's own parent — two mutually-consenting
+    parents on one box, each awaiting a non-consenting child, is reachable — and
+    nothing bounds it, because `DeployReleaseStepRunner` charges its child-wait
+    budget only after the child has PAUSED and a child stuck `Queued` never
+    pauses; the step then dies on its attempt timeout and leaves an orphaned
+    child that later claims under a parent that already failed. The residual of
+    exempting children (a child's waves interleaving with unrelated consenting
+    work on a shared box) is bounded by the F5 agent gate, which still takes the
+    writer side per wave for a non-consenting child. Also: a
     resume never re-checks (a `Paused` task holds its targets — it is
     `InFlightAfterClaim` to everyone else); ad-hoc scripts are not
     `server_tasks` and stay invisible (accepted wave-gap residual — they take
@@ -542,14 +552,22 @@ FKs keep even unfiltered joins intra-Space by construction
     serializes plans per Target row.
   - **Reason surface:** a refused claim (`ServerTaskClaimResult.TargetBlocked`)
     records the blocker via `ServerTaskTargetExclusion.DescribeConflictAsync` —
-    the task detail renders "Waiting for target X — busy with #N (title); M
-    tasks ahead." from the SAME query the claim refuses on, and the worker
-    appends that sentence to the task log ON THE FIRST DEFERRAL ONLY
-    (DB-probed idempotence). The Tasks page gains the assignment-joined
-    `?target=` filter; `TargetDetail` links to it ("View tasks for this
-    machine"). A blocked task stays `Queued`; the minutely kind-agnostic
-    stale-`Queued` re-signal retries it — no new poller. Like F1, the pre-gate
-    probe skips the `NodeTaskGate` slot for target-blocked tasks.
+    the task detail renders "Waiting for target X — busy with #N (title); next
+    in line / M tasks ahead." from the SAME query the claim refuses on (two
+    statements, cost independent of the conflict count: SQL ranks the blocker
+    and the label lookups project on the single winning row), and the worker
+    appends that sentence to the task log ON THE FIRST DEFERRAL ONLY —
+    idempotence is a DB probe for the dedicated `target-wait` log LEVEL, never
+    the message copy, and the append re-checks the row is still `Queued`. Both
+    detail pages read it through the kind-agnostic `ServerTasksService`; the
+    deployments LIST page probes its `Queued` rows in one page-level pass and
+    shows the short form. Reasons are rendered in CLAIM order everywhere:
+    maintenance → F1 in-flight peer → F1 earlier-queued sibling → F6 target.
+    The Tasks page gains the assignment-joined `?target=` filter;
+    `TargetDetail` links to it ("View tasks for this machine"). A blocked task
+    stays `Queued`; the minutely kind-agnostic stale-`Queued` re-signal retries
+    it — no new poller. Like F1, the pre-gate probe skips the `NodeTaskGate`
+    slot for target-blocked tasks.
 
 ## 8. The deployment/runbook unification (D1 — execution-deep)
 

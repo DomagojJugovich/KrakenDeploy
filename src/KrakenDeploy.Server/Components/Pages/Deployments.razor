@@ -11,6 +11,8 @@
 @inject IAuditLog Audit
 @inject MaintenanceModeService MaintenanceSvc
 @inject InterruptionService Interruptions
+@* F6 — the page-level target-exclusion probe for Queued rows. *@
+@inject KrakenDeploy.Server.Services.ServerTasksService TasksSvc
 @inject ISpaceContext SpaceCtx
 
 <PageTitle>Deployments - KrakenDeploy</PageTitle>
@@ -173,6 +175,12 @@
     // InterruptionView.
     private HashSet<Guid> _awaitingApproval = [];
 
+    // F6 — Queued deployment ids held by the per-plan target exclusion (a serial
+    // machine in their assignment set is busy). Probed for the page's Queued rows
+    // only; the row shows the short reason and the detail page names the blocking
+    // machine + queue position.
+    private HashSet<Guid> _targetBlocked = [];
+
     protected override async Task OnInitializedAsync()
     {
         _all = await DeploymentSvc.GetAllAsync();
@@ -190,6 +198,19 @@
             .ToList();
         _awaitingApproval = await Interruptions.FindTasksAwaitingResponseAsync(
             pausedIds, SpaceCtx.CurrentSpaceId, await Guard.CurrentCallerAsync());
+
+        // F6 — same treatment for the target exclusion: probe the Queued rows so a
+        // backlog held by a busy machine explains itself here, not only on each
+        // row's detail page. Skipped entirely while maintenance is on (that gate
+        // refuses every claim, so it is the binding reason for every row).
+        if (_maintenanceHold is null)
+        {
+            var queuedIds = _all
+                .Where(d => d.Status == DeploymentStatus.Queued)
+                .Select(d => d.Id)
+                .ToList();
+            _targetBlocked = await TasksSvc.GetTargetBlockedTaskIdsAsync(queuedIds);
+        }
 
         ApplyFilters();
     }
@@ -330,14 +351,36 @@
         {
             return QueueWaitMessage.MaintenanceHold(hold.Reason);
         }
-        return IsBlockedByInFlightPeer(d)
-            ? QueueWaitMessage.RunningPeer(d.Release?.Project?.Name, d.Environment?.Name)
-            : null;
+        // Claim order: F1's in-flight arm, then its FIFO arm, then F6's target
+        // exclusion — the same precedence DeploymentDetail renders, so a row and
+        // its detail page never name different constraints.
+        if (IsBlockedByInFlightPeer(d))
+        {
+            return QueueWaitMessage.RunningPeer(d.Release?.Project?.Name, d.Environment?.Name);
+        }
+        if (IsBlockedByEarlierQueuedPeer(d))
+        {
+            return QueueWaitMessage.QueuedPeer(d.Release?.Project?.Name, d.Environment?.Name);
+        }
+        return _targetBlocked.Contains(d.Id) ? QueueWaitMessage.TargetWaitShort() : null;
     }
 
     private bool IsBlockedByInFlightPeer(Deployment d)
         => _all.Any(o => o.Id != d.Id
             && DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status)
+            && o.ProjectId == d.ProjectId
+            && o.EnvironmentId == d.EnvironmentId
+            && o.TenantId == d.TenantId);
+
+    // F1's FIFO arm, mirroring ServerTaskLease.ClaimDeferralPredicate: an earlier
+    // already-due Queued sibling of the same key claims first. Evaluated in memory
+    // over the loaded rows (all fields are on the entity), like the in-flight arm
+    // above — a future-scheduled sibling is NOT due and never blocks.
+    private bool IsBlockedByEarlierQueuedPeer(Deployment d)
+        => _all.Any(o => o.Id != d.Id
+            && o.Status == DeploymentStatus.Queued
+            && (o.ScheduledFor is null || o.ScheduledFor <= DateTimeOffset.UtcNow)
+            && o.CreatedUtc < d.CreatedUtc
             && o.ProjectId == d.ProjectId
             && o.EnvironmentId == d.EnvironmentId
             && o.TenantId == d.TenantId);

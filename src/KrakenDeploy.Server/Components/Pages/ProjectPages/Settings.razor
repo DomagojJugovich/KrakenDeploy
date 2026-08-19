@@ -241,11 +241,27 @@
         _errorMessage = null;
         try
         {
+            // Three writes, each on its own DbContext — NOT one transaction. The
+            // first is the identity edit; if either of the later two fails, the
+            // name/slug change has already persisted, so report PARTIAL success
+            // instead of a bare error the operator reads as "nothing was saved"
+            // (same treatment RunbookDetail gives its secondary writes).
             await ProjectSvc.UpdateAsync(_project.Id, _form.Name, _form.Slug, _form.Description);
-            await ProjectSvc.SetLifecycleAndGroupAsync(
-                _project.Id, _form.LifecycleId, _form.ProjectGroupId);
-            await ProjectSvc.SetAllowParallelTaskExecutionAsync(
-                _project.Id, _form.AllowParallelTaskExecution);
+            try
+            {
+                await ProjectSvc.SetLifecycleAndGroupAsync(
+                    _project.Id, _form.LifecycleId, _form.ProjectGroupId);
+                await ProjectSvc.SetAllowParallelTaskExecutionAsync(
+                    _project.Id, _form.AllowParallelTaskExecution);
+            }
+            catch (InvalidOperationException secondaryEx)
+            {
+                Notifications.Notify(NotificationSeverity.Warning,
+                    "Name saved, other settings failed", secondaryEx.Message, 6000);
+                _project = await ProjectSvc.GetBySlugAsync(_form.Slug);
+                ResetForm();
+                return;
+            }
 
             Notifications.Notify(NotificationSeverity.Success, "Saved",
                 "Project settings updated.", 3000);

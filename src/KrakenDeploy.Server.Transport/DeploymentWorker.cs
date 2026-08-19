@@ -285,10 +285,11 @@ public sealed class DeploymentWorker(
 
         // F6 — the target-conflict arm of the same pre-gate skip, BOTH kinds. A
         // resume is exempt for the same reason as above (a Paused task holds its
-        // targets and must never defer to work that is deferring to IT); a child
-        // is exempt here because it never reaches this arm (the early return
-        // above), and the claim excludes its ancestor chain anyway. Skipped when
-        // F1 already decided — one reason is enough to leave the row Queued.
+        // targets and must never defer to work that is deferring to IT), and a
+        // CHILD task is exempt from the exclusion outright — it never reaches
+        // this arm (the early return above) and the claim skips the check for it
+        // too. Skipped when F1 already decided — one reason is enough to leave
+        // the row Queued.
         var targetBlocked = !blocked
             && row.ParentTaskId is null
             && row.Status != DeploymentStatus.Paused
@@ -296,7 +297,7 @@ public sealed class DeploymentWorker(
                     db, deploymentId,
                     await ServerTaskTargetExclusion.SourceConsentAsync(
                         db, row.Kind, row.ProjectId, deploymentId, ct).ConfigureAwait(false),
-                    ancestorIds: [], isChild: false, row.CreatedUtc, now)
+                    row.CreatedUtc, now)
                 .AnyAsync(ct)
                 .ConfigureAwait(false);
 

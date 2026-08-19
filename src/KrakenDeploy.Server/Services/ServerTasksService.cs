@@ -2,7 +2,9 @@ using System.Text;
 using Hangfire;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
+using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
+using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Services;
 
@@ -96,8 +98,81 @@ public sealed record ServerTaskRow
 public sealed class ServerTasksService(
     DeploymentService deployments,
     RunbookService runbooks,
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    TimeProvider time,
     ILogger<ServerTasksService> logger)
 {
+    // ── F6 target-exclusion reason surface (kind-agnostic) ───────────────────
+    //
+    // These live here rather than on DeploymentService/RunbookService because the
+    // underlying read is by TASK id and covers both kinds: putting it on either
+    // kind's service would make the other kind's page inject a service for work
+    // it has nothing to do with, and duplicating it on both invites the two
+    // banners to drift.
+
+    /// <summary>
+    /// The target-wait reason for a still-<c>Queued</c> task, or <c>null</c> when
+    /// no serial target is contended. The UI read of the SAME query the claim
+    /// refuses on (<see cref="ServerTaskTargetExclusion.DescribeConflictAsync"/>),
+    /// so the banner can never drift from the actual gate. Used by both detail
+    /// pages.
+    /// </summary>
+    public async Task<ServerTaskTargetExclusion.TargetConflict?> GetTargetConflictAsync(
+        Guid taskId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await ServerTaskTargetExclusion
+            .DescribeConflictAsync(db, taskId, time.GetUtcNow(), ct);
+    }
+
+    /// <summary>
+    /// Which of <paramref name="taskIds"/> are currently held by the F6 target
+    /// exclusion — the list-page counterpart of
+    /// <see cref="GetTargetConflictAsync"/>, which needs only a yes/no per row.
+    /// <para>
+    /// One cheap <c>EXISTS</c> (plus one consent read) per candidate rather than a
+    /// single set-shaped query: the predicate is per-task (each row carries its own
+    /// <c>CreatedUtc</c> and source consent), and re-expressing it set-wise would
+    /// be a SECOND encoding of the conflict rule — exactly the drift
+    /// <see cref="ServerTaskTargetExclusion"/> exists to prevent. Callers scope
+    /// this to <c>Queued</c> rows, which are inherently few (F1 and F6 both bound
+    /// how much work can be waiting), and the pages that use it load once rather
+    /// than polling.
+    /// </para>
+    /// </summary>
+    public async Task<HashSet<Guid>> GetTargetBlockedTaskIdsAsync(
+        IReadOnlyCollection<Guid> taskIds, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(taskIds);
+        var blocked = new HashSet<Guid>();
+        if (taskIds.Count == 0)
+        {
+            return blocked;
+        }
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var now = time.GetUtcNow();
+        var candidates = await db.ServerTasks
+            .IgnoreQueryFilters()
+            .Where(t => taskIds.Contains(t.Id) && t.ParentTaskId == null)
+            .Select(t => new { t.Id, t.Kind, t.ProjectId, t.CreatedUtc })
+            .ToListAsync(ct);
+
+        foreach (var candidate in candidates)
+        {
+            var consent = await ServerTaskTargetExclusion.SourceConsentAsync(
+                db, candidate.Kind, candidate.ProjectId, candidate.Id, ct);
+            if (await ServerTaskTargetExclusion
+                    .ConflictingTasksQuery(db, candidate.Id, consent, candidate.CreatedUtc, now)
+                    .AnyAsync(ct))
+            {
+                blocked.Add(candidate.Id);
+            }
+        }
+
+        return blocked;
+    }
+
     // Bounds on the Hangfire pull. Recurring jobs (subscription poller, scheduled-
     // dispatch, digest flush) fire every minute, so the succeeded bucket is the
     // noisy one; cap it and let the page's Kind filter isolate real deployments.

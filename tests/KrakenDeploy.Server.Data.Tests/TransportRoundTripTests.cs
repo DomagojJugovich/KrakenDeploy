@@ -253,8 +253,10 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
             await using (var db = seeder.CreateContext())
             {
                 var quickLog = await TaskLogService.ReadAllAsync(db, quick);
+                // Keyed on the LEVEL, which is what the dedup probe uses — the
+                // sentence itself is presentational and free to change.
                 quickLog.Should().ContainSingle(
-                    l => l.Message.StartsWith(ServerTaskTargetExclusion.MessagePrefix, StringComparison.Ordinal),
+                    l => l.Level == ServerTaskTargetExclusion.TargetWaitLogLevel,
                     "the first (and only the first) deferral writes the target-wait reason");
             }
 
@@ -273,8 +275,7 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
             await using (var db = seeder.CreateContext())
             {
                 var quickLog = await TaskLogService.ReadAllAsync(db, quick);
-                quickLog.Count(l => l.Message.StartsWith(
-                        ServerTaskTargetExclusion.MessagePrefix, StringComparison.Ordinal))
+                quickLog.Count(l => l.Level == ServerTaskTargetExclusion.TargetWaitLogLevel)
                     .Should().Be(1);
             }
         }

@@ -170,6 +170,58 @@ public sealed class TargetExclusionTests(PostgresFixture postgres)
                 "the exclusion is symmetric — an in-flight runbook run holds the target too");
     }
 
+    [Fact]
+    public async Task Consenting_runbook_and_consenting_deployment_co_claim()
+    {
+        // The runbook analogue of Both_consenting_sources_co_claim, and the only
+        // path that exercises Runbook.AllowParallelTaskExecution at claim time:
+        // once as the claimant's own consent (SourceConsentAsync's runbook arm),
+        // once as the in-flight blocker's consent (the RunbookRun subquery in the
+        // conflict predicate's consent clause).
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var env = await harness.SeedEnvironmentAsync(UniqueName("env"));
+        var targets = await harness.SeedTargetsAsync(UniqueName("t"));
+        var run = await SeedRunbookRunAsync(harness, env.Id, targets, runbookConsents: true);
+        var deployment = await SeedDeploymentAsync(harness, env.Id, targets, projectConsents: true);
+
+        await using var db = postgres.CreateContext();
+        (await ServerTaskLease.TryClaimAsync(db, run, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+        (await ServerTaskLease.TryClaimAsync(db, deployment, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed,
+                "a consenting runbook run and a consenting deployment are mutual-Shared " +
+                "on the target, so neither defers");
+    }
+
+    [Fact]
+    public async Task Consenting_runbook_and_exclusive_deployment_defer_both_ways()
+    {
+        // One Exclusive side is enough, whichever kind holds the box — the runbook's
+        // consent does not weaken a non-consenting deployment's hold, and vice versa.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var env = await harness.SeedEnvironmentAsync(UniqueName("env"));
+        var targets = await harness.SeedTargetsAsync(UniqueName("t"));
+        var exclusive = await SeedDeploymentAsync(harness, env.Id, targets);
+        var run = await SeedRunbookRunAsync(harness, env.Id, targets, runbookConsents: true);
+
+        await using var db = postgres.CreateContext();
+        (await ServerTaskLease.TryClaimAsync(db, exclusive, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+        (await ServerTaskLease.TryClaimAsync(db, run, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.TargetBlocked,
+                "a consenting run still waits behind an exclusive deployment");
+
+        // And symmetrically: with the run holding the box, a fresh exclusive
+        // deployment defers to it.
+        await SetStatus(db, exclusive, DeploymentStatus.Succeeded);
+        (await ServerTaskLease.TryClaimAsync(db, run, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+        var exclusive2 = await SeedDeploymentAsync(harness, env.Id, targets);
+        (await ServerTaskLease.TryClaimAsync(db, exclusive2, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.TargetBlocked,
+                "an exclusive deployment defers to an in-flight consenting run");
+    }
+
     // ── Exemptions ───────────────────────────────────────────────────────────
 
     [Fact]
@@ -196,8 +248,8 @@ public sealed class TargetExclusionTests(PostgresFixture postgres)
         // The child (different project, SAME target) is the parent's continuation:
         // blocking it would strand the parent's WaitForChildAsync — and deferring
         // it to the OLDER QUEUED unrelated task is a three-way circular wait
-        // (child → olderQueued → in-flight parent → child), so the child skips
-        // the FIFO arm and defers only to in-flight conflicts.
+        // (child → olderQueued → in-flight parent → child), so a child is exempt
+        // from the exclusion outright.
         var childProject = await harness.SeedProjectAsync(UniqueName("p"));
         var childRelease = await harness.SeedReleaseAsync(childProject.Id, "1.0", StepBuilder.Script("s1"));
         var child = await harness.CreateDeploymentAsync(
@@ -205,8 +257,42 @@ public sealed class TargetExclusionTests(PostgresFixture postgres)
 
         (await ServerTaskLease.TryClaimAsync(db, child, TimeProvider.System))
             .Should().Be(ServerTaskClaimResult.Claimed,
-                "a child never conflicts with its ancestor chain, and never defers " +
-                "to a queued task that is itself deferring to the child's parent");
+                "a child's targets are already held by the parent that spawned it, " +
+                "so it never defers to a task that is itself deferring to that parent");
+    }
+
+    [Fact]
+    public async Task Child_claims_even_when_an_unrelated_task_is_in_flight_on_its_target()
+    {
+        // The exemption is OUTRIGHT, not just the FIFO arm: deferring a child to
+        // any non-ancestor task deadlocks whenever that task is (transitively)
+        // waiting on the child's own parent — two mutually-consenting parents on
+        // one box, each awaiting a non-consenting child, is the reachable case.
+        // Consent is what lets the two parents share the box to begin with.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var env = await harness.SeedEnvironmentAsync(UniqueName("env"));
+        var targets = await harness.SeedTargetsAsync(UniqueName("t"));
+        var parent = await SeedDeploymentAsync(harness, env.Id, targets, projectConsents: true);
+        var unrelated = await SeedDeploymentAsync(harness, env.Id, targets, projectConsents: true);
+
+        await using var db = postgres.CreateContext();
+        (await ServerTaskLease.TryClaimAsync(db, parent, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+        (await ServerTaskLease.TryClaimAsync(db, unrelated, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed,
+                "both consent, so they co-run on the shared target");
+
+        // The child's own project does NOT consent, so under any partial exemption
+        // the in-flight `unrelated` task would block it forever.
+        var childProject = await harness.SeedProjectAsync(UniqueName("p"));
+        var childRelease = await harness.SeedReleaseAsync(childProject.Id, "1.0", StepBuilder.Script("s1"));
+        var child = await harness.CreateDeploymentAsync(
+            childRelease.Id, env.Id, targets, parentTaskId: parent);
+
+        (await ServerTaskLease.TryClaimAsync(db, child, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed,
+                "a child is exempt from the target exclusion outright — its work is " +
+                "accounted for by the parent's hold, and blocking it strands the parent");
     }
 
     [Fact]
@@ -425,6 +511,27 @@ public sealed class TargetExclusionTests(PostgresFixture postgres)
         }
         var release = await harness.SeedReleaseAsync(project.Id, "1.0", StepBuilder.Script("s1"));
         return await harness.CreateDeploymentAsync(release.Id, envId, targets);
+    }
+
+    /// <summary>Seeds a FRESH runbook + Queued run on the given targets, optionally
+    /// stamping the runbook's parallel-execution consent — the runbook analogue of
+    /// <see cref="SeedDeploymentAsync"/>'s <c>projectConsents</c>. A fresh project
+    /// per run keeps runs off any shared F1 key (runbook runs are F1-exempt anyway,
+    /// but the deployments they contend with are not).</summary>
+    private static async Task<Guid> SeedRunbookRunAsync(
+        OrchestratorTestHarness harness,
+        Guid envId,
+        IReadOnlyList<DeploymentTarget> targets,
+        bool runbookConsents = false)
+    {
+        var project = await harness.SeedProjectAsync(UniqueName("p"));
+        var runId = await harness.CreateRunbookRunAsync(
+            project.Id, envId, targets, [StepBuilder.Script("s1")]);
+        if (runbookConsents)
+        {
+            await harness.SetRunbookAllowParallelTaskExecutionForRunAsync(runId, true);
+        }
+        return runId;
     }
 
     private static string UniqueName(string prefix)

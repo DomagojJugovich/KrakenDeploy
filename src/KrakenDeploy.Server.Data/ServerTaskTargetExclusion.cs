@@ -29,9 +29,7 @@ namespace KrakenDeploy.Server.Data;
 /// <para>
 /// <b>Who participates.</b> Deployments AND runbook runs, fully symmetric
 /// (C4 — the F1 (project,env,tenant) exemption for runbook runs does NOT extend
-/// here). A task never conflicts with its own ANCESTOR chain
-/// (<c>Octopus.DeployRelease</c> children continue an already-claimed parent).
-/// Ad-hoc scripts are not <c>server_tasks</c> and stay invisible to this
+/// here). Ad-hoc scripts are not <c>server_tasks</c> and stay invisible to this
 /// predicate (accepted wave-gap residual); they take the READ side of the agent
 /// gate instead. The unit of exclusion is the <c>DeploymentTarget</c> ROW, not
 /// the physical machine: one box registered as two targets (nothing enforces
@@ -40,16 +38,30 @@ namespace KrakenDeploy.Server.Data;
 /// <c>node-concurrency-and-cache.md</c>.
 /// </para>
 /// <para>
+/// <b>CHILD tasks are fully EXEMPT</b> (<c>ParentTaskId != null</c> — spawned by
+/// an <c>Octopus.DeployRelease</c> step): the caller skips this predicate for
+/// them entirely, so a child is never <c>TargetBlocked</c>. A child is the
+/// continuation of a parent that already claimed those targets, so its work is
+/// ALREADY accounted for by the parent's hold — the same reasoning behind the
+/// maintenance-gate and E3 <c>NodeTaskGate</c> child bypasses. Exempting only
+/// part of the predicate is not enough: deferring a child to ANY non-ancestor
+/// task deadlocks whenever that task is (directly or transitively) waiting on
+/// the child's own parent — two mutually-consenting parents on one box, each
+/// awaiting a non-consenting child, is the reachable case — and the parent's
+/// child-wait budget does not bound it (<c>DeployReleaseStepRunner</c> charges
+/// its working budget only after the child has PAUSED, and a child stuck
+/// <c>Queued</c> never pauses), so the step dies on its attempt timeout and
+/// leaves an orphaned child that later claims and deploys under a parent that
+/// already reported failure. The residual of exempting children — a child's
+/// waves interleaving with unrelated consenting work on a shared box — is
+/// bounded by the F5 agent gate, which still takes the writer side per wave for
+/// a non-consenting child.
+/// </para>
+/// <para>
 /// <b>Ordering.</b> FIFO by overlap (C5): a claim defers when any in-flight task
 /// conflicts OR any OLDER already-due Queued task conflicts. Only conflicting
 /// pairs order the queue. Convoying is accepted and made legible via the reason
-/// surface below. A CHILD task is exempt from the queued-FIFO arm entirely (it
-/// defers only to IN-FLIGHT conflicts): a child is the continuation of a parent
-/// that already holds the target, so an older queued unrelated task can never
-/// go first anyway — making the child wait for it is a three-way deadlock
-/// (child → queued task → in-flight parent → child) that burns the parent's
-/// whole child-wait budget. Same reasoning as the maintenance gate's child
-/// exemption in <c>ServerTaskLease.TryClaimAsync</c>.
+/// surface below.
 /// </para>
 /// <para>
 /// All evaluators here build on ONE query shape
@@ -87,12 +99,9 @@ public static class ServerTaskTargetExclusion
     /// flag), in which case the pair is mutual-Shared on every shared target and
     /// never conflicts.
     /// <para>
-    /// <paramref name="isChild"/> disables the queued-FIFO arm: a child claims
-    /// while its parent already HOLDS the shared target, so every older queued
-    /// conflicting task is itself deferring to that parent — waiting for it is a
-    /// circular wait (child → queued task → in-flight parent → child), not
-    /// fairness. In-flight conflicts (an unrelated task genuinely occupying the
-    /// target) still defer the child; those resolve independently.
+    /// Callers MUST skip this predicate for a CHILD task (see the class remarks):
+    /// children are exempt outright, which is why there is no ancestor-chain
+    /// parameter here — a top-level claimant has no ancestors to exclude.
     /// </para>
     /// <para>
     /// Target sets are read live from <c>task_target_assignments</c> (they exist
@@ -108,18 +117,14 @@ public static class ServerTaskTargetExclusion
         KrakenDbContext db,
         Guid taskId,
         bool sourceConsent,
-        IReadOnlyCollection<Guid> ancestorIds,
-        bool isChild,
         DateTimeOffset createdUtc,
         DateTimeOffset now)
     {
         var query = db.ServerTasks
             .IgnoreQueryFilters()
             .Where(o => o.Id != taskId
-                && !ancestorIds.Contains(o.Id)
                 && (DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status)
-                    || (!isChild
-                        && o.Status == DeploymentStatus.Queued
+                    || (o.Status == DeploymentStatus.Queued
                         && (o.ScheduledFor == null || o.ScheduledFor <= now)
                         && o.CreatedUtc < createdUtc))
                 // A shared SERIAL target: one of MY assignments whose target has
@@ -189,42 +194,6 @@ public static class ServerTaskTargetExclusion
                 .Select(p => p.AllowParallelTaskExecution)
                 .FirstOrDefaultAsync(ct);
 
-    /// <summary>
-    /// The task's ancestor chain (parent, grandparent, …), walked via
-    /// <c>ParentTaskId</c>. Immutable after creation, so callers may read it
-    /// outside the claim transaction. Empty for a top-level task — the common
-    /// case costs zero queries. A cycle (impossible by construction — a parent is
-    /// claimed before its child exists) terminates the walk rather than hanging it.
-    /// </summary>
-    public static Task<IReadOnlyList<Guid>> LoadAncestorChainAsync(
-        KrakenDbContext db, ServerTask task, CancellationToken ct = default)
-        => LoadAncestorChainByParentAsync(db, task.ParentTaskId, ct);
-
-    /// <summary>Core of <see cref="LoadAncestorChainAsync"/> for callers holding
-    /// only the probed <c>ParentTaskId</c>.</summary>
-    public static async Task<IReadOnlyList<Guid>> LoadAncestorChainByParentAsync(
-        KrakenDbContext db, Guid? parentTaskId, CancellationToken ct = default)
-    {
-        if (parentTaskId is null)
-        {
-            return [];
-        }
-
-        var chain = new List<Guid>();
-        var current = parentTaskId;
-        while (current is { } id && !chain.Contains(id))
-        {
-            chain.Add(id);
-            current = await db.ServerTasks
-                .IgnoreQueryFilters()
-                .Where(t => t.Id == id)
-                .Select(t => t.ParentTaskId)
-                .FirstOrDefaultAsync(ct)
-                .ConfigureAwait(false);
-        }
-        return chain;
-    }
-
     /// <summary>One target-wait blocker, resolved for the reason surface: the
     /// task detail banner and the first-deferral log line render
     /// <see cref="Format"/> of this.</summary>
@@ -243,8 +212,17 @@ public static class ServerTaskTargetExclusion
     /// conflict — the one that will claim next), the shared serial target, and
     /// how many conflicting queued tasks are ahead in FIFO order. Returns
     /// <c>null</c> when nothing conflicts (the task is waiting on something
-    /// else). Point-in-time and advisory — the authoritative gate is the
-    /// advisory-locked claim; this only explains it.
+    /// else) and for a CHILD task (children are exempt from the exclusion, so
+    /// they never wait on a target). Point-in-time and advisory — the
+    /// authoritative gate is the advisory-locked claim; this only explains it.
+    /// <para>
+    /// Cost is INDEPENDENT of the conflict count: the ranking runs in SQL and the
+    /// four label/target lookups are projected on the single winning row, with one
+    /// extra aggregate for the queue position. Two statements total — the detail
+    /// pages poll this every 5 s while a task is Queued, and the worker calls it
+    /// on every deferral, so a per-conflict projection would fan out badly on a
+    /// busy machine.
+    /// </para>
     /// </summary>
     public static async Task<TargetConflict?> DescribeConflictAsync(
         KrakenDbContext db, Guid taskId, DateTimeOffset now, CancellationToken ct = default)
@@ -257,25 +235,28 @@ public static class ServerTaskTargetExclusion
             .Select(t => new { t.Kind, t.ProjectId, t.CreatedUtc, t.ParentTaskId })
             .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false);
-        if (task is null)
+        if (task is null || task.ParentTaskId is not null)
         {
             return null;
         }
 
-        var ancestors = await LoadAncestorChainByParentAsync(db, task.ParentTaskId, ct)
-            .ConfigureAwait(false);
         var sourceConsent = await SourceConsentAsync(db, task.Kind, task.ProjectId, taskId, ct)
             .ConfigureAwait(false);
+        var conflicts = ConflictingTasksQuery(db, taskId, sourceConsent, task.CreatedUtc, now);
 
-        var conflicts = await ConflictingTasksQuery(
-                db, taskId, sourceConsent, ancestors,
-                isChild: task.ParentTaskId is not null, task.CreatedUtc, now)
+        // The blocker the operator should look at: an in-flight conflict (it is
+        // actually occupying the target) over the oldest queued one (it merely
+        // claims next); ties broken by age so the message is stable. Ordered and
+        // limited in SQL, so the label subqueries run for ONE row.
+        var blocker = await conflicts
+            .OrderByDescending(o =>
+                DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status) ? 1 : 0)
+            .ThenBy(o => o.CreatedUtc)
             .Select(o => new
             {
                 o.Id,
                 o.Kind,
                 o.Status,
-                o.CreatedUtc,
                 ProjectName = db.Projects.IgnoreQueryFilters()
                     .Where(p => p.Id == o.ProjectId)
                     .Select(p => p.Name)
@@ -299,21 +280,19 @@ public static class ServerTaskTargetExclusion
                     .Select(mine => new { mine.TargetId, mine.Target!.Name })
                     .FirstOrDefault(),
             })
-            .ToListAsync(ct)
+            .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false);
-        if (conflicts.Count == 0)
+        if (blocker is null)
         {
             return null;
         }
 
-        // The blocker the operator should look at: an in-flight conflict (it is
-        // actually occupying the target) over the oldest queued one (it merely
-        // claims next); ties broken by age so the message is stable.
-        var blocker = conflicts
-            .OrderByDescending(c => DeploymentStatusExtensions.InFlightAfterClaim.Contains(c.Status))
-            .ThenBy(c => c.CreatedUtc)
-            .First();
-        var queuedAhead = conflicts.Count(c => c.Status == DeploymentStatus.Queued);
+        // Queue position: conflicting tasks that will claim before this one. Only
+        // Queued rows count (an in-flight blocker is reported by the verb, not the
+        // position), and the predicate's FIFO arm already scopes them to OLDER.
+        var queuedAhead = await conflicts
+            .CountAsync(o => o.Status == DeploymentStatus.Queued, ct)
+            .ConfigureAwait(false);
 
         var label = blocker.Kind == ServerTaskKind.RunbookRun
             ? $"Runbook {blocker.RunbookName ?? "(unnamed)"}"
@@ -337,7 +316,15 @@ public static class ServerTaskTargetExclusion
     {
         ArgumentNullException.ThrowIfNull(conflict);
         var verb = conflict.BlockerInFlight ? "busy with" : "behind";
-        var ahead = conflict.QueuedAhead == 1 ? "1 task ahead" : $"{conflict.QueuedAhead} tasks ahead";
+        // The common deferral is a single in-flight blocker with nothing queued
+        // behind it, so a bare count would read "0 tasks ahead" — which operators
+        // report as a bug in the queue display.
+        var ahead = conflict.QueuedAhead switch
+        {
+            0 => "next in line",
+            1 => "1 task ahead",
+            _ => $"{conflict.QueuedAhead} tasks ahead",
+        };
         return $"{MessagePrefix}{conflict.TargetName} — {verb} " +
                $"#{conflict.BlockerTaskId.ToString()[..8]} ({conflict.BlockerLabel}); {ahead}.";
     }

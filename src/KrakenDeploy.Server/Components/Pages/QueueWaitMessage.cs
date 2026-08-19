@@ -46,4 +46,12 @@ public static class QueueWaitMessage
     public static string TargetWait(
         KrakenDeploy.Server.Data.ServerTaskTargetExclusion.TargetConflict conflict)
         => KrakenDeploy.Server.Data.ServerTaskTargetExclusion.Format(conflict);
+
+    /// <summary>F6 — the LIST-page form of <see cref="TargetWait"/>: grid rows get
+    /// a yes/no probe rather than the full blocker lookup, so they state the
+    /// constraint and point at the detail page for the machine and queue
+    /// position.</summary>
+    public static string TargetWaitShort()
+        => "Waiting: a machine this deployment needs is busy with another task. "
+           + "Open the deployment for the machine and queue position.";
 }

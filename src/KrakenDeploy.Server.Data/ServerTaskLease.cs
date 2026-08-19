@@ -86,7 +86,7 @@ public static class ServerTaskLease
     /// <b>F6 — per-plan target exclusion.</b> BOTH kinds additionally defer when
     /// they share a SERIAL target with any in-flight task or any older
     /// already-due queued one (FIFO by overlap; mutual-Shared overlap neither
-    /// defers nor orders; the ancestor chain is exempt) — see
+    /// defers nor orders; a CHILD task is exempt outright) — see
     /// <see cref="ServerTaskTargetExclusion"/>. All checks + the claim run inside
     /// ONE transaction under ONE GLOBAL advisory lock
     /// (<see cref="ClaimDecisionLockKey"/> — it subsumed F1's per-key lock) so
@@ -148,13 +148,6 @@ public static class ServerTaskLease
                 return ServerTaskClaimResult.MaintenanceBlocked;
             }
         }
-
-        // F6 — the ancestor chain is exempt from the target-conflict check (a
-        // DeployRelease child continues an already-claimed parent). Immutable
-        // after creation, so it is safely read before the transaction; empty
-        // (zero queries) for the common top-level case.
-        var ancestors = await ServerTaskTargetExclusion.LoadAncestorChainAsync(db, task, ct)
-            .ConfigureAwait(false);
 
         // Both kinds now claim inside ONE user-initiated transaction under ONE
         // GLOBAL advisory lock (F6). The web host's NpgsqlRetryingExecutionStrategy
@@ -220,25 +213,32 @@ public static class ServerTaskLease
             }
 
             // F6 — per-plan target exclusion, BOTH kinds (fully symmetric): defer
-            // when any in-flight task, or (top-level claimants only) any older
-            // already-due Queued task, shares a serial target with this one (see
-            // ServerTaskTargetExclusion — a child skips the FIFO arm, else it
-            // deadlocks behind a task that is itself deferring to the child's
-            // parent). Checked after F1 so a same-key sibling reports the more
-            // specific SerializationBlocked.
-            var sourceConsent = await ServerTaskTargetExclusion
-                .SourceConsentAsync(db, task, ct)
-                .ConfigureAwait(false);
-            var targetConflict = await ServerTaskTargetExclusion
-                .ConflictingTasksQuery(
-                    db, task.Id, sourceConsent, ancestors,
-                    isChild: task.ParentTaskId is not null, task.CreatedUtc, now)
-                .AnyAsync(ct)
-                .ConfigureAwait(false);
-            if (targetConflict)
+            // when any in-flight task, or any older already-due Queued task,
+            // shares a serial target with this one (see ServerTaskTargetExclusion).
+            // Checked after F1 so a same-key sibling reports the more specific
+            // SerializationBlocked.
+            //
+            // A CHILD task is EXEMPT outright — its targets are already held by
+            // the parent that spawned it, so the parent's claim accounted for
+            // them, and deferring a child to anything strands the parent that is
+            // blocking on it (the same exemption the maintenance gate above and
+            // the E3 NodeTaskGate make, for the same reason). See the class
+            // remarks on ServerTaskTargetExclusion for why a partial exemption is
+            // not enough.
+            if (task.ParentTaskId is null)
             {
-                await tx.RollbackAsync(ct).ConfigureAwait(false);
-                return ServerTaskClaimResult.TargetBlocked;
+                var sourceConsent = await ServerTaskTargetExclusion
+                    .SourceConsentAsync(db, task, ct)
+                    .ConfigureAwait(false);
+                var targetConflict = await ServerTaskTargetExclusion
+                    .ConflictingTasksQuery(db, task.Id, sourceConsent, task.CreatedUtc, now)
+                    .AnyAsync(ct)
+                    .ConfigureAwait(false);
+                if (targetConflict)
+                {
+                    await tx.RollbackAsync(ct).ConfigureAwait(false);
+                    return ServerTaskClaimResult.TargetBlocked;
+                }
             }
 
             var result = await ClaimConditionalAsync(db, task.Id, now, ct).ConfigureAwait(false);

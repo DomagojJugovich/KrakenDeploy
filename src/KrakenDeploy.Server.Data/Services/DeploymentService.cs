@@ -9,6 +9,27 @@ using Microsoft.EntityFrameworkCore;
 namespace KrakenDeploy.Server.Data.Services;
 
 /// <summary>
+/// F1 — which arm of the claim's <c>(project, environment, tenant)</c> deferral
+/// currently holds a <c>Queued</c> deployment. The queue-reason banner words the
+/// two arms differently ("another deployment is running" vs "an earlier one is
+/// queued ahead"), and both must outrank the F6 target reason because the claim
+/// evaluates F1 first.
+/// </summary>
+public enum QueueSerializationBlock
+{
+    /// <summary>No same-key peer defers this deployment.</summary>
+    None,
+
+    /// <summary>A same-key peer is IN-FLIGHT (Running, parked offline, or paused
+    /// at a gate) — it holds the key until it goes terminal.</summary>
+    InFlightPeer,
+
+    /// <summary>Nothing is in-flight, but an earlier already-due <c>Queued</c>
+    /// sibling of the same key claims first (FIFO).</summary>
+    EarlierQueuedPeer,
+}
+
+/// <summary>
 /// Creates deployments and enqueues them for dispatch to the target agent.
 /// </summary>
 public class DeploymentService(
@@ -376,68 +397,41 @@ public class DeploymentService(
     }
 
     /// <summary>
-    /// F1 read-side helper — is a <c>Queued</c> deployment blocked by the
-    /// (project, environment, tenant) serialization rule, i.e. is another
-    /// deployment of the same key currently in-flight (claimed but not terminal —
-    /// <c>Running</c> or a parked offline-drop <c>PendingOfflineResult</c>)?
-    /// Powers the DeploymentDetail queue-reason banner. Uses the SAME predicate
-    /// the claim enforces (<see cref="ServerTaskLease.InFlightDeploymentPeerPredicate"/>)
-    /// so the shown reason can never drift from the actual gate. Space-scoped by
-    /// the global query filter (same-key deployments share one Space); no new state.
+    /// F1 read-side helper — WHICH arm of the claim's deferral
+    /// (<see cref="ServerTaskLease.ClaimDeferralPredicate"/>) currently holds a
+    /// <c>Queued</c> deployment, in ONE round-trip: an in-flight same-key peer, an
+    /// earlier already-due queued sibling, or neither. The detail page needs the
+    /// distinction to word the banner AND must consult it BEFORE the F6 target
+    /// probe — the claim checks F1 first, and a same-key sibling usually shares
+    /// targets, so an in-flight-only read would let the F6 arm capture (and
+    /// mislabel) an F1 refusal. Ordering in-flight first and taking a single row
+    /// answers both questions without a second query.
     /// </summary>
-    public async Task<bool> HasInFlightPeerAsync(
-        Guid queuedDeploymentId, Guid projectId, Guid environmentId, Guid? tenantId,
-        CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        return await db.ServerTasks
-            .AnyAsync(
-                ServerTaskLease.InFlightDeploymentPeerPredicate(
-                    queuedDeploymentId, projectId, environmentId, tenantId),
-                ct)
-            .ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// F1 read-side helper #2 — the FULL claim-order deferral
-    /// (<see cref="ServerTaskLease.ClaimDeferralPredicate"/>: an in-flight peer OR
-    /// an older already-due <c>Queued</c> sibling). The detail page consults this
-    /// BEFORE the F6 target probe so an F1-FIFO refusal is never misattributed to
-    /// the target rule — the claim checks F1 first, and a same-key sibling
-    /// usually shares targets, so the narrower <see cref="HasInFlightPeerAsync"/>
-    /// alone would let the F6 arm capture (and mislabel) the wait.
-    /// </summary>
-    public async Task<bool> HasClaimDeferringPeerAsync(
+    public async Task<QueueSerializationBlock> GetSerializationBlockAsync(
         Guid queuedDeploymentId, Guid projectId, Guid environmentId, Guid? tenantId,
         DateTimeOffset createdUtc, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        return await db.ServerTasks
-            .AnyAsync(
+        // null = no peer at all; 1 = the winning peer is in-flight; 0 = the only
+        // peers are earlier queued siblings.
+        var topPeerInFlight = await db.ServerTasks
+            .Where(
                 ServerTaskLease.ClaimDeferralPredicate(
                     queuedDeploymentId, projectId, environmentId, tenantId,
-                    createdUtc, time.GetUtcNow()),
-                ct)
+                    createdUtc, time.GetUtcNow()))
+            .OrderByDescending(o =>
+                DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status) ? 1 : 0)
+            .Select(o =>
+                (int?)(DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status) ? 1 : 0))
+            .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false);
-    }
 
-    /// <summary>
-    /// F6 read-side helper — the target-wait reason for a still-<c>Queued</c>
-    /// task, or <c>null</c> when no serial target is contended. The UI read of
-    /// the SAME query the claim refuses on (<see cref="ServerTaskTargetExclusion"/>),
-    /// so the banner can never drift from the actual gate — the
-    /// <see cref="HasInFlightPeerAsync"/> discipline extended to the target
-    /// dimension. Kind-agnostic (the underlying read is by task id): the ONE
-    /// wrapper both detail pages call, deliberately, so the two banners cannot
-    /// drift.
-    /// </summary>
-    public async Task<ServerTaskTargetExclusion.TargetConflict?> GetTargetConflictAsync(
-        Guid taskId, CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        return await ServerTaskTargetExclusion
-            .DescribeConflictAsync(db, taskId, time.GetUtcNow(), ct)
-            .ConfigureAwait(false);
+        return topPeerInFlight switch
+        {
+            null => QueueSerializationBlock.None,
+            1    => QueueSerializationBlock.InFlightPeer,
+            _    => QueueSerializationBlock.EarlierQueuedPeer,
+        };
     }
 
     /// <summary>

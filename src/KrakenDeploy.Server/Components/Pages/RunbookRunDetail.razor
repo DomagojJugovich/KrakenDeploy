@@ -4,9 +4,10 @@
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Runbooks
 @inject RunbookService RunbookSvc
-@inject DeploymentService DeploymentSvc
 @inject ArtifactService ArtifactSvc
 @inject MaintenanceModeService MaintenanceSvc
+@* F6 — the kind-agnostic target-wait read (shared with DeploymentDetail). *@
+@inject KrakenDeploy.Server.Services.ServerTasksService TasksSvc
 @inject NotificationService Notify
 @inject DialogService DialogService
 @inject UiActionGuard Guard
@@ -289,14 +290,14 @@ else
             // maintenance gate refuses both kinds before the target check, so it
             // must be named first — a target-wait sentence during maintenance
             // would send the operator to debug the wrong machine. The target
-            // probe goes through DeploymentService's kind-agnostic wrapper, the
+            // probe goes through the kind-agnostic ServerTasksService read, the
             // one read both detail pages share.
             if (Run.Status == DeploymentStatus.Queued)
             {
                 var maintenance = await MaintenanceSvc.GetStateAsync();
                 _maintenanceHold = maintenance.Enabled ? maintenance : null;
                 _targetConflict = _maintenanceHold is null
-                    ? await DeploymentSvc.GetTargetConflictAsync(Id)
+                    ? await TasksSvc.GetTargetConflictAsync(Id)
                     : null;
             }
             else
