@@ -459,7 +459,7 @@ FKs keep even unfiltered joins intra-Space by construction
   ONE global claim-decision advisory lock (see the F6 bullet below — F6
   **replaced** F1's per-`hash64(project, env, tenant)` key with a single constant
   key, subsuming it) and re-checks the "no in-flight peer" predicate
-  (`InFlightDeploymentPeerPredicate`) as a **separate statement**, so two
+  (the in-flight arm of `ClaimDeferralPredicate`) as a **separate statement**, so two
   concurrent claimants of one key cannot both see "no peer" and both win: the
   lock-loser blocks until the winner commits, then its fresh READ COMMITTED
   snapshot sees the winner's `Running` row and is refused

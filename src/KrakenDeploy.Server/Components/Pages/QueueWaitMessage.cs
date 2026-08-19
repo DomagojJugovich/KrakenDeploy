@@ -5,7 +5,7 @@ namespace KrakenDeploy.Server.Components.Pages;
 /// queue-wait reason, shared by <c>Deployments</c> (list) and
 /// <c>DeploymentDetail</c> so the operator-facing wording stays identical (it was
 /// duplicated in both pages). The blocked-peer DETECTION lives in
-/// <c>ServerTaskLease.InFlightDeploymentPeerPredicate</c> /
+/// <c>ServerTaskLease.ClaimDeferralPredicate</c> /
 /// <c>DeploymentStatusExtensions.InFlightAfterClaim</c>; this only builds the
 /// sentence.
 /// </summary>

@@ -175,11 +175,11 @@
     // InterruptionView.
     private HashSet<Guid> _awaitingApproval = [];
 
-    // F6 — Queued deployment ids held by the per-plan target exclusion (a serial
-    // machine in their assignment set is busy). Probed for the page's Queued rows
-    // only; the row shows the short reason and the detail page names the blocking
-    // machine + queue position.
-    private HashSet<Guid> _targetBlocked = [];
+    // Why each Queued row has not started, resolved once at load by the shared
+    // ServerTasksService resolver (the same one both detail pages use). The row
+    // renders the short form; the detail page names the blocking machine and queue
+    // position.
+    private Dictionary<Guid, ServerTasksService.QueueWaitResolution> _queueWaits = [];
 
     protected override async Task OnInitializedAsync()
     {
@@ -199,17 +199,22 @@
         _awaitingApproval = await Interruptions.FindTasksAwaitingResponseAsync(
             pausedIds, SpaceCtx.CurrentSpaceId, await Guard.CurrentCallerAsync());
 
-        // F6 — same treatment for the target exclusion: probe the Queued rows so a
-        // backlog held by a busy machine explains itself here, not only on each
-        // row's detail page. Skipped entirely while maintenance is on (that gate
-        // refuses every claim, so it is the binding reason for every row).
+        // Same treatment for the queue reasons: resolve the Queued rows once here
+        // so a backlog explains itself on the list, not only on each row's detail
+        // page — and so the grid template stays a dictionary lookup. Skipped
+        // entirely while maintenance is on (that gate refuses every claim, so it is
+        // the binding reason for every row). The candidate carries the fields the
+        // resolver needs, which this page already holds on its loaded rows.
         if (_maintenanceHold is null)
         {
-            var queuedIds = _all
+            var queued = _all
                 .Where(d => d.Status == DeploymentStatus.Queued)
-                .Select(d => d.Id)
+                .Select(d => new ServerTasksService.QueueWaitCandidate(
+                    d.Id,
+                    KrakenDeploy.Server.Core.Domain.Deployments.ServerTaskKind.Deployment,
+                    d.ProjectId, d.EnvironmentId, d.TenantId, d.CreatedUtc))
                 .ToList();
-            _targetBlocked = await TasksSvc.GetTargetBlockedTaskIdsAsync(queuedIds);
+            _queueWaits = await TasksSvc.ResolveQueueWaitsAsync(queued, withBlockerDetail: false);
         }
 
         ApplyFilters();
@@ -330,17 +335,11 @@
         _grid?.Reload();
     }
 
-    // F1 — the queue-wait reason for a Queued deployment blocked by the
-    // (project, environment, tenant) serialization rule. Computed in-memory over
-    // the already-loaded _all set (which holds every deployment in the Space,
-    // including the in-flight peers), so there is no per-row DB round-trip. Shares
-    // the exact status set the claim enforces
-    // (DeploymentStatusExtensions.InFlightAfterClaim) — so if that set changes the
-    // list can't drift — and mirrors the key comparison of
-    // ServerTaskLease.InFlightDeploymentPeerPredicate (null tenant is its own key
-    // via the == comparison).
-    // Maintenance mode wins: while the claim gate is closed no task can start, so
-    // reporting "another deployment is running" would name the wrong constraint.
+    // The queue-wait reason for a Queued deployment. Maintenance mode wins: while
+    // the claim gate is closed no task can start, so reporting "another deployment
+    // is running" would name the wrong constraint. Every other reason comes from
+    // the shared resolver (ServerTasksService.ResolveQueueWaitsAsync), resolved
+    // once at load — this method is a lookup, not a scan.
     private string? QueueWaitReason(Deployment d)
     {
         if (d.Status != DeploymentStatus.Queued)
@@ -351,39 +350,23 @@
         {
             return QueueWaitMessage.MaintenanceHold(hold.Reason);
         }
-        // Claim order: F1's in-flight arm, then its FIFO arm, then F6's target
-        // exclusion — the same precedence DeploymentDetail renders, so a row and
-        // its detail page never name different constraints.
-        if (IsBlockedByInFlightPeer(d))
-        {
-            return QueueWaitMessage.RunningPeer(d.Release?.Project?.Name, d.Environment?.Name);
-        }
-        if (IsBlockedByEarlierQueuedPeer(d))
-        {
-            return QueueWaitMessage.QueuedPeer(d.Release?.Project?.Name, d.Environment?.Name);
-        }
-        return _targetBlocked.Contains(d.Id) ? QueueWaitMessage.TargetWaitShort() : null;
+        // Everything else was resolved ONCE at load by the shared resolver, which
+        // applies the claim's own order (F1 in-flight → F1 earlier-queued → F6
+        // target) using the claim's own predicates — so a row and its detail page
+        // can never name different constraints, and this template stays a
+        // dictionary lookup rather than re-scanning every loaded row per render.
+        return _queueWaits.TryGetValue(d.Id, out var reason)
+            ? reason.Block switch
+            {
+                QueueWaitBlock.InFlightPeer =>
+                    QueueWaitMessage.RunningPeer(d.Release?.Project?.Name, d.Environment?.Name),
+                QueueWaitBlock.EarlierQueuedPeer =>
+                    QueueWaitMessage.QueuedPeer(d.Release?.Project?.Name, d.Environment?.Name),
+                QueueWaitBlock.TargetBlocked => QueueWaitMessage.TargetWaitShort(),
+                _ => null,
+            }
+            : null;
     }
-
-    private bool IsBlockedByInFlightPeer(Deployment d)
-        => _all.Any(o => o.Id != d.Id
-            && DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status)
-            && o.ProjectId == d.ProjectId
-            && o.EnvironmentId == d.EnvironmentId
-            && o.TenantId == d.TenantId);
-
-    // F1's FIFO arm, mirroring ServerTaskLease.ClaimDeferralPredicate: an earlier
-    // already-due Queued sibling of the same key claims first. Evaluated in memory
-    // over the loaded rows (all fields are on the entity), like the in-flight arm
-    // above — a future-scheduled sibling is NOT due and never blocks.
-    private bool IsBlockedByEarlierQueuedPeer(Deployment d)
-        => _all.Any(o => o.Id != d.Id
-            && o.Status == DeploymentStatus.Queued
-            && (o.ScheduledFor is null || o.ScheduledFor <= DateTimeOffset.UtcNow)
-            && o.CreatedUtc < d.CreatedUtc
-            && o.ProjectId == d.ProjectId
-            && o.EnvironmentId == d.EnvironmentId
-            && o.TenantId == d.TenantId);
 
     private string EnvColor(Guid envId)
         => _envColor.TryGetValue(envId, out var i) ? $"env-c{i % 6}" : "env-c0";

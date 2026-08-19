@@ -146,11 +146,11 @@ else
     // outranks the target-wait reason (mirrors DeploymentDetail).
     private MaintenanceState? _maintenanceHold;
 
-    // F6 — non-null while this Queued run is held by the per-plan target
-    // exclusion; carries the blocker + queue position for the banner. Refreshed
-    // with each reload (the page polls every 5 s while non-terminal). Probed
-    // only when maintenance doesn't already explain the wait.
-    private KrakenDeploy.Server.Data.ServerTaskTargetExclusion.TargetConflict? _targetConflict;
+    // Why this Queued run has not started, from the resolver both detail pages
+    // share; for a runbook run only F6's target exclusion can apply (runs are
+    // F1-exempt). Refreshed with each reload (the page polls every 5 s while
+    // non-terminal); probed only when maintenance doesn't already explain the wait.
+    private ServerTasksService.QueueWaitResolution? _queueWait;
 
     private bool _cancelling;
 
@@ -289,21 +289,24 @@ else
             // Queue reasons, in CLAIM order (mirrors DeploymentDetail): the
             // maintenance gate refuses both kinds before the target check, so it
             // must be named first — a target-wait sentence during maintenance
-            // would send the operator to debug the wrong machine. The target
-            // probe goes through the kind-agnostic ServerTasksService read, the
-            // one read both detail pages share.
+            // would send the operator to debug the wrong machine. Everything else
+            // comes from the shared resolver, which applies the claim's own order
+            // and skips F1 for a runbook run (it is F1-exempt).
             if (Run.Status == DeploymentStatus.Queued)
             {
                 var maintenance = await MaintenanceSvc.GetStateAsync();
                 _maintenanceHold = maintenance.Enabled ? maintenance : null;
-                _targetConflict = _maintenanceHold is null
-                    ? await TasksSvc.GetTargetConflictAsync(Id)
+                _queueWait = _maintenanceHold is null
+                    ? await TasksSvc.ResolveQueueWaitAsync(new ServerTasksService.QueueWaitCandidate(
+                        Id,
+                        KrakenDeploy.Server.Core.Domain.Deployments.ServerTaskKind.RunbookRun,
+                        Run.ProjectId, Run.EnvironmentId, Run.TenantId, Run.CreatedUtc))
                     : null;
             }
             else
             {
                 _maintenanceHold = null;
-                _targetConflict = null;
+                _queueWait = null;
             }
         }
     }
@@ -399,7 +402,7 @@ else
         {
             return scheduled;
         }
-        return _targetConflict is { } conflict
+        return _queueWait is { Block: QueueWaitBlock.TargetBlocked, Conflict: { } conflict }
             ? QueueWaitMessage.TargetWait(conflict)
             : null;
     }

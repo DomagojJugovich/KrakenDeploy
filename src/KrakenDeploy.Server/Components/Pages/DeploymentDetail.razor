@@ -274,19 +274,12 @@ else
     private bool _cancelling;
     private bool _regenerating;
 
-    // F1 — which arm of the (project,env,tenant) serialization rule holds this
-    // Queued deployment: an in-flight same-key peer, or an earlier already-due
-    // queued sibling. One read covers both arms, so the banner follows the claim's
-    // own order and the F6 probe below never captures (and mislabels) an F1
-    // refusal as a target wait. Consulted only by the banner's Queued branch, so
-    // it is harmlessly ignored once the row leaves Queued.
-    private QueueSerializationBlock _serializationBlock;
-
-    // F6 — non-null while this Queued task is held by the per-plan target
-    // exclusion (a serial target in its assignment set is busy). Carries the
-    // blocker + queue position for the "Waiting for target X" banner. Probed
-    // only when neither maintenance nor the F1 rule already explains the wait.
-    private KrakenDeploy.Server.Data.ServerTaskTargetExclusion.TargetConflict? _targetConflict;
+    // Why this Queued deployment has not started, from the shared resolver: which
+    // rule holds it (F1's in-flight or earlier-queued arm, or F6's target
+    // exclusion) plus the blocker detail when it is a target wait. Non-null only
+    // while the row is Queued and maintenance is off, so the banner's other
+    // branches ignore it.
+    private ServerTasksService.QueueWaitResolution? _queueWait;
 
     // Non-null while this Queued task is held by the instance-wide maintenance gate
     // (the claim is refused, so it cannot start until maintenance is disabled). Held
@@ -709,31 +702,25 @@ else
     {
         if (Deployment is not { Status: DeploymentStatus.Queued })
         {
-            _serializationBlock = QueueSerializationBlock.None;
-            _targetConflict = null;
+            _queueWait = null;
             _maintenanceHold = null;
             return;
         }
 
         // The maintenance gate in ServerTaskLease.TryClaimAsync refuses the claim
-        // outright, so it outranks the serialization rule as the reason this task
-        // hasn't started. Read it first and skip the peer probe when it applies.
+        // outright, so it outranks every per-task rule as the reason this task
+        // hasn't started. Read it first and skip the resolver when it applies.
         var maintenance = await MaintenanceSvc.GetStateAsync();
         _maintenanceHold = maintenance.Enabled ? maintenance : null;
-        // F1 — BOTH arms of the claim's deferral in one round-trip: an in-flight
-        // same-key peer, or an earlier already-due queued sibling. Both must be
-        // named as F1 rather than falling through to the target probe below (the
-        // claim checks F1 first, and a same-key sibling usually shares targets).
-        _serializationBlock = _maintenanceHold is null
-            ? await DeploymentSvc.GetSerializationBlockAsync(
-                Deployment.Id, Deployment.ProjectId, Deployment.EnvironmentId,
-                Deployment.TenantId, Deployment.CreatedUtc)
-            : QueueSerializationBlock.None;
-        // F6 — the target-wait probe, in claim order: only consulted when neither
-        // maintenance nor F1 already explains the wait.
-        _targetConflict = _maintenanceHold is null
-                && _serializationBlock == QueueSerializationBlock.None
-            ? await TasksSvc.GetTargetConflictAsync(Deployment.Id)
+        // Everything else comes from the ONE resolver both detail pages and the
+        // deployments list share, which applies the claim's own order (F1
+        // in-flight → F1 earlier-queued → F6 target) and its own predicates.
+        _queueWait = _maintenanceHold is null
+            ? await TasksSvc.ResolveQueueWaitAsync(new ServerTasksService.QueueWaitCandidate(
+                Deployment.Id,
+                KrakenDeploy.Server.Core.Domain.Deployments.ServerTaskKind.Deployment,
+                Deployment.ProjectId, Deployment.EnvironmentId, Deployment.TenantId,
+                Deployment.CreatedUtc))
             : null;
     }
 
@@ -753,19 +740,16 @@ else
         {
             return scheduled;
         }
-        if (_serializationBlock == QueueSerializationBlock.InFlightPeer)
+        return _queueWait switch
         {
-            return QueueWaitMessage.RunningPeer(
-                Deployment?.Release?.Project?.Name, Deployment?.Environment?.Name);
-        }
-        if (_serializationBlock == QueueSerializationBlock.EarlierQueuedPeer)
-        {
-            return QueueWaitMessage.QueuedPeer(
-                Deployment?.Release?.Project?.Name, Deployment?.Environment?.Name);
-        }
-        return _targetConflict is { } conflict
-            ? QueueWaitMessage.TargetWait(conflict)
-            : null;
+            { Block: QueueWaitBlock.InFlightPeer } => QueueWaitMessage.RunningPeer(
+                Deployment?.Release?.Project?.Name, Deployment?.Environment?.Name),
+            { Block: QueueWaitBlock.EarlierQueuedPeer } => QueueWaitMessage.QueuedPeer(
+                Deployment?.Release?.Project?.Name, Deployment?.Environment?.Name),
+            { Block: QueueWaitBlock.TargetBlocked, Conflict: { } conflict } =>
+                QueueWaitMessage.TargetWait(conflict),
+            _ => null,
+        };
     }
 
     private string FormatDuration()

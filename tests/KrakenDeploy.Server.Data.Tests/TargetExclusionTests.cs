@@ -454,6 +454,85 @@ public sealed class TargetExclusionTests(PostgresFixture postgres)
             .Should().BeFalse();
     }
 
+    // ── The shared queue-reason resolver (list page + both detail pages) ─────
+
+    [Fact]
+    public async Task Queue_wait_resolver_reports_the_target_block_only_for_blocked_rows()
+    {
+        // The resolver is what every reason surface reads: the deployments list
+        // classifies a whole page of Queued rows through it, and both detail pages
+        // classify one row with blocker detail. Pin that it returns the blocked
+        // subset — not every candidate — and that the detail form carries the
+        // blocker while the list form does not.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var env = await harness.SeedEnvironmentAsync(UniqueName("env"));
+        var targets = await harness.SeedTargetsAsync(UniqueName("t"));
+        var otherTargets = await harness.SeedTargetsAsync(UniqueName("t2"));
+        var running = await SeedDeploymentAsync(harness, env.Id, targets);
+        var blocked = await SeedDeploymentAsync(harness, env.Id, targets);
+        var elsewhere = await SeedDeploymentAsync(harness, env.Id, otherTargets);
+
+        await using var db = postgres.CreateContext();
+        (await ServerTaskLease.TryClaimAsync(db, running, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+
+        var resolver = CreateTasksService();
+        var candidates = new[]
+        {
+            await CandidateAsync(db, blocked),
+            await CandidateAsync(db, elsewhere),
+        };
+
+        var listForm = await resolver.ResolveQueueWaitsAsync(candidates, withBlockerDetail: false);
+        listForm[blocked].Block.Should().Be(QueueWaitBlock.TargetBlocked);
+        listForm[blocked].Conflict.Should().BeNull("the list form skips the blocker lookup");
+        listForm[elsewhere].Block.Should().Be(QueueWaitBlock.None,
+            "a task on disjoint targets is not blocked");
+
+        var detailForm = await resolver.ResolveQueueWaitAsync(candidates[0]);
+        detailForm.Block.Should().Be(QueueWaitBlock.TargetBlocked);
+        detailForm.Conflict.Should().NotBeNull();
+        detailForm.Conflict!.BlockerTaskId.Should().Be(running);
+        detailForm.Conflict.TargetName.Should().Be(targets[0].Name);
+    }
+
+    [Fact]
+    public async Task Queue_wait_resolver_reports_F1_before_the_target_rule_and_exempts_children()
+    {
+        // Claim order matters for the operator: a same-key sibling is the more
+        // specific reason and consent never relaxes it, so F1 must win even though
+        // the two deployments also share a target. And a child is exempt from the
+        // exclusion outright, so it must resolve to no reason at all.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var env = await harness.SeedEnvironmentAsync(UniqueName("env"));
+        var targets = await harness.SeedTargetsAsync(UniqueName("t"));
+
+        // SAME project + env for the pair, so F1 applies as well as F6.
+        var project = await harness.SeedProjectAsync(UniqueName("p"));
+        var release = await harness.SeedReleaseAsync(project.Id, "1.0", StepBuilder.Script("s1"));
+        var first = await harness.CreateDeploymentAsync(release.Id, env.Id, targets);
+        var second = await harness.CreateDeploymentAsync(release.Id, env.Id, targets);
+
+        await using var db = postgres.CreateContext();
+        (await ServerTaskLease.TryClaimAsync(db, first, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+
+        var resolver = CreateTasksService();
+        var secondReason = await resolver.ResolveQueueWaitAsync(await CandidateAsync(db, second));
+        secondReason.Block.Should().Be(QueueWaitBlock.InFlightPeer,
+            "F1's in-flight arm is the binding reason, not the target exclusion");
+
+        // A child of the in-flight parent, on the same target: exempt outright.
+        var childProject = await harness.SeedProjectAsync(UniqueName("p"));
+        var childRelease = await harness.SeedReleaseAsync(childProject.Id, "1.0", StepBuilder.Script("s1"));
+        var child = await harness.CreateDeploymentAsync(
+            childRelease.Id, env.Id, targets, parentTaskId: first);
+
+        var childReason = await resolver.ResolveQueueWaitAsync(await CandidateAsync(db, child));
+        childReason.Block.Should().Be(QueueWaitBlock.None,
+            "a child is exempt from the target exclusion, so it never reports a target wait");
+    }
+
     // ── The Tasks page ?target= filter (assignment-joined reads) ─────────────
 
     [Fact]
@@ -532,6 +611,39 @@ public sealed class TargetExclusionTests(PostgresFixture postgres)
             await harness.SetRunbookAllowParallelTaskExecutionForRunAsync(runId, true);
         }
         return runId;
+    }
+
+    /// <summary>The real <c>ServerTasksService</c> (the queue-reason resolver's
+    /// home), wired the way the host wires it — the Hangfire arm is untouched by
+    /// these tests, so no job storage is needed.</summary>
+    private KrakenDeploy.Server.Services.ServerTasksService CreateTasksService()
+    {
+        var queue = Channel.CreateUnbounded<TenantWorkItem>();
+        return new KrakenDeploy.Server.Services.ServerTasksService(
+            new DeploymentService(postgres, queue, TimeProvider.System,
+                new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
+                new AllowAllPermissionEvaluator()),
+            new RunbookService(postgres, queue, TimeProvider.System,
+                new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
+                new AllowAllPermissionEvaluator()),
+            postgres,
+            TimeProvider.System,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<
+                KrakenDeploy.Server.Services.ServerTasksService>.Instance);
+    }
+
+    /// <summary>Builds the resolver's candidate from a seeded task, exactly as the
+    /// pages build it from the rows they already hold.</summary>
+    private static async Task<KrakenDeploy.Server.Services.ServerTasksService.QueueWaitCandidate>
+        CandidateAsync(KrakenDbContext db, Guid taskId)
+    {
+        var row = await db.ServerTasks
+            .IgnoreQueryFilters()
+            .Where(t => t.Id == taskId)
+            .Select(t => new { t.Id, t.Kind, t.ProjectId, t.EnvironmentId, t.TenantId, t.CreatedUtc })
+            .FirstAsync();
+        return new KrakenDeploy.Server.Services.ServerTasksService.QueueWaitCandidate(
+            row.Id, row.Kind, row.ProjectId, row.EnvironmentId, row.TenantId, row.CreatedUtc);
     }
 
     private static string UniqueName(string prefix)

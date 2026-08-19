@@ -228,7 +228,7 @@ public static class ServerTaskLease
             if (task.ParentTaskId is null)
             {
                 var sourceConsent = await ServerTaskTargetExclusion
-                    .SourceConsentAsync(db, task, ct)
+                    .SourceConsentAsync(db, task.Id, ct)
                     .ConfigureAwait(false);
                 var targetConflict = await ServerTaskTargetExclusion
                     .ConflictingTasksQuery(db, task.Id, sourceConsent, task.CreatedUtc, now)
@@ -417,48 +417,35 @@ public static class ServerTaskLease
     }
 
     /// <summary>
-    /// The F1 serialization predicate: another <c>Deployment</c> (kind-scoped —
-    /// a runbook run never blocks a deployment) of the same
-    /// <c>(ProjectId, EnvironmentId, TenantId)</c> that is currently IN-FLIGHT —
-    /// claimed but not yet terminal
-    /// (<see cref="DeploymentStatusExtensions.InFlightAfterClaim"/>: <c>Running</c>,
-    /// a parked <c>PendingOfflineResult</c>, or a <c>Paused</c> approval gate) —
-    /// excluding <paramref name="excludingTaskId"/> (a task never blocks itself). A
-    /// parked offline-drop deployment (<c>PendingOfflineResult</c>) or one paused at a
-    /// manual-intervention gate (<c>Paused</c>, WP3) still holds the key: it is a
-    /// non-terminal deployment of that (project,env,tenant), so a new one must wait
-    /// until it resolves or is cancelled (Octopus parity — "starts only after the
-    /// first goes terminal"). <c>t.TenantId == tenantId</c> uses EF's null-safe
-    /// comparison, so a NULL tenant matches only other NULL-tenant rows —
-    /// untenanted deployments serialize among themselves. Shared by the claim's
-    /// in-lock check, the worker's pre-gate skip and the UI queue-reason read so
-    /// they can never drift.
-    /// </summary>
-    public static Expression<Func<ServerTask, bool>> InFlightDeploymentPeerPredicate(
-        Guid excludingTaskId, Guid projectId, Guid environmentId, Guid? tenantId)
-        => t => t.Id != excludingTaskId
-             && t.Kind == ServerTaskKind.Deployment
-             && DeploymentStatusExtensions.InFlightAfterClaim.Contains(t.Status)
-             && t.ProjectId == projectId
-             && t.EnvironmentId == environmentId
-             && t.TenantId == tenantId;
-
-    /// <summary>
-    /// The claim-time deferral predicate for a <c>Deployment</c> of the given key:
-    /// another same-key <c>Deployment</c> that should go FIRST — either it is
-    /// IN-FLIGHT (<see cref="InFlightDeploymentPeerPredicate"/> — a Running or
-    /// parked-offline peer) OR it is an earlier, <b>already-due</b> <c>Queued</c>
-    /// sibling (FIFO fairness: the oldest queued deployment of a key claims next,
-    /// Octopus-parity). "Earlier" is by <c>CreatedUtc</c>; a sibling whose
-    /// <c>ScheduledFor</c> is still in the future is NOT due and never blocks — so
-    /// a future-scheduled older deployment can't starve a ready one. Excludes
-    /// <paramref name="excludingTaskId"/> (a task never defers to itself). This is
-    /// the claim/pre-gate gate; the UI queue-reason uses the narrower in-flight
-    /// predicate (its message is specifically "another deployment is running").
-    /// A <c>CreatedUtc</c> tie falls back to the advisory-lock race (harmless —
-    /// exactly one still wins). Shares
-    /// <see cref="DeploymentStatusExtensions.InFlightAfterClaim"/> with the
-    /// in-flight predicate so the two can't drift on which statuses count.
+    /// The F1 deferral predicate — the ONE encoding of the
+    /// <c>(project, environment, tenant)</c> rule, shared by the claim's in-lock
+    /// check, the worker's pre-gate skip and every UI queue-reason read so they
+    /// can never drift. Matches another same-key <c>Deployment</c> (kind-scoped —
+    /// a runbook run never blocks a deployment) that should go FIRST:
+    /// <list type="bullet">
+    ///   <item><b>IN-FLIGHT</b> — claimed but not yet terminal
+    ///   (<see cref="DeploymentStatusExtensions.InFlightAfterClaim"/>:
+    ///   <c>Running</c>, a parked <c>PendingOfflineResult</c>, or a <c>Paused</c>
+    ///   approval gate). A parked offline-drop deployment or one paused at a
+    ///   manual-intervention gate (WP3) still holds the key: it is a non-terminal
+    ///   deployment of that key, so a new one waits until it resolves or is
+    ///   cancelled (Octopus parity — "starts only after the first goes
+    ///   terminal").</item>
+    ///   <item><b>Earlier and already-due <c>Queued</c></b> (FIFO fairness: the
+    ///   oldest queued deployment of a key claims next, Octopus-parity).
+    ///   "Earlier" is by <c>CreatedUtc</c>; a sibling whose <c>ScheduledFor</c> is
+    ///   still in the future is NOT due and never blocks, so a future-scheduled
+    ///   older deployment can't starve a ready one.</item>
+    /// </list>
+    /// Excludes <paramref name="excludingTaskId"/> (a task never defers to
+    /// itself). <c>o.TenantId == tenantId</c> uses EF's null-safe comparison, so a
+    /// NULL tenant matches only other NULL-tenant rows — untenanted deployments
+    /// serialize among themselves. A <c>CreatedUtc</c> tie falls back to the
+    /// advisory-lock race (harmless — exactly one still wins). Callers that need
+    /// to word the two arms differently rank them by
+    /// <see cref="DeploymentStatusExtensions.InFlightAfterClaim"/> over the
+    /// matched rows (see <c>DeploymentService.GetSerializationBlockAsync</c>)
+    /// rather than re-stating either arm.
     /// </summary>
     public static Expression<Func<ServerTask, bool>> ClaimDeferralPredicate(
         Guid excludingTaskId, Guid projectId, Guid environmentId, Guid? tenantId,

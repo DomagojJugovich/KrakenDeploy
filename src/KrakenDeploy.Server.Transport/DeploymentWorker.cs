@@ -295,8 +295,8 @@ public sealed class DeploymentWorker(
             && row.Status != DeploymentStatus.Paused
             && await ServerTaskTargetExclusion.ConflictingTasksQuery(
                     db, deploymentId,
-                    await ServerTaskTargetExclusion.SourceConsentAsync(
-                        db, row.Kind, row.ProjectId, deploymentId, ct).ConfigureAwait(false),
+                    await ServerTaskTargetExclusion
+                        .SourceConsentAsync(db, deploymentId, ct).ConfigureAwait(false),
                     row.CreatedUtc, now)
                 .AnyAsync(ct)
                 .ConfigureAwait(false);

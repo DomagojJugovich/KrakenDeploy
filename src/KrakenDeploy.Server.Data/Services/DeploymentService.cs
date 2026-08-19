@@ -9,24 +9,29 @@ using Microsoft.EntityFrameworkCore;
 namespace KrakenDeploy.Server.Data.Services;
 
 /// <summary>
-/// F1 — which arm of the claim's <c>(project, environment, tenant)</c> deferral
-/// currently holds a <c>Queued</c> deployment. The queue-reason banner words the
-/// two arms differently ("another deployment is running" vs "an earlier one is
-/// queued ahead"), and both must outrank the F6 target reason because the claim
-/// evaluates F1 first.
+/// Why a <c>Queued</c> task has not started, in the order the CLAIM evaluates the
+/// rules — so every surface that shows a queue reason (the deployment list, both
+/// detail pages) names the same binding constraint. The instance-wide maintenance
+/// gate outranks all of these and is read separately (it is not per-task).
 /// </summary>
-public enum QueueSerializationBlock
+public enum QueueWaitBlock
 {
-    /// <summary>No same-key peer defers this deployment.</summary>
+    /// <summary>Nothing found — the task is startable, or is waiting on something
+    /// this classification does not model (e.g. a future schedule).</summary>
     None,
 
-    /// <summary>A same-key peer is IN-FLIGHT (Running, parked offline, or paused
-    /// at a gate) — it holds the key until it goes terminal.</summary>
+    /// <summary>F1 — a same-key peer is IN-FLIGHT (Running, parked offline, or
+    /// paused at a gate); it holds the key until it goes terminal.</summary>
     InFlightPeer,
 
-    /// <summary>Nothing is in-flight, but an earlier already-due <c>Queued</c>
-    /// sibling of the same key claims first (FIFO).</summary>
+    /// <summary>F1 — nothing is in-flight, but an earlier already-due
+    /// <c>Queued</c> sibling of the same key claims first (FIFO).</summary>
     EarlierQueuedPeer,
+
+    /// <summary>F6 — a SERIAL target in the task's assignment set is held by
+    /// another task (see <c>ServerTaskTargetExclusion</c>). Checked after F1,
+    /// exactly as the claim does.</summary>
+    TargetBlocked,
 }
 
 /// <summary>
@@ -407,31 +412,58 @@ public class DeploymentService(
     /// mislabel) an F1 refusal. Ordering in-flight first and taking a single row
     /// answers both questions without a second query.
     /// </summary>
-    public async Task<QueueSerializationBlock> GetSerializationBlockAsync(
+    public Task<QueueWaitBlock> GetSerializationBlockAsync(
+        Guid queuedDeploymentId, Guid projectId, Guid environmentId, Guid? tenantId,
+        DateTimeOffset createdUtc, CancellationToken ct = default)
+        => GetSerializationBlockAsync(
+            null, queuedDeploymentId, projectId, environmentId, tenantId, createdUtc, ct);
+
+    /// <summary>
+    /// As <see cref="GetSerializationBlockAsync(Guid, Guid, Guid, Guid?, DateTimeOffset, CancellationToken)"/>,
+    /// but reusing a caller's <see cref="KrakenDbContext"/> when it has one — the
+    /// queue-reason resolver classifies a whole page of rows on one context instead
+    /// of renting one per row.
+    /// </summary>
+    public async Task<QueueWaitBlock> GetSerializationBlockAsync(
+        KrakenDbContext? context,
         Guid queuedDeploymentId, Guid projectId, Guid environmentId, Guid? tenantId,
         DateTimeOffset createdUtc, CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        // null = no peer at all; 1 = the winning peer is in-flight; 0 = the only
-        // peers are earlier queued siblings.
-        var topPeerInFlight = await db.ServerTasks
-            .Where(
-                ServerTaskLease.ClaimDeferralPredicate(
-                    queuedDeploymentId, projectId, environmentId, tenantId,
-                    createdUtc, time.GetUtcNow()))
-            .OrderByDescending(o =>
-                DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status) ? 1 : 0)
-            .Select(o =>
-                (int?)(DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status) ? 1 : 0))
-            .FirstOrDefaultAsync(ct)
-            .ConfigureAwait(false);
-
-        return topPeerInFlight switch
+        var owned = context is null
+            ? await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false)
+            : null;
+        var db = context ?? owned!;
+        try
         {
-            null => QueueSerializationBlock.None,
-            1    => QueueSerializationBlock.InFlightPeer,
-            _    => QueueSerializationBlock.EarlierQueuedPeer,
-        };
+            // null = no peer at all; 1 = the winning peer is in-flight; 0 = the only
+            // peers are earlier queued siblings. Ranking the matched rows rather than
+            // re-stating either arm keeps ClaimDeferralPredicate the one encoding.
+            var topPeerInFlight = await db.ServerTasks
+                .Where(
+                    ServerTaskLease.ClaimDeferralPredicate(
+                        queuedDeploymentId, projectId, environmentId, tenantId,
+                        createdUtc, time.GetUtcNow()))
+                .OrderByDescending(o =>
+                    DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status) ? 1 : 0)
+                .Select(o =>
+                    (int?)(DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status) ? 1 : 0))
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            return topPeerInFlight switch
+            {
+                null => QueueWaitBlock.None,
+                1    => QueueWaitBlock.InFlightPeer,
+                _    => QueueWaitBlock.EarlierQueuedPeer,
+            };
+        }
+        finally
+        {
+            if (owned is not null)
+            {
+                await owned.DisposeAsync().ConfigureAwait(false);
+            }
+        }
     }
 
     /// <summary>

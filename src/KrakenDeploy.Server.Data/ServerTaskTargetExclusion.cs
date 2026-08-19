@@ -142,6 +142,10 @@ public static class ServerTaskTargetExclusion
             // my consent this clause is unreachable (one Exclusive side is
             // enough), so the subqueries are skipped entirely.
             //
+            // This states SourceConsentsPredicate's rule INLINE because EF Core
+            // cannot invoke a captured expression inside an expression tree —
+            // change the two together (see that predicate's summary).
+            //
             // The blocker's consent is read LIVE, not as-of-its-claim (no
             // claimed-mode column exists): flipping a source flag ON while its
             // exclusive plan is mid-flight lets a consenting peer co-claim the
@@ -160,39 +164,65 @@ public static class ServerTaskTargetExclusion
     }
 
     /// <summary>
-    /// The claiming task's SOURCE consent: the owning project's flag for a
-    /// deployment, the runbook's own flag for a run. Read live so an author's
-    /// flip applies to the next claim, mirroring how the plan builder reads the
-    /// target flag at dispatch time.
+    /// The SOURCE-consent rule as a reusable predicate over a <c>server_tasks</c>
+    /// row: a deployment consents when its owning PROJECT does, a runbook run when
+    /// its RUNBOOK does. Read live so an author's flip applies to the next claim,
+    /// mirroring how the plan builder reads the target flag at dispatch time.
+    /// <para>
+    /// ONE encoding, shared by the single-task read
+    /// (<see cref="SourceConsentAsync"/>) and the batched one
+    /// (<see cref="SourceConsentingTaskIdsAsync"/>). The o-SIDE clause inside
+    /// <see cref="ConflictingTasksQuery"/> must state the same rule inline —
+    /// EF Core cannot invoke a captured expression inside another expression tree
+    /// — so the two MUST be changed together; this summary is the source of truth
+    /// for what they both mean.
+    /// </para>
     /// </summary>
-    public static Task<bool> SourceConsentAsync(
-        KrakenDbContext db, ServerTask task, CancellationToken ct = default)
-        => task is RunbookRun run
-            ? db.Runbooks.IgnoreQueryFilters()
-                .Where(r => r.Id == run.RunbookId)
-                .Select(r => r.AllowParallelTaskExecution)
-                .FirstOrDefaultAsync(ct)
-            : db.Projects.IgnoreQueryFilters()
-                .Where(p => p.Id == task.ProjectId)
-                .Select(p => p.AllowParallelTaskExecution)
-                .FirstOrDefaultAsync(ct);
+    public static System.Linq.Expressions.Expression<Func<ServerTask, bool>> SourceConsentsPredicate(
+        KrakenDbContext db)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        return t =>
+            (t.Kind == ServerTaskKind.Deployment
+                && db.Projects.IgnoreQueryFilters()
+                    .Any(p => p.Id == t.ProjectId && p.AllowParallelTaskExecution))
+            || db.RunbookRuns.IgnoreQueryFilters()
+                .Any(rr => rr.Id == t.Id && rr.Runbook.AllowParallelTaskExecution);
+    }
 
-    /// <summary>Row-shape overload of <see cref="SourceConsentAsync(KrakenDbContext,
-    /// ServerTask, CancellationToken)"/> for callers that probed the task without
-    /// materializing the entity (the worker's pre-gate probe): a run's flag is
-    /// correlated through its own row instead of a loaded <c>RunbookId</c>.</summary>
+    /// <summary>Whether ONE task's source consents (see
+    /// <see cref="SourceConsentsPredicate"/>). By id, so every caller — the claim
+    /// (entity in hand), the worker's pre-gate probe (row projection) and the UI
+    /// reads (id only) — shares one overload.</summary>
     public static Task<bool> SourceConsentAsync(
-        KrakenDbContext db, ServerTaskKind kind, Guid projectId, Guid taskId,
-        CancellationToken ct = default)
-        => kind == ServerTaskKind.RunbookRun
-            ? db.RunbookRuns.IgnoreQueryFilters()
-                .Where(rr => rr.Id == taskId)
-                .Select(rr => rr.Runbook.AllowParallelTaskExecution)
-                .FirstOrDefaultAsync(ct)
-            : db.Projects.IgnoreQueryFilters()
-                .Where(p => p.Id == projectId)
-                .Select(p => p.AllowParallelTaskExecution)
-                .FirstOrDefaultAsync(ct);
+        KrakenDbContext db, Guid taskId, CancellationToken ct = default)
+        => db.ServerTasks
+            .IgnoreQueryFilters()
+            .Where(t => t.Id == taskId)
+            .AnyAsync(SourceConsentsPredicate(db), ct);
+
+    /// <summary>Which of <paramref name="taskIds"/> have a consenting source — the
+    /// batched form of <see cref="SourceConsentAsync"/>, so a caller resolving many
+    /// tasks pays ONE round-trip for consent instead of one per task.</summary>
+    public static async Task<HashSet<Guid>> SourceConsentingTaskIdsAsync(
+        KrakenDbContext db, IReadOnlyCollection<Guid> taskIds, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(taskIds);
+        if (taskIds.Count == 0)
+        {
+            return [];
+        }
+
+        var ids = await db.ServerTasks
+            .IgnoreQueryFilters()
+            .Where(t => taskIds.Contains(t.Id))
+            .Where(SourceConsentsPredicate(db))
+            .Select(t => t.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        return [.. ids];
+    }
 
     /// <summary>One target-wait blocker, resolved for the reason surface: the
     /// task detail banner and the first-deferral log line render
@@ -217,11 +247,17 @@ public static class ServerTaskTargetExclusion
     /// authoritative gate is the advisory-locked claim; this only explains it.
     /// <para>
     /// Cost is INDEPENDENT of the conflict count: the ranking runs in SQL and the
-    /// four label/target lookups are projected on the single winning row, with one
-    /// extra aggregate for the queue position. Two statements total — the detail
-    /// pages poll this every 5 s while a task is Queued, and the worker calls it
-    /// on every deferral, so a per-conflict projection would fan out badly on a
-    /// busy machine.
+    /// label/target lookups plus the queue-position count are projected on the
+    /// single winning row. The detail pages poll this every 5 s while a task is
+    /// Queued and the worker calls it on every deferral, so a per-conflict
+    /// projection would fan out badly on a busy machine.
+    /// </para>
+    /// <para>
+    /// The blocker and the queue position come from ONE statement deliberately:
+    /// split across two reads they would describe two READ COMMITTED snapshots,
+    /// and the sentence — which is also written PERMANENTLY into the task log on
+    /// first deferral — could name a blocker that had already finished, or claim
+    /// "next in line" while siblings had queued in between.
     /// </para>
     /// </summary>
     public static async Task<TargetConflict?> DescribeConflictAsync(
@@ -232,7 +268,7 @@ public static class ServerTaskTargetExclusion
         var task = await db.ServerTasks
             .IgnoreQueryFilters()
             .Where(t => t.Id == taskId)
-            .Select(t => new { t.Kind, t.ProjectId, t.CreatedUtc, t.ParentTaskId })
+            .Select(t => new { t.CreatedUtc, t.ParentTaskId })
             .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false);
         if (task is null || task.ParentTaskId is not null)
@@ -240,8 +276,7 @@ public static class ServerTaskTargetExclusion
             return null;
         }
 
-        var sourceConsent = await SourceConsentAsync(db, task.Kind, task.ProjectId, taskId, ct)
-            .ConfigureAwait(false);
+        var sourceConsent = await SourceConsentAsync(db, taskId, ct).ConfigureAwait(false);
         var conflicts = ConflictingTasksQuery(db, taskId, sourceConsent, task.CreatedUtc, now);
 
         // The blocker the operator should look at: an in-flight conflict (it is
@@ -279,6 +314,11 @@ public static class ServerTaskTargetExclusion
                     .OrderBy(mine => mine.AddedUtc)
                     .Select(mine => new { mine.TargetId, mine.Target!.Name })
                     .FirstOrDefault(),
+                // Queue position, in the SAME statement as the blocker so the
+                // sentence describes one instant. Only Queued rows count (an
+                // in-flight blocker is reported by the verb, not the position),
+                // and the predicate's FIFO arm already scopes them to OLDER.
+                QueuedAhead = conflicts.Count(q => q.Status == DeploymentStatus.Queued),
             })
             .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false);
@@ -286,13 +326,6 @@ public static class ServerTaskTargetExclusion
         {
             return null;
         }
-
-        // Queue position: conflicting tasks that will claim before this one. Only
-        // Queued rows count (an in-flight blocker is reported by the verb, not the
-        // position), and the predicate's FIFO arm already scopes them to OLDER.
-        var queuedAhead = await conflicts
-            .CountAsync(o => o.Status == DeploymentStatus.Queued, ct)
-            .ConfigureAwait(false);
 
         var label = blocker.Kind == ServerTaskKind.RunbookRun
             ? $"Runbook {blocker.RunbookName ?? "(unnamed)"}"
@@ -305,7 +338,7 @@ public static class ServerTaskTargetExclusion
             BlockerInFlight: DeploymentStatusExtensions.InFlightAfterClaim.Contains(blocker.Status),
             TargetId:       blocker.SharedTarget?.TargetId ?? Guid.Empty,
             TargetName:     blocker.SharedTarget?.Name ?? "(unknown)",
-            QueuedAhead:    queuedAhead);
+            QueuedAhead:    blocker.QueuedAhead);
     }
 
     /// <summary>The single formatter for the target-wait reason — the task

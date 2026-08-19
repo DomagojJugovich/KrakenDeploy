@@ -258,8 +258,19 @@
             {
                 Notifications.Notify(NotificationSeverity.Warning,
                     "Name saved, other settings failed", secondaryEx.Message, 6000);
-                _project = await ProjectSvc.GetBySlugAsync(_form.Slug);
-                ResetForm();
+                // The identity edit DID persist, so the slug redirect below applies
+                // here too: without it the page keeps a URL whose slug no longer
+                // resolves, and the next parameter set renders "not found" for a
+                // project that exists.
+                if (_form.Slug != _project.Slug)
+                {
+                    Nav.NavigateTo(Sp($"/projects/{_form.Slug}/settings"));
+                }
+                else
+                {
+                    _project = await ProjectSvc.GetBySlugAsync(_form.Slug);
+                    ResetForm();
+                }
                 return;
             }
 
