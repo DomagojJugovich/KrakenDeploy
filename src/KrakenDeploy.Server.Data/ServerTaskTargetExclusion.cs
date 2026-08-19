@@ -33,13 +33,23 @@ namespace KrakenDeploy.Server.Data;
 /// (<c>Octopus.DeployRelease</c> children continue an already-claimed parent).
 /// Ad-hoc scripts are not <c>server_tasks</c> and stay invisible to this
 /// predicate (accepted wave-gap residual); they take the READ side of the agent
-/// gate instead.
+/// gate instead. The unit of exclusion is the <c>DeploymentTarget</c> ROW, not
+/// the physical machine: one box registered as two targets (nothing enforces
+/// <c>MachineName</c> uniqueness) is two identities that never conflict — the
+/// same pre-existing aliasing residual the agent gate documents in
+/// <c>node-concurrency-and-cache.md</c>.
 /// </para>
 /// <para>
 /// <b>Ordering.</b> FIFO by overlap (C5): a claim defers when any in-flight task
 /// conflicts OR any OLDER already-due Queued task conflicts. Only conflicting
 /// pairs order the queue. Convoying is accepted and made legible via the reason
-/// surface below.
+/// surface below. A CHILD task is exempt from the queued-FIFO arm entirely (it
+/// defers only to IN-FLIGHT conflicts): a child is the continuation of a parent
+/// that already holds the target, so an older queued unrelated task can never
+/// go first anyway — making the child wait for it is a three-way deadlock
+/// (child → queued task → in-flight parent → child) that burns the parent's
+/// whole child-wait budget. Same reasoning as the maintenance gate's child
+/// exemption in <c>ServerTaskLease.TryClaimAsync</c>.
 /// </para>
 /// <para>
 /// All evaluators here build on ONE query shape
@@ -51,25 +61,47 @@ namespace KrakenDeploy.Server.Data;
 /// </summary>
 public static class ServerTaskTargetExclusion
 {
-    /// <summary>The fixed prefix of every target-wait message — the reason
-    /// formatter and the first-deferral log probe share it so the "exactly one
-    /// log line" guard can never miss its own earlier write.</summary>
+    /// <summary>The fixed prefix of every target-wait sentence. Purely
+    /// presentational — the first-deferral dedup probe keys on
+    /// <see cref="TargetWaitLogLevel"/>, so the copy can be reworded without
+    /// breaking idempotence for tasks already queued.</summary>
     public const string MessagePrefix = "Waiting for target ";
+
+    /// <summary>The log LEVEL of the one-time first-deferral banner line — the
+    /// durable dedup marker <see cref="TryAppendFirstDeferralLogAsync"/> probes
+    /// for. A dedicated value rather than the message text, because the step -1
+    /// banner lane is shared (offline import, orchestrator banners) and the
+    /// operator-visible copy must stay free to change. Unknown levels render as
+    /// plain info in <c>TaskLogView</c> and count as neither error nor warning
+    /// in compaction.</summary>
+    public const string TargetWaitLogLevel = "target-wait";
 
     /// <summary>
     /// The tasks that conflict with <paramref name="taskId"/> right now: any task
     /// (either kind, excluding the task itself and its ancestor chain) that is
     /// IN-FLIGHT (<see cref="DeploymentStatusExtensions.InFlightAfterClaim"/>) or
-    /// an OLDER already-due <c>Queued</c> sibling (FIFO by overlap), and that
-    /// shares at least one SERIAL target (<c>!Target.AllowParallelTaskExecution</c>)
-    /// with it — unless BOTH sources consent (<paramref name="sourceConsent"/> and
-    /// the other task's own source flag), in which case the pair is mutual-Shared
-    /// on every shared target and never conflicts.
+    /// — for a TOP-LEVEL claimant only — an OLDER already-due <c>Queued</c>
+    /// sibling (FIFO by overlap), and that shares at least one SERIAL target
+    /// (<c>!Target.AllowParallelTaskExecution</c>) with it — unless BOTH sources
+    /// consent (<paramref name="sourceConsent"/> and the other task's own source
+    /// flag), in which case the pair is mutual-Shared on every shared target and
+    /// never conflicts.
+    /// <para>
+    /// <paramref name="isChild"/> disables the queued-FIFO arm: a child claims
+    /// while its parent already HOLDS the shared target, so every older queued
+    /// conflicting task is itself deferring to that parent — waiting for it is a
+    /// circular wait (child → queued task → in-flight parent → child), not
+    /// fairness. In-flight conflicts (an unrelated task genuinely occupying the
+    /// target) still defer the child; those resolve independently.
+    /// </para>
     /// <para>
     /// Target sets are read live from <c>task_target_assignments</c> (they exist
-    /// from creation for both kinds). Runs filter-free — the claim path has no
-    /// ambient Space, and exclusion is a machine-level property that must see
-    /// every Space's work.
+    /// from creation for both kinds). Runs filter-free because the claim path has
+    /// no ambient Space — NOT because conflicts cross Spaces: the assignment
+    /// join's composite Space FKs pin task and target to one Space, so two tasks
+    /// sharing a <c>TargetId</c> are same-Space by construction (which is also
+    /// why the reason surface built on this query can never leak another Space's
+    /// names).
     /// </para>
     /// </summary>
     public static IQueryable<ServerTask> ConflictingTasksQuery(
@@ -77,6 +109,7 @@ public static class ServerTaskTargetExclusion
         Guid taskId,
         bool sourceConsent,
         IReadOnlyCollection<Guid> ancestorIds,
+        bool isChild,
         DateTimeOffset createdUtc,
         DateTimeOffset now)
     {
@@ -85,7 +118,8 @@ public static class ServerTaskTargetExclusion
             .Where(o => o.Id != taskId
                 && !ancestorIds.Contains(o.Id)
                 && (DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status)
-                    || (o.Status == DeploymentStatus.Queued
+                    || (!isChild
+                        && o.Status == DeploymentStatus.Queued
                         && (o.ScheduledFor == null || o.ScheduledFor <= now)
                         && o.CreatedUtc < createdUtc))
                 // A shared SERIAL target: one of MY assignments whose target has
@@ -102,6 +136,13 @@ public static class ServerTaskTargetExclusion
             // side does not: drop tasks whose own source also consents. Without
             // my consent this clause is unreachable (one Exclusive side is
             // enough), so the subqueries are skipped entirely.
+            //
+            // The blocker's consent is read LIVE, not as-of-its-claim (no
+            // claimed-mode column exists): flipping a source flag ON while its
+            // exclusive plan is mid-flight lets a consenting peer co-claim the
+            // box and interleave at wave boundaries. ACCEPTED window — it takes
+            // a deliberate operator flip, the F5 agent gate still serializes
+            // within-wave, and flipping OFF is always safe (over-blocks only).
             query = query.Where(o => !(
                 (o.Kind == ServerTaskKind.Deployment
                     && db.Projects.IgnoreQueryFilters()
@@ -227,7 +268,8 @@ public static class ServerTaskTargetExclusion
             .ConfigureAwait(false);
 
         var conflicts = await ConflictingTasksQuery(
-                db, taskId, sourceConsent, ancestors, task.CreatedUtc, now)
+                db, taskId, sourceConsent, ancestors,
+                isChild: task.ParentTaskId is not null, task.CreatedUtc, now)
             .Select(o => new
             {
                 o.Id,
@@ -304,11 +346,15 @@ public static class ServerTaskTargetExclusion
     /// Appends the target-wait reason to the task's log ON THE FIRST DEFERRAL
     /// ONLY — a blocked task is re-claimed every minute by the stale-Queued
     /// re-signal, and one line per minute would bury the log. Idempotence is a
-    /// DB probe for an earlier <see cref="MessagePrefix"/> banner line (crash-safe
-    /// and process-agnostic, unlike an in-memory flag), and probe+append run
+    /// DB probe for an earlier <see cref="TargetWaitLogLevel"/> banner line
+    /// (crash-safe and process-agnostic, unlike an in-memory flag; keyed to the
+    /// dedicated level, never to the operator-visible copy), and probe+append run
     /// under a per-task advisory lock so racing duplicate wake-ups cannot both
     /// append. Staging is never compacted while a task is still <c>Queued</c>,
-    /// so the probe only needs <c>task_log_live</c>. Returns whether a line was
+    /// so the probe only needs <c>task_log_live</c>. The append is also gated on
+    /// the row still being <c>Queued</c>, inside the same transaction — a
+    /// duplicate wake-up racing an operator's cancel must not stamp a permanent
+    /// "waiting" line into a Cancelled task's log. Returns whether a line was
     /// written.
     /// </summary>
     public static async Task<bool> TryAppendFirstDeferralLogAsync(
@@ -330,7 +376,7 @@ public static class ServerTaskTargetExclusion
             var alreadyLogged = await db.TaskLogLive
                 .AnyAsync(l => l.TaskId == taskId
                             && l.StepIndex == -1
-                            && l.Message.StartsWith(MessagePrefix), ct)
+                            && l.Level == TargetWaitLogLevel, ct)
                 .ConfigureAwait(false);
             if (alreadyLogged)
             {
@@ -338,8 +384,22 @@ public static class ServerTaskTargetExclusion
                 return false;
             }
 
+            // Fresh read inside the transaction: the refusal that led here is
+            // status-blind about the claiming row itself (the claim checks
+            // conflicts before its own Queued guard), so re-check before the
+            // durable write.
+            var stillQueued = await db.ServerTasks
+                .IgnoreQueryFilters()
+                .AnyAsync(t => t.Id == taskId && t.Status == DeploymentStatus.Queued, ct)
+                .ConfigureAwait(false);
+            if (!stillQueued)
+            {
+                await tx.RollbackAsync(ct).ConfigureAwait(false);
+                return false;
+            }
+
             await TaskLogService.AppendLiveAsync(
-                    db, taskId, stepIndex: -1, targetId: null, level: "info",
+                    db, taskId, stepIndex: -1, targetId: null, level: TargetWaitLogLevel,
                     message, time.GetUtcNow(), ct)
                 .ConfigureAwait(false);
             await tx.CommitAsync(ct).ConfigureAwait(false);

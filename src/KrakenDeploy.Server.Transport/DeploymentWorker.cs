@@ -296,7 +296,7 @@ public sealed class DeploymentWorker(
                     db, deploymentId,
                     await ServerTaskTargetExclusion.SourceConsentAsync(
                         db, row.Kind, row.ProjectId, deploymentId, ct).ConfigureAwait(false),
-                    ancestorIds: [], row.CreatedUtc, now)
+                    ancestorIds: [], isChild: false, row.CreatedUtc, now)
                 .AnyAsync(ct)
                 .ConfigureAwait(false);
 

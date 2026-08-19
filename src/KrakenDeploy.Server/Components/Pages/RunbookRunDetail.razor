@@ -4,7 +4,9 @@
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Runbooks
 @inject RunbookService RunbookSvc
+@inject DeploymentService DeploymentSvc
 @inject ArtifactService ArtifactSvc
+@inject MaintenanceModeService MaintenanceSvc
 @inject NotificationService Notify
 @inject DialogService DialogService
 @inject UiActionGuard Guard
@@ -138,9 +140,15 @@ else
     // Computed once when _log loads (not per render) — see DeploymentDetail.
     private string? _lastErrorLine;
 
+    // Non-null while this Queued run is held by the instance-wide maintenance
+    // gate — it refuses the claim for BOTH kinds before the target check, so it
+    // outranks the target-wait reason (mirrors DeploymentDetail).
+    private MaintenanceState? _maintenanceHold;
+
     // F6 — non-null while this Queued run is held by the per-plan target
     // exclusion; carries the blocker + queue position for the banner. Refreshed
-    // with each reload (the page polls every 5 s while non-terminal).
+    // with each reload (the page polls every 5 s while non-terminal). Probed
+    // only when maintenance doesn't already explain the wait.
     private KrakenDeploy.Server.Data.ServerTaskTargetExclusion.TargetConflict? _targetConflict;
 
     private bool _cancelling;
@@ -277,10 +285,25 @@ else
             _log             = logTask.Result;
             _lastErrorLine   = ComputeLastErrorLine();
 
-            // F6 — the target-wait reason, only meaningful while still Queued.
-            _targetConflict = Run.Status == DeploymentStatus.Queued
-                ? await RunbookSvc.GetTargetConflictAsync(Id)
-                : null;
+            // Queue reasons, in CLAIM order (mirrors DeploymentDetail): the
+            // maintenance gate refuses both kinds before the target check, so it
+            // must be named first — a target-wait sentence during maintenance
+            // would send the operator to debug the wrong machine. The target
+            // probe goes through DeploymentService's kind-agnostic wrapper, the
+            // one read both detail pages share.
+            if (Run.Status == DeploymentStatus.Queued)
+            {
+                var maintenance = await MaintenanceSvc.GetStateAsync();
+                _maintenanceHold = maintenance.Enabled ? maintenance : null;
+                _targetConflict = _maintenanceHold is null
+                    ? await DeploymentSvc.GetTargetConflictAsync(Id)
+                    : null;
+            }
+            else
+            {
+                _maintenanceHold = null;
+                _targetConflict = null;
+            }
         }
     }
 
@@ -358,13 +381,19 @@ else
             ? $"Scheduled for {s.ToLocalTime():yyyy-MM-dd HH:mm}."
             : null;
 
-    // F6 — the reason a Queued run is waiting: a future schedule first (the run
-    // is intentionally held), then the per-plan target exclusion. Runbook runs
-    // are exempt from the F1 (project,env,tenant) rule, so unlike
-    // DeploymentDetail there is no in-flight-peer arm. Null → the banner falls
-    // back to its generic "Waiting to start." text.
+    // F6 — the reason a Queued run is waiting, in claim order: maintenance mode
+    // wins (the claim is refused for every task, so nothing else it might be
+    // waiting on matters), then a future schedule (the run is intentionally
+    // held), then the per-plan target exclusion. Runbook runs are exempt from
+    // the F1 (project,env,tenant) rule, so unlike DeploymentDetail there is no
+    // in-flight-peer arm. Null → the banner falls back to its generic
+    // "Waiting to start." text.
     private string? QueuedMessage()
     {
+        if (_maintenanceHold is { } hold)
+        {
+            return QueueWaitMessage.MaintenanceHold(hold.Reason);
+        }
         if (ScheduledMessage() is { } scheduled)
         {
             return scheduled;

@@ -184,8 +184,20 @@ public sealed class TargetExclusionTests(PostgresFixture postgres)
         (await ServerTaskLease.TryClaimAsync(db, parent, TimeProvider.System))
             .Should().Be(ServerTaskClaimResult.Claimed);
 
+        // An UNRELATED task queues on the box while the parent runs — the
+        // routine ingredient of the child deadlock: it is OLDER than the child
+        // (created before it) yet can never claim while the parent is in-flight.
+        var olderQueued = await SeedDeploymentAsync(harness, env.Id, targets);
+        (await ServerTaskLease.TryClaimAsync(db, olderQueued, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.TargetBlocked,
+                "the exemption is per-chain, not per-status — an unrelated task " +
+                "waits behind the running parent");
+
         // The child (different project, SAME target) is the parent's continuation:
-        // blocking it would strand the parent's WaitForChildAsync forever.
+        // blocking it would strand the parent's WaitForChildAsync — and deferring
+        // it to the OLDER QUEUED unrelated task is a three-way circular wait
+        // (child → olderQueued → in-flight parent → child), so the child skips
+        // the FIFO arm and defers only to in-flight conflicts.
         var childProject = await harness.SeedProjectAsync(UniqueName("p"));
         var childRelease = await harness.SeedReleaseAsync(childProject.Id, "1.0", StepBuilder.Script("s1"));
         var child = await harness.CreateDeploymentAsync(
@@ -193,13 +205,8 @@ public sealed class TargetExclusionTests(PostgresFixture postgres)
 
         (await ServerTaskLease.TryClaimAsync(db, child, TimeProvider.System))
             .Should().Be(ServerTaskClaimResult.Claimed,
-                "a task never conflicts with its ancestor chain");
-
-        // An UNRELATED task is still excluded by the running parent — the
-        // exemption is per-chain, not per-status.
-        var unrelated = await SeedDeploymentAsync(harness, env.Id, targets);
-        (await ServerTaskLease.TryClaimAsync(db, unrelated, TimeProvider.System))
-            .Should().Be(ServerTaskClaimResult.TargetBlocked);
+                "a child never conflicts with its ancestor chain, and never defers " +
+                "to a queued task that is itself deferring to the child's parent");
     }
 
     [Fact]
@@ -328,6 +335,37 @@ public sealed class TargetExclusionTests(PostgresFixture postgres)
         lines.Should().HaveCount(1);
         lines[0].Message.Should().Be(message);
         lines[0].StepIndex.Should().Be(-1, "it is a task-level banner line");
+        lines[0].Level.Should().Be(ServerTaskTargetExclusion.TargetWaitLogLevel,
+            "the dedicated level is the durable dedup marker — the message copy is free to change");
+    }
+
+    [Fact]
+    public async Task Cancelled_task_never_receives_a_deferral_log_line()
+    {
+        // The claim's conflict check is status-blind about the claiming row
+        // itself, so a pending wake-up racing an operator's cancel can still be
+        // told TargetBlocked — the durable write must re-check Queued.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var env = await harness.SeedEnvironmentAsync(UniqueName("env"));
+        var targets = await harness.SeedTargetsAsync(UniqueName("t"));
+        var running = await SeedDeploymentAsync(harness, env.Id, targets);
+        var blocked = await SeedDeploymentAsync(harness, env.Id, targets);
+
+        await using var db = postgres.CreateContext();
+        (await ServerTaskLease.TryClaimAsync(db, running, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+        (await ServerTaskLease.TryClaimAsync(db, blocked, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.TargetBlocked);
+
+        var conflict = await ServerTaskTargetExclusion.DescribeConflictAsync(
+            db, blocked, DateTimeOffset.UtcNow);
+        await SetStatus(db, blocked, DeploymentStatus.Cancelled);
+
+        (await ServerTaskTargetExclusion.TryAppendFirstDeferralLogAsync(
+                db, blocked, ServerTaskTargetExclusion.Format(conflict!), TimeProvider.System))
+            .Should().BeFalse("a task no longer Queued must not get a permanent waiting line");
+        (await db.TaskLogLive.AsNoTracking().AnyAsync(l => l.TaskId == blocked))
+            .Should().BeFalse();
     }
 
     // ── The Tasks page ?target= filter (assignment-joined reads) ─────────────

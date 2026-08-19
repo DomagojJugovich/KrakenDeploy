@@ -523,11 +523,23 @@ FKs keep even unfiltered joins intra-Space by construction
     from the B1 lease/reconciler, and blue-green slots share one Postgres so the
     exclusion spans processes.
   - **Exemptions:** a task never conflicts with its ANCESTOR chain
-    (`Octopus.DeployRelease` children continue an already-claimed parent); a
+    (`Octopus.DeployRelease` children continue an already-claimed parent), and a
+    CHILD additionally skips the queued-FIFO arm — it defers only to IN-FLIGHT
+    conflicts, because an older queued task sharing the box is itself deferring
+    to the child's in-flight parent, and waiting for it is a three-way circular
+    wait (child → queued task → parent → child), not fairness; a
     resume never re-checks (a `Paused` task holds its targets — it is
     `InFlightAfterClaim` to everyone else); ad-hoc scripts are not
     `server_tasks` and stay invisible (accepted wave-gap residual — they take
     the agent gate's READ side instead).
+  - **Unit of exclusion = the `DeploymentTarget` ROW, not the physical
+    machine** — the same aliasing residual the agent gate documents
+    (node-concurrency-and-cache.md Residuals): nothing enforces `MachineName`
+    uniqueness, so one box registered as two Target rows (twice in one Space, or
+    once per Space — targets are Space-scoped and assignments carry composite
+    Space FKs, so conflicts never cross Spaces by construction) is two
+    identities whose plans co-claim and interleave. F6 does not close that; it
+    serializes plans per Target row.
   - **Reason surface:** a refused claim (`ServerTaskClaimResult.TargetBlocked`)
     records the blocker via `ServerTaskTargetExclusion.DescribeConflictAsync` —
     the task detail renders "Waiting for target X — busy with #N (title); M

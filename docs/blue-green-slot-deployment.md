@@ -127,6 +127,17 @@ They compose, and the design is forgiving because `kd_ver` pins a **release, not
 - A `Draining` release is `Retired` only when its slot has **zero active circuits and zero in-flight deployments**.
 - `drain_deadline` caps how long to keep it for idle circuits. Past it, stop pinning stragglers: their next request re-pins to the default, their circuit drops and reconnects to the default slot (additive-safe; `[PersistentState]`-annotated state is restored, the rest re-renders).
 - **Never force-kill an in-flight deployment.** Let it finish; simply don't `Retire` the slot until it does. The drain deadline applies to idle *circuits*, not to running *deployments*.
+- **Claim-coordination changes are NOT slot-overlap-safe.** A Draining slot keeps
+  consuming its in-process task channel (pinned circuits may start deployments), so
+  during overlap BOTH binaries run `ServerTaskLease.TryClaimAsync` against one
+  Postgres. The claim's mutual exclusion holds only while both binaries contend on
+  the SAME advisory-lock key and evaluate the SAME deferral predicates — a release
+  that changes the lock key (as F6 did, per-key → constant `ClaimDecisionLockKey`)
+  or the claim predicates lets an old-slot and a new-slot claimant pass each
+  other's checks under READ COMMITTED and double-claim. Such a release must be
+  rolled out under maintenance mode, or with the draining slot's dispatch fully
+  stopped, not as an ordinary additive slot flip. (Moot for F6 itself:
+  pre-production, no pre-F6 binary will ever be deployed.)
 
 ## 10. Composition with the schema strategies
 

@@ -337,8 +337,12 @@ public class RunbookService(
     /// <see cref="Runbook.AllowParallelTaskExecution"/>). Kept separate from
     /// <see cref="UpdateAsync"/> for the same reason as the retention override:
     /// a name/description edit path that carries no concurrency field must never
-    /// silently clear an author's consent. Applies to the NEXT claim/dispatch —
-    /// work already queued or in flight keeps the mode it was claimed with.
+    /// silently clear an author's consent. A dispatched plan's AGENT-gate mode is
+    /// frozen at plan build, but the CLAIM-side conflict predicate reads this
+    /// flag LIVE — so enabling consent mid-run can let new consenting work
+    /// co-claim a box on which one of this runbook's runs is still exclusive
+    /// (accepted window, see <c>ServerTaskTargetExclusion</c>; disabling is
+    /// always safe — it only over-blocks).
     /// </summary>
     public async Task<Runbook?> SetAllowParallelTaskExecutionAsync(
         Guid id, bool allow, CallerAuthorization caller, CancellationToken ct = default)
@@ -356,22 +360,6 @@ public class RunbookService(
         runbook.AllowParallelTaskExecution = allow;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return runbook;
-    }
-
-    /// <summary>
-    /// F6 read-side helper — the target-wait reason for a still-<c>Queued</c>
-    /// run, or <c>null</c> when no serial target is contended. The UI read of the
-    /// SAME query the claim refuses on (<see cref="ServerTaskTargetExclusion"/>),
-    /// so the RunbookRunDetail banner can never drift from the actual gate; the
-    /// runbook analogue of <c>DeploymentService.GetTargetConflictAsync</c>.
-    /// </summary>
-    public async Task<ServerTaskTargetExclusion.TargetConflict?> GetTargetConflictAsync(
-        Guid taskId, CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        return await ServerTaskTargetExclusion
-            .DescribeConflictAsync(db, taskId, time.GetUtcNow(), ct)
-            .ConfigureAwait(false);
     }
 
     public async Task<bool> DeleteAsync(Guid id, CallerAuthorization caller, CancellationToken ct = default)

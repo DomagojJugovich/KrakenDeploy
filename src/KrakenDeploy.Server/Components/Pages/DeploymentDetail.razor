@@ -279,6 +279,12 @@ else
     // load (below).
     private bool _blockedByInFlightPeer;
 
+    // F1's FIFO arm — an OLDER queued same-key sibling defers this claim even
+    // with nothing in-flight. Read with the FULL claim predicate so the banner
+    // follows the claim's own order and the F6 probe below never captures (and
+    // mislabels) an F1 refusal as a target wait.
+    private bool _blockedByQueuedSibling;
+
     // F6 — non-null while this Queued task is held by the per-plan target
     // exclusion (a serial target in its assignment set is busy). Carries the
     // blocker + queue position for the "Waiting for target X" banner. Probed
@@ -707,6 +713,7 @@ else
         if (Deployment is not { Status: DeploymentStatus.Queued })
         {
             _blockedByInFlightPeer = false;
+            _blockedByQueuedSibling = false;
             _targetConflict = null;
             _maintenanceHold = null;
             return;
@@ -720,9 +727,17 @@ else
         _blockedByInFlightPeer = _maintenanceHold is null
             && await DeploymentSvc.HasInFlightPeerAsync(
                 Deployment.Id, Deployment.ProjectId, Deployment.EnvironmentId, Deployment.TenantId);
+        // F1's FIFO arm, with the FULL claim predicate — an older queued sibling
+        // refuses the claim as SerializationBlocked, so it must be named as F1,
+        // not fall through to the target probe below.
+        _blockedByQueuedSibling = _maintenanceHold is null && !_blockedByInFlightPeer
+            && await DeploymentSvc.HasClaimDeferringPeerAsync(
+                Deployment.Id, Deployment.ProjectId, Deployment.EnvironmentId,
+                Deployment.TenantId, Deployment.CreatedUtc);
         // F6 — the target-wait probe, in claim order: only consulted when neither
-        // maintenance nor the F1 rule already explains the wait.
-        _targetConflict = _maintenanceHold is null && !_blockedByInFlightPeer
+        // maintenance nor either F1 arm already explains the wait.
+        _targetConflict = _maintenanceHold is null
+                && !_blockedByInFlightPeer && !_blockedByQueuedSibling
             ? await DeploymentSvc.GetTargetConflictAsync(Deployment.Id)
             : null;
     }
@@ -746,6 +761,11 @@ else
         if (_blockedByInFlightPeer)
         {
             return QueueWaitMessage.RunningPeer(
+                Deployment?.Release?.Project?.Name, Deployment?.Environment?.Name);
+        }
+        if (_blockedByQueuedSibling)
+        {
+            return QueueWaitMessage.QueuedPeer(
                 Deployment?.Release?.Project?.Name, Deployment?.Environment?.Name);
         }
         return _targetConflict is { } conflict

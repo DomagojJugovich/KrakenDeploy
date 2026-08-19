@@ -130,8 +130,6 @@ public static class ServerTaskLease
     public static async Task<ServerTaskClaimResult> TryClaimAsync(
         KrakenDbContext db, ServerTask task, TimeProvider time, CancellationToken ct = default)
     {
-        var now = time.GetUtcNow();
-
         // Maintenance gate, ahead of the kind branch so it covers deployments AND
         // runbook runs. Read straight off the claim's own context — cache-free (the
         // SettingsService instance cache has a 10 s TTL that would let a burst of
@@ -181,10 +179,23 @@ public static class ServerTaskLease
             // lock for single-digit milliseconds, so the global choke point is
             // not a throughput hazard; correctness still comes from the
             // fresh-per-statement READ COMMITTED reads below, never from the
-            // lock's key shape. FormattableString → bound parameter.
+            // lock's key shape. The ACCEPTED tradeoff of the constant key: one
+            // wedged claim transaction (a half-open connection holding the tx,
+            // a statement riding out its command timeout across the strategy's
+            // retries) stalls EVERY claim instance-wide, where the per-key lock
+            // confined the stall to one key — the B1 lease/reconciler and the
+            // minutely re-signal recover the queue once the holder dies.
+            // FormattableString → bound parameter.
             await db.Database
                 .ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({ClaimDecisionLockKey})", ct)
                 .ConfigureAwait(false);
+
+            // The claim's timestamp is taken AFTER the lock, inside the retry
+            // delegate: it stamps LeaseUntil = now + 5 min, and a value captured
+            // before a long lock wait (or carried across a strategy retry) could
+            // commit a lease that is already expired — reconciler arm 4 would
+            // then fail a genuinely-owned run before its first renewal.
+            var now = time.GetUtcNow();
 
             // F1 — deployments only (runbook runs stay exempt from the
             // (project,env,tenant) rule). Separate statement (fresh READ COMMITTED
@@ -209,15 +220,19 @@ public static class ServerTaskLease
             }
 
             // F6 — per-plan target exclusion, BOTH kinds (fully symmetric): defer
-            // when any in-flight task, or any older already-due Queued task,
-            // shares a serial target with this one (see
-            // ServerTaskTargetExclusion). Checked after F1 so a same-key sibling
-            // reports the more specific SerializationBlocked.
+            // when any in-flight task, or (top-level claimants only) any older
+            // already-due Queued task, shares a serial target with this one (see
+            // ServerTaskTargetExclusion — a child skips the FIFO arm, else it
+            // deadlocks behind a task that is itself deferring to the child's
+            // parent). Checked after F1 so a same-key sibling reports the more
+            // specific SerializationBlocked.
             var sourceConsent = await ServerTaskTargetExclusion
                 .SourceConsentAsync(db, task, ct)
                 .ConfigureAwait(false);
             var targetConflict = await ServerTaskTargetExclusion
-                .ConflictingTasksQuery(db, task.Id, sourceConsent, ancestors, task.CreatedUtc, now)
+                .ConflictingTasksQuery(
+                    db, task.Id, sourceConsent, ancestors,
+                    isChild: task.ParentTaskId is not null, task.CreatedUtc, now)
                 .AnyAsync(ct)
                 .ConfigureAwait(false);
             if (targetConflict)

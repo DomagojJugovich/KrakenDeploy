@@ -19,6 +19,14 @@ public static class QueueWaitMessage
         => $"Waiting: another deployment of {projectName ?? "this project"} to " +
            $"{environmentName ?? "this environment"} is running.";
 
+    /// <summary>F6-adjacent F1 arm — the reason shown when the claim's FIFO rule
+    /// holds a deployment behind an OLDER queued sibling of the same
+    /// (project, environment, tenant), with nothing in-flight. Rendered so the
+    /// F6 target probe never captures (and mislabels) an F1 refusal.</summary>
+    public static string QueuedPeer(string? projectName, string? environmentName)
+        => $"Waiting: an earlier deployment of {projectName ?? "this project"} to " +
+           $"{environmentName ?? "this environment"} is queued ahead of this one.";
+
     /// <summary>The reason shown for a Queued task held by the maintenance gate in
     /// <c>ServerTaskLease.TryClaimAsync</c>. Takes precedence over
     /// <see cref="RunningPeer"/> in the pages: while maintenance is on, the gate is

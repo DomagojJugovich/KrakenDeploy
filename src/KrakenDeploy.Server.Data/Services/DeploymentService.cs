@@ -399,12 +399,37 @@ public class DeploymentService(
     }
 
     /// <summary>
+    /// F1 read-side helper #2 — the FULL claim-order deferral
+    /// (<see cref="ServerTaskLease.ClaimDeferralPredicate"/>: an in-flight peer OR
+    /// an older already-due <c>Queued</c> sibling). The detail page consults this
+    /// BEFORE the F6 target probe so an F1-FIFO refusal is never misattributed to
+    /// the target rule — the claim checks F1 first, and a same-key sibling
+    /// usually shares targets, so the narrower <see cref="HasInFlightPeerAsync"/>
+    /// alone would let the F6 arm capture (and mislabel) the wait.
+    /// </summary>
+    public async Task<bool> HasClaimDeferringPeerAsync(
+        Guid queuedDeploymentId, Guid projectId, Guid environmentId, Guid? tenantId,
+        DateTimeOffset createdUtc, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.ServerTasks
+            .AnyAsync(
+                ServerTaskLease.ClaimDeferralPredicate(
+                    queuedDeploymentId, projectId, environmentId, tenantId,
+                    createdUtc, time.GetUtcNow()),
+                ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// F6 read-side helper — the target-wait reason for a still-<c>Queued</c>
     /// task, or <c>null</c> when no serial target is contended. The UI read of
     /// the SAME query the claim refuses on (<see cref="ServerTaskTargetExclusion"/>),
     /// so the banner can never drift from the actual gate — the
     /// <see cref="HasInFlightPeerAsync"/> discipline extended to the target
-    /// dimension.
+    /// dimension. Kind-agnostic (the underlying read is by task id): the ONE
+    /// wrapper both detail pages call, deliberately, so the two banners cannot
+    /// drift.
     /// </summary>
     public async Task<ServerTaskTargetExclusion.TargetConflict?> GetTargetConflictAsync(
         Guid taskId, CancellationToken ct = default)
