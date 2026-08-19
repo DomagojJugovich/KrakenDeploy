@@ -154,9 +154,17 @@ public sealed class ServerTasksService(
     /// candidate set; the remaining reads are per candidate because both rules are
     /// per-task (each row carries its own key, <c>CreatedUtc</c> and consent).
     /// Re-expressing either rule set-wise would be a second encoding of it —
-    /// exactly the drift the shared predicates exist to prevent — so callers scope
-    /// this to <c>Queued</c> rows, which are inherently few (F1 and F6 both bound
-    /// how much work can be waiting).
+    /// exactly the drift the shared predicates exist to prevent.
+    /// </para>
+    /// <para>
+    /// A backlog is exactly what F1/F6 make GROW (they bound what RUNS, not what
+    /// waits), so the candidate set is NOT inherently small — a deliberately flooded
+    /// queue would make the list page issue one read per row. The batch is therefore
+    /// capped at <see cref="QueueWaitResolveCap"/> rows (the oldest, i.e. those
+    /// closest to claiming and most worth explaining); rows past the cap are left
+    /// out of the result, so the list renders the generic "Waiting to start." for
+    /// them while their DETAIL page still resolves the full reason on demand. Not a
+    /// silent truncation — the cap is logged when it bites.
     /// </para>
     /// </summary>
     public async Task<Dictionary<Guid, QueueWaitResolution>> ResolveQueueWaitsAsync(
@@ -171,12 +179,28 @@ public sealed class ServerTasksService(
             return resolved;
         }
 
+        // Cap at the oldest N (a task's CreatedUtc is its FIFO rank — the oldest
+        // claim next, so their reasons are the ones an operator acts on). Anything
+        // past the cap falls through to the generic list message; the detail page
+        // resolves it individually.
+        var toResolve = candidates.Count <= QueueWaitResolveCap
+            ? candidates
+            : (IReadOnlyCollection<QueueWaitCandidate>)
+                [.. candidates.OrderBy(c => c.CreatedUtc).Take(QueueWaitResolveCap)];
+        if (toResolve.Count < candidates.Count)
+        {
+            logger.LogDebug(
+                "ResolveQueueWaitsAsync: {Total} queued candidates exceed the cap of {Cap}; " +
+                "resolving reasons for the {Resolved} oldest, the rest render the generic wait text.",
+                candidates.Count, QueueWaitResolveCap, toResolve.Count);
+        }
+
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var now = time.GetUtcNow();
         var consenting = await ServerTaskTargetExclusion.SourceConsentingTaskIdsAsync(
-            db, [.. candidates.Select(c => c.TaskId)], ct);
+            db, [.. toResolve.Select(c => c.TaskId)], ct);
 
-        foreach (var candidate in candidates)
+        foreach (var candidate in toResolve)
         {
             // F1 first, exactly as the claim does — a same-key sibling is the more
             // specific reason, and consenting to parallel execution never relaxes
@@ -264,6 +288,14 @@ public sealed class ServerTasksService(
     /// not full history — bounding the DB pull keeps the page O(1) in instance age.
     /// </summary>
     private const int RecentRowCap = 500;
+
+    /// <summary>
+    /// Ceiling on how many Queued rows one <see cref="ResolveQueueWaitsAsync"/> call
+    /// explains, so a flooded queue cannot turn a list-page load into one read per
+    /// waiting row. The oldest this-many are resolved (they claim first); the rest
+    /// render the generic wait text and resolve individually on their detail page.
+    /// </summary>
+    public const int QueueWaitResolveCap = 50;
 
     /// <summary>
     /// The unified task list, optionally narrowed to one machine. The

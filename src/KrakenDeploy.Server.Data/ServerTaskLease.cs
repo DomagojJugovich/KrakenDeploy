@@ -149,6 +149,18 @@ public static class ServerTaskLease
             }
         }
 
+        // F6 consent for THIS task, read once OUTSIDE the lock: it is the
+        // claimant's own source flag, so reading it a few ms before the advisory
+        // lock rather than inside changes nothing an operator flipping it mid-claim
+        // could not already do (the same accepted live-flip window ConflictingTasksQuery
+        // documents for the blocker side). Hoisting it keeps the global lock's
+        // critical section to the reads that MUST be fresh-after-lock. Computed only
+        // for a top-level task — a child skips F6 entirely, so its consent is unused.
+        var sourceConsent = task.ParentTaskId is null
+            && await ServerTaskTargetExclusion
+                .SourceConsentAsync(db, task.Id, ct)
+                .ConfigureAwait(false);
+
         // Both kinds now claim inside ONE user-initiated transaction under ONE
         // GLOBAL advisory lock (F6). The web host's NpgsqlRetryingExecutionStrategy
         // only permits a user transaction when driven THROUGH the execution
@@ -162,88 +174,114 @@ public static class ServerTaskLease
         return await strategy.ExecuteAsync(async () =>
         {
             await using var tx = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
-
-            // Blocking, transaction-scoped advisory lock — auto-released at
-            // commit/rollback. ONE constant key for EVERY claim decision (F6,
-            // locked decision P1): it REPLACES F1's per-(project,env,tenant) key,
-            // subsuming it — the target-conflict predicate compares set-valued
-            // target overlaps, which per-key locks cannot serialize (two claimants
-            // with different F1 keys can still share a target). Claims hold the
-            // lock for single-digit milliseconds, so the global choke point is
-            // not a throughput hazard; correctness still comes from the
-            // fresh-per-statement READ COMMITTED reads below, never from the
-            // lock's key shape. The ACCEPTED tradeoff of the constant key: one
-            // wedged claim transaction (a half-open connection holding the tx,
-            // a statement riding out its command timeout across the strategy's
-            // retries) stalls EVERY claim instance-wide, where the per-key lock
-            // confined the stall to one key — the B1 lease/reconciler and the
-            // minutely re-signal recover the queue once the holder dies.
-            // FormattableString → bound parameter.
-            await db.Database
-                .ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({ClaimDecisionLockKey})", ct)
-                .ConfigureAwait(false);
-
-            // The claim's timestamp is taken AFTER the lock, inside the retry
-            // delegate: it stamps LeaseUntil = now + 5 min, and a value captured
-            // before a long lock wait (or carried across a strategy retry) could
-            // commit a lease that is already expired — reconciler arm 4 would
-            // then fail a genuinely-owned run before its first renewal.
-            var now = time.GetUtcNow();
-
-            // F1 — deployments only (runbook runs stay exempt from the
-            // (project,env,tenant) rule). Separate statement (fresh READ COMMITTED
-            // snapshot AFTER the lock): the lock-loser sees the winner's
-            // just-committed row here. Defer if a same-key peer is in-flight OR an
-            // earlier-queued due sibling waits.
-            if (task.Kind == ServerTaskKind.Deployment)
+            try
             {
-                var deferred = await db.ServerTasks
-                    .IgnoreQueryFilters()
-                    .AnyAsync(
-                        ClaimDeferralPredicate(
-                            task.Id, task.ProjectId, task.EnvironmentId, task.TenantId,
-                            task.CreatedUtc, now),
+                // Bound the single global lock's blast radius (see ClaimLockTimeout /
+                // ClaimStatementTimeout): a waiter that cannot take the lock within
+                // lock_timeout, or a claim statement that overruns statement_timeout,
+                // errors out instead of pinning its pooled connection behind a wedged
+                // holder. SET LOCAL is transaction-scoped (auto-reset at commit/rollback)
+                // and takes no parameters, so the durations are embedded constants. One
+                // combined statement keeps this to a single extra round-trip per claim.
+                await db.Database
+                    .ExecuteSqlRawAsync(
+                        $"SET LOCAL lock_timeout = '{ClaimLockTimeout}'; " +
+                        $"SET LOCAL statement_timeout = '{ClaimStatementTimeout}'",
                         ct)
                     .ConfigureAwait(false);
-                if (deferred)
-                {
-                    await tx.RollbackAsync(ct).ConfigureAwait(false);
-                    return ServerTaskClaimResult.SerializationBlocked;
-                }
-            }
 
-            // F6 — per-plan target exclusion, BOTH kinds (fully symmetric): defer
-            // when any in-flight task, or any older already-due Queued task,
-            // shares a serial target with this one (see ServerTaskTargetExclusion).
-            // Checked after F1 so a same-key sibling reports the more specific
-            // SerializationBlocked.
-            //
-            // A CHILD task is EXEMPT outright — its targets are already held by
-            // the parent that spawned it, so the parent's claim accounted for
-            // them, and deferring a child to anything strands the parent that is
-            // blocking on it (the same exemption the maintenance gate above and
-            // the E3 NodeTaskGate make, for the same reason). See the class
-            // remarks on ServerTaskTargetExclusion for why a partial exemption is
-            // not enough.
-            if (task.ParentTaskId is null)
+                // Blocking, transaction-scoped advisory lock — auto-released at
+                // commit/rollback. ONE constant key for EVERY claim decision (F6,
+                // locked decision P1): it REPLACES F1's per-(project,env,tenant) key,
+                // subsuming it — the target-conflict predicate compares set-valued
+                // target overlaps, which per-key locks cannot serialize (two claimants
+                // with different F1 keys can still share a target). Claims hold the
+                // lock for single-digit milliseconds, so the global choke point is
+                // not a throughput hazard; correctness still comes from the
+                // fresh-per-statement READ COMMITTED reads below, never from the
+                // lock's key shape. A wedged holder is now bounded by the timeouts
+                // above (lock_timeout on this wait, statement_timeout on the holder)
+                // rather than left to the B1 reconciler alone.
+                // FormattableString → bound parameter.
+                await db.Database
+                    .ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({ClaimDecisionLockKey})", ct)
+                    .ConfigureAwait(false);
+
+                // The claim's timestamp is taken AFTER the lock, inside the retry
+                // delegate: it stamps LeaseUntil = now + 5 min, and a value captured
+                // before a long lock wait (or carried across a strategy retry) could
+                // commit a lease that is already expired — reconciler arm 4 would
+                // then fail a genuinely-owned run before its first renewal.
+                var now = time.GetUtcNow();
+
+                // F1 — deployments only (runbook runs stay exempt from the
+                // (project,env,tenant) rule). Separate statement (fresh READ COMMITTED
+                // snapshot AFTER the lock): the lock-loser sees the winner's
+                // just-committed row here. Defer if a same-key peer is in-flight OR an
+                // earlier-queued due sibling waits.
+                if (task.Kind == ServerTaskKind.Deployment)
+                {
+                    var deferred = await db.ServerTasks
+                        .IgnoreQueryFilters()
+                        .AnyAsync(
+                            ClaimDeferralPredicate(
+                                task.Id, task.ProjectId, task.EnvironmentId, task.TenantId,
+                                task.CreatedUtc, now),
+                            ct)
+                        .ConfigureAwait(false);
+                    if (deferred)
+                    {
+                        await tx.RollbackAsync(ct).ConfigureAwait(false);
+                        return ServerTaskClaimResult.SerializationBlocked;
+                    }
+                }
+
+                // F6 — per-plan target exclusion, BOTH kinds (fully symmetric): defer
+                // when any in-flight task, or any older already-due Queued task,
+                // shares a serial target with this one (see ServerTaskTargetExclusion).
+                // Checked after F1 so a same-key sibling reports the more specific
+                // SerializationBlocked.
+                //
+                // A CHILD task is EXEMPT outright — its targets are already held by
+                // the parent that spawned it, so the parent's claim accounted for
+                // them, and deferring a child to anything strands the parent that is
+                // blocking on it (the same exemption the maintenance gate above and
+                // the E3 NodeTaskGate make, for the same reason). See the class
+                // remarks on ServerTaskTargetExclusion for why a partial exemption is
+                // not enough. sourceConsent was resolved above (unused for a child).
+                if (task.ParentTaskId is null)
+                {
+                    var targetConflict = await ServerTaskTargetExclusion
+                        .ConflictingTasksQuery(db, task.Id, sourceConsent, task.CreatedUtc, now)
+                        .AnyAsync(ct)
+                        .ConfigureAwait(false);
+                    if (targetConflict)
+                    {
+                        await tx.RollbackAsync(ct).ConfigureAwait(false);
+                        return ServerTaskClaimResult.TargetBlocked;
+                    }
+                }
+
+                var result = await ClaimConditionalAsync(db, task.Id, now, ct).ConfigureAwait(false);
+                await tx.CommitAsync(ct).ConfigureAwait(false);
+                return result;
+            }
+            catch (Npgsql.PostgresException ex)
+                when ((ex.SqlState == "55P03" || ex.SqlState == "57014")
+                      && !ct.IsCancellationRequested)
             {
-                var sourceConsent = await ServerTaskTargetExclusion
-                    .SourceConsentAsync(db, task.Id, ct)
-                    .ConfigureAwait(false);
-                var targetConflict = await ServerTaskTargetExclusion
-                    .ConflictingTasksQuery(db, task.Id, sourceConsent, task.CreatedUtc, now)
-                    .AnyAsync(ct)
-                    .ConfigureAwait(false);
-                if (targetConflict)
-                {
-                    await tx.RollbackAsync(ct).ConfigureAwait(false);
-                    return ServerTaskClaimResult.TargetBlocked;
-                }
+                // 55P03 lock_not_available (lock_timeout) or 57014 query_canceled
+                // (statement_timeout) — a wedged claim held the lock, NOT a business
+                // refusal. The token check excludes genuine caller cancellation, which
+                // Npgsql surfaces as OperationCanceledException, not this filter. Both
+                // timeouts cancel only the offending statement and leave the connection
+                // healthy, so the rollback succeeds normally (a genuinely dead
+                // connection throws a different, transient error that escapes to the
+                // strategy — correct, that IS a retryable fault). Bail; the task stays
+                // Queued for the minutely re-signal.
+                await tx.RollbackAsync(ct).ConfigureAwait(false);
+                return ServerTaskClaimResult.ClaimContended;
             }
-
-            var result = await ClaimConditionalAsync(db, task.Id, now, ct).ConfigureAwait(false);
-            await tx.CommitAsync(ct).ConfigureAwait(false);
-            return result;
         }).ConfigureAwait(false);
     }
 
@@ -472,6 +510,31 @@ public static class ServerTaskLease
     internal const long ClaimDecisionLockKey = unchecked((long)0x6B72616B656E434CUL);
 
     /// <summary>
+    /// Transaction-local timeouts SET on every claim, bounding the ACCEPTED tradeoff
+    /// of the single global <see cref="ClaimDecisionLockKey"/>: without them a wedged
+    /// claim (a half-open connection holding the tx, a statement riding out the
+    /// command timeout across the strategy's retries) stalls EVERY claim
+    /// instance-wide AND parks each waiter's pooled connection in <c>lock_timeout</c>
+    /// wait — a pool-drain vector, since the workers share one pool.
+    /// <list type="bullet">
+    ///   <item><c>lock_timeout</c> bounds the WAITERS: a claimant that cannot take
+    ///   the advisory lock within this window errors out (SQLSTATE 55P03) instead of
+    ///   queueing, frees its connection, and the task stays <c>Queued</c> for the
+    ///   minutely re-signal — benign by construction (over-waiting only).</item>
+    ///   <item><c>statement_timeout</c> bounds the HOLDER: a claim statement that
+    ///   runs past it is cancelled (SQLSTATE 57014), releasing the lock so the queue
+    ///   recovers without waiting for the B1 reconciler to reap the dead connection.</item>
+    /// </list>
+    /// Both are comfortably above a healthy claim (single-digit ms) so they fire only
+    /// on a genuine wedge, and both map to <see cref="ServerTaskClaimResult.ClaimContended"/>
+    /// — the same stays-<c>Queued</c>-and-retry contract as the other bail-outs.
+    /// SET LOCAL takes no parameters, so these are embedded literals (constants, no
+    /// injection surface) rather than bound values.
+    /// </summary>
+    internal const string ClaimLockTimeout = "15s";
+    internal const string ClaimStatementTimeout = "30s";
+
+    /// <summary>
     /// Extends the lease of a still-<c>Running</c> task. Returns <c>false</c>
     /// when nothing was renewed — the task reached a terminal state, or the
     /// reconciler already failed it as orphaned (a hard multi-minute stall).
@@ -566,4 +629,12 @@ public enum ServerTaskClaimResult
     /// operator disables maintenance (the minutely re-signal retries it — closing
     /// the window needs no extra poller). Child tasks never see this.</summary>
     MaintenanceBlocked,
+
+    /// <summary>The claim could not take the global claim-decision lock within
+    /// <c>lock_timeout</c>, or a claim statement exceeded <c>statement_timeout</c>
+    /// (SQLSTATE 55P03 / 57014) — a symptom of a WEDGED claim holding the lock, not
+    /// a business refusal. Bail; the task stays <c>Queued</c> and the minutely
+    /// re-signal retries it once the wedge clears. Logged distinctly so the wedge is
+    /// visible to operators rather than hiding as a generic bail-out.</summary>
+    ClaimContended,
 }

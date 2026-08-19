@@ -1,10 +1,13 @@
+using System.Diagnostics;
 using System.Threading.Channels;
 using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
 using Microsoft.EntityFrameworkCore;
+using Xunit.Abstractions;
 
 namespace KrakenDeploy.Server.Data.Tests;
 
@@ -26,7 +29,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// </summary>
 [Trait("Category", "Docker")]
 [Collection("Postgres")]
-public sealed class TargetExclusionTests(PostgresFixture postgres)
+public sealed class TargetExclusionTests(PostgresFixture postgres, ITestOutputHelper output)
     : IClassFixture<PostgresFixture>
 {
     // ── Core exclusion + FIFO ─────────────────────────────────────────────────
@@ -570,6 +573,189 @@ public sealed class TargetExclusionTests(PostgresFixture postgres)
         (await deployments.GetForTargetAsync(t2[0].Id)).Select(d => d.Id)
             .Should().BeEquivalentTo([onT2]);
         (await runbooks.GetRunsForTargetAsync(t2[0].Id)).Should().BeEmpty();
+    }
+
+    // ── Cross-Space isolation (the IgnoreQueryFilters safety invariant) ──────
+
+    [Fact]
+    public async Task Cross_space_target_assignment_is_rejected_by_the_composite_fk()
+    {
+        // ServerTaskTargetExclusion runs entirely under IgnoreQueryFilters; its
+        // whole cross-Space safety argument is "two tasks sharing a TargetId are
+        // same-Space BY CONSTRUCTION" — the task_target_assignments composite FKs
+        // (space_id, task_id)→server_tasks and (space_id, target_id)→targets pin
+        // both ends to one Space. This test is the tripwire for that invariant: if
+        // it is ever relaxed, the blocker labels could cross the boundary.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var env = await harness.SeedEnvironmentAsync(UniqueName("env"));
+        var defaultTargets = await harness.SeedTargetsAsync(UniqueName("t"));
+        var taskInDefault = await SeedDeploymentAsync(harness, env.Id, defaultTargets);
+
+        var otherSpaceId = await harness.SeedSpaceAsync("other-space");
+        var targetInOther = (await harness.SeedTargetsInSpaceAsync(otherSpaceId, UniqueName("t")))[0];
+
+        // A Default-Space task + an other-Space target: whichever Space the
+        // assignment claims, exactly one composite FK is left unsatisfiable.
+        await using (var db1 = postgres.CreateContext())
+        {
+            db1.TaskTargetAssignments.Add(new TaskTargetAssignment
+            {
+                SpaceId = WellKnown.DefaultSpaceId,
+                TaskId = taskInDefault,
+                TargetId = targetInOther.Id,
+            });
+            var act = async () => await db1.SaveChangesAsync();
+            await act.Should().ThrowAsync<DbUpdateException>(
+                "the (space_id, target_id) FK finds no target in the Default Space");
+        }
+
+        await using (var db2 = postgres.CreateContext())
+        {
+            db2.TaskTargetAssignments.Add(new TaskTargetAssignment
+            {
+                SpaceId = otherSpaceId,
+                TaskId = taskInDefault,
+                TargetId = targetInOther.Id,
+            });
+            var act = async () => await db2.SaveChangesAsync();
+            await act.Should().ThrowAsync<DbUpdateException>(
+                "the (space_id, task_id) FK finds no task in the other Space");
+        }
+    }
+
+    [Fact]
+    public async Task Same_named_targets_are_distinct_identities_and_never_conflict()
+    {
+        // The exclusion matches on the target ROW (TargetId), never on MachineName
+        // (nothing enforces its uniqueness). Two targets sharing a name — the
+        // aliasing residual documented in node-concurrency-and-cache.md, and the
+        // same property that keeps two Spaces' identically-named targets separate —
+        // are independent identities, so a plan on one never blocks a plan on the
+        // other.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var env = await harness.SeedEnvironmentAsync(UniqueName("env"));
+
+        // Two rows, SAME name, distinct ids.
+        var dupes = await harness.SeedTargetsAsync("dup-machine", "dup-machine");
+        dupes.Should().HaveCount(2);
+        dupes[0].Id.Should().NotBe(dupes[1].Id);
+        dupes[0].Name.Should().Be(dupes[1].Name);
+
+        var onFirst = await SeedDeploymentAsync(harness, env.Id, [dupes[0]]);
+        var onSecond = await SeedDeploymentAsync(harness, env.Id, [dupes[1]]);
+
+        await using var db = postgres.CreateContext();
+        (await ServerTaskLease.TryClaimAsync(db, onFirst, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+        (await ServerTaskLease.TryClaimAsync(db, onSecond, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed,
+                "a same-NAME but different-ROW target is a different identity — no conflict");
+        (await ServerTaskTargetExclusion.DescribeConflictAsync(db, onSecond, DateTimeOffset.UtcNow))
+            .Should().BeNull("nothing conflicts on the second target row");
+    }
+
+    // ── Claim-decision cost under a backlog (the global-lock throughput ceiling) ──
+
+    [Fact]
+    public async Task Claim_decision_stays_fast_under_a_queued_backlog()
+    {
+        // The single global claim-decision lock makes the in-lock conflict query
+        // (ServerTaskTargetExclusion.ConflictingTasksQuery) the throughput ceiling
+        // for the whole instance. This guards against a regression that makes that
+        // query scale badly with the backlog (a missing index, an accidental
+        // O(n^2)). It is a coarse ceiling, not a micro-benchmark — the budget is
+        // deliberately generous; read the emitted timing from the first CI run and
+        // tighten if there is headroom.
+        const int projects = 8;
+        const int targetCount = 8;
+        const int inFlight = 40;
+        const int queued = 160;
+        const double budgetMs = 1000;
+
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var env = await harness.SeedEnvironmentAsync(UniqueName("env"));
+        var targets = await harness.SeedTargetsAsync(
+            [.. Enumerable.Range(0, targetCount).Select(_ => UniqueName("t"))]);
+
+        // A handful of distinct projects/releases so the backlog is realistic (F1
+        // groups are small) without paying to create one project per row.
+        var releases = new List<(Guid ReleaseId, Guid ProjectId)>(projects);
+        for (var i = 0; i < projects; i++)
+        {
+            var p = await harness.SeedProjectAsync(UniqueName("p"));
+            var r = await harness.SeedReleaseAsync(p.Id, "1.0", StepBuilder.Script("s1"));
+            releases.Add((r.Id, p.Id));
+        }
+
+        // Bulk-insert the backlog in ONE context: every row shares the target pool
+        // so the conflict query has real overlap to scan. In-flight rows are the
+        // ones the probe's claim must scan and defer to.
+        await using (var seed = postgres.CreateContext())
+        {
+            for (var i = 0; i < inFlight + queued; i++)
+            {
+                var rel = releases[i % projects];
+                var dep = new Deployment
+                {
+                    SpaceId = WellKnown.DefaultSpaceId,
+                    ProjectId = rel.ProjectId,
+                    ReleaseId = rel.ReleaseId,
+                    EnvironmentId = env.Id,
+                    Status = i < inFlight ? DeploymentStatus.Running : DeploymentStatus.Queued,
+                    CreatedUtc = DateTimeOffset.UtcNow.AddMinutes(-60 + i),
+                };
+                seed.Deployments.Add(dep);
+                // Two targets each, rotating through the pool — guarantees overlap.
+                seed.TaskTargetAssignments.Add(new TaskTargetAssignment
+                {
+                    SpaceId = WellKnown.DefaultSpaceId,
+                    TaskId = dep.Id,
+                    TargetId = targets[i % targetCount].Id,
+                    AddedUtc = DateTimeOffset.UtcNow.AddMicroseconds(i * 2),
+                });
+                seed.TaskTargetAssignments.Add(new TaskTargetAssignment
+                {
+                    SpaceId = WellKnown.DefaultSpaceId,
+                    TaskId = dep.Id,
+                    TargetId = targets[(i + 1) % targetCount].Id,
+                    AddedUtc = DateTimeOffset.UtcNow.AddMicroseconds(i * 2 + 1),
+                });
+            }
+            await seed.SaveChangesAsync();
+        }
+
+        // The probe: its own fresh project (so F1 never fires for it) on target[0],
+        // which in-flight rows hold — so its claim runs the FULL F6 predicate and
+        // bails TargetBlocked. Re-claiming a blocked task is a no-op, so it can be
+        // timed repeatedly.
+        var probe = await SeedDeploymentAsync(harness, env.Id, [targets[0]]);
+
+        await using var db = postgres.CreateContext();
+
+        // Warm up (JIT, plan cache, connection) before measuring.
+        (await ServerTaskLease.TryClaimAsync(db, probe, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.TargetBlocked);
+
+        const int samples = 5;
+        var timings = new List<double>(samples);
+        for (var i = 0; i < samples; i++)
+        {
+            var sw = Stopwatch.StartNew();
+            var result = await ServerTaskLease.TryClaimAsync(db, probe, TimeProvider.System);
+            sw.Stop();
+            result.Should().Be(ServerTaskClaimResult.TargetBlocked);
+            timings.Add(sw.Elapsed.TotalMilliseconds);
+        }
+
+        timings.Sort();
+        var median = timings[timings.Count / 2];
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        output.WriteLine(string.Format(inv,
+            "claim-decision under {0} in-flight + {1} queued: median {2:F1} ms, all [{3}] ms",
+            inFlight, queued, median,
+            string.Join(", ", timings.Select(t => t.ToString("F1", inv)))));
+        median.Should().BeLessThan(budgetMs,
+            "the in-lock conflict query must not scale badly with the backlog");
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

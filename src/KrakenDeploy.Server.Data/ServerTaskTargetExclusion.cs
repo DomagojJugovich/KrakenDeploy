@@ -64,6 +64,33 @@ namespace KrakenDeploy.Server.Data;
 /// surface below.
 /// </para>
 /// <para>
+/// <b>Parked holds (ACCEPTED, operator-releasable).</b> The in-flight set
+/// (<see cref="DeploymentStatusExtensions.InFlightAfterClaim"/>) includes the two
+/// NON-terminal parked states, so a task holds its serial targets for as long as
+/// it stays parked — and against BOTH kinds now, not just same-key deployments as
+/// pre-F6. This is deliberate (a parked plan is not finished with the box) but the
+/// hold duration is worth knowing:
+/// <list type="bullet">
+///   <item><c>Paused</c> at a manual-intervention gate is BOUNDED by the gate's
+///   timeout (<c>Interruption.ExpiresUtc</c>, ≤ <c>MaxTimeoutHours</c> = one year);
+///   the timeout sweeper then fails it and releases the targets.</item>
+///   <item><c>PendingOfflineResult</c> is UNBOUNDED — it parks until the operator
+///   uploads the offline bundle result or cancels. Its blast radius is narrow: an
+///   offline-drop deployment is single-target, a runbook run cannot target an
+///   offline-drop machine, and no ONLINE deployment can be assigned that same
+///   offline box — so in practice it only defers OTHER offline deployments queued
+///   to the same machine (arguably correct ordering: don't ship a second bundle to
+///   a box whose first bundle has not been applied). Residual edge: flipping the
+///   target's <c>TransportMode</c> away from OfflineDrop mid-park would widen the
+///   conflict set to online work.</item>
+/// </list>
+/// There is no force-release action by design (releasing a task's holds while its
+/// plan is still mid-flight on the box is unsound). The operator escape hatch is to
+/// CANCEL the blocking task — the reason surface names it (task id + label) so the
+/// operator knows which one. <c>Permission.TaskCancel</c> gates that; a blocked
+/// party without it must ask an operator who has it.
+/// </para>
+/// <para>
 /// All evaluators here build on ONE query shape
 /// (<see cref="ConflictingTasksQuery"/>) so the claim's in-lock check, the
 /// worker's pre-gate skip, the first-deferral log line and the task-detail
@@ -90,7 +117,7 @@ public static class ServerTaskTargetExclusion
 
     /// <summary>
     /// The tasks that conflict with <paramref name="taskId"/> right now: any task
-    /// (either kind, excluding the task itself and its ancestor chain) that is
+    /// (either kind, excluding only the task itself — <c>o.Id != taskId</c>) that is
     /// IN-FLIGHT (<see cref="DeploymentStatusExtensions.InFlightAfterClaim"/>) or
     /// — for a TOP-LEVEL claimant only — an OLDER already-due <c>Queued</c>
     /// sibling (FIFO by overlap), and that shares at least one SERIAL target
@@ -246,11 +273,14 @@ public static class ServerTaskTargetExclusion
     /// they never wait on a target). Point-in-time and advisory — the
     /// authoritative gate is the advisory-locked claim; this only explains it.
     /// <para>
-    /// Cost is INDEPENDENT of the conflict count: the ranking runs in SQL and the
-    /// label/target lookups plus the queue-position count are projected on the
-    /// single winning row. The detail pages poll this every 5 s while a task is
-    /// Queued and the worker calls it on every deferral, so a per-conflict
-    /// projection would fan out badly on a busy machine.
+    /// The PER-CONFLICT projection cost is independent of the conflict count: the
+    /// ranking runs in SQL and the label/target lookups are projected on the single
+    /// winning row, so no label subquery ever fans out per conflict. The one
+    /// count-shaped cost is <c>QueuedAhead</c> — a single COUNT aggregate over the
+    /// conflict set, returned as one number, not a per-row projection. The detail
+    /// pages poll this every 5 s while a task is Queued and the worker calls it on
+    /// each first deferral, so keeping the labels to one row is what matters on a
+    /// busy machine.
     /// </para>
     /// <para>
     /// The blocker and the queue position come from ONE statement deliberately:
@@ -363,6 +393,23 @@ public static class ServerTaskTargetExclusion
     }
 
     /// <summary>
+    /// Whether the one-time first-deferral banner line already exists for a task —
+    /// the SAME probe <see cref="TryAppendFirstDeferralLogAsync"/> runs inside its
+    /// transaction, exposed so a caller can SKIP the expensive conflict resolution
+    /// on the common re-signal (a blocked task is re-claimed every minute, and the
+    /// line is written once). Keyed to the dedicated <see cref="TargetWaitLogLevel"/>,
+    /// never to the operator-visible copy. Point-in-time and advisory: the append
+    /// re-probes under the per-task advisory lock, so this is a cheap fast-path,
+    /// not the idempotence guarantee.
+    /// </summary>
+    public static Task<bool> FirstDeferralAlreadyLoggedAsync(
+        KrakenDbContext db, Guid taskId, CancellationToken ct = default)
+        => db.TaskLogLive
+            .AnyAsync(l => l.TaskId == taskId
+                        && l.StepIndex == -1
+                        && l.Level == TargetWaitLogLevel, ct);
+
+    /// <summary>
     /// Appends the target-wait reason to the task's log ON THE FIRST DEFERRAL
     /// ONLY — a blocked task is re-claimed every minute by the stale-Queued
     /// re-signal, and one line per minute would bury the log. Idempotence is a
@@ -376,6 +423,12 @@ public static class ServerTaskTargetExclusion
     /// duplicate wake-up racing an operator's cancel must not stamp a permanent
     /// "waiting" line into a Cancelled task's log. Returns whether a line was
     /// written.
+    /// <para>
+    /// Callers should first take the lock-free <see cref="FirstDeferralAlreadyLoggedAsync"/>
+    /// fast-path so the per-minute re-signal does not pay for
+    /// <see cref="DescribeConflictAsync"/> (the ranked, subquery-heavy read) only to
+    /// discard it here; this transactional re-probe stays as the race backstop.
+    /// </para>
     /// </summary>
     public static async Task<bool> TryAppendFirstDeferralLogAsync(
         KrakenDbContext db, Guid taskId, string message, TimeProvider time,
@@ -393,10 +446,7 @@ public static class ServerTaskTargetExclusion
                 .ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({lockKey})", ct)
                 .ConfigureAwait(false);
 
-            var alreadyLogged = await db.TaskLogLive
-                .AnyAsync(l => l.TaskId == taskId
-                            && l.StepIndex == -1
-                            && l.Level == TargetWaitLogLevel, ct)
+            var alreadyLogged = await FirstDeferralAlreadyLoggedAsync(db, taskId, ct)
                 .ConfigureAwait(false);
             if (alreadyLogged)
             {

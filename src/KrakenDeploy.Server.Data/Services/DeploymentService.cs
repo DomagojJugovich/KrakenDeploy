@@ -321,6 +321,58 @@ public class DeploymentService(
         return await bounded.ToListAsync(ct).ConfigureAwait(false);
     }
 
+    /// <summary>The deployments-list payload: EVERY non-terminal deployment plus
+    /// the <paramref name="terminalLimit"/> most recent terminal ones, newest
+    /// first, and a count of the terminal rows NOT loaded.
+    /// <para>
+    /// A plain "top-N by CreatedUtc" cap would drop an OLD non-terminal row —
+    /// a far-future <c>ScheduledFor</c> deployment, or a long-parked
+    /// <c>PendingOfflineResult</c>/<c>Paused</c> one — off the page entirely,
+    /// making it un-cancellable from the list and invisible to the queue-reason
+    /// resolver. Those are exactly the rows the page exists to surface, so the
+    /// non-terminal set is loaded in FULL (it is bounded by the concurrency caps
+    /// plus parked/scheduled work, not by history) and only the finished tail is
+    /// capped. <paramref name="terminalLimit"/> is the "Load more" budget — the
+    /// page raises it and re-reads. <see cref="OlderTerminalCount"/> drives the
+    /// truthful "N older not loaded" subtitle, so the cap is never silent.
+    /// </para></summary>
+    public async Task<(List<Deployment> Rows, int OlderTerminalCount)> GetForListAsync(
+        int terminalLimit, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        static IQueryable<Deployment> WithIncludes(IQueryable<Deployment> q) => q
+            .Include(d => d.Release).ThenInclude(r => r.Project)
+            .Include(d => d.Environment)
+            .Include(d => d.Targets).ThenInclude(a => a.Target)
+            .Include(d => d.Tenant);
+
+        var nonTerminal = await WithIncludes(db.Deployments
+                .Where(d => !DeploymentStatusExtensions.Terminal.Contains(d.Status)))
+            .OrderByDescending(d => d.CreatedUtc)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var terminalTotal = await db.Deployments
+            .CountAsync(d => DeploymentStatusExtensions.Terminal.Contains(d.Status), ct)
+            .ConfigureAwait(false);
+
+        var terminal = terminalLimit > 0
+            ? await WithIncludes(db.Deployments
+                    .Where(d => DeploymentStatusExtensions.Terminal.Contains(d.Status)))
+                .OrderByDescending(d => d.CreatedUtc)
+                .Take(terminalLimit)
+                .ToListAsync(ct)
+                .ConfigureAwait(false)
+            : [];
+
+        var rows = nonTerminal
+            .Concat(terminal)
+            .OrderByDescending(d => d.CreatedUtc)
+            .ToList();
+        return (rows, Math.Max(0, terminalTotal - terminal.Count));
+    }
+
     /// <summary>Deployments that ran on one target (newest first, bounded) —
     /// powers the target-detail Deployments tab. Matches via the
     /// assignments join, the single authority for the target set.</summary>

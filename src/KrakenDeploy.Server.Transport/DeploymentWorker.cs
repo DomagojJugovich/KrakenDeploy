@@ -227,13 +227,19 @@ public sealed class DeploymentWorker(
     ///   <item><c>ParentTaskId</c> — a non-null value is a child of an
     ///   <c>Octopus.DeployRelease</c> step, which bypasses the NodeTaskGate (its
     ///   slot is held by the parent; E3).</item>
-    ///   <item><c>Kind</c> + a same-key deferral flag — a top-level
+    ///   <item><c>Kind</c> + a same-key deferral flag (F1) — a top-level
     ///   <c>Deployment</c> that must defer to another same-key deployment (an
     ///   in-flight peer OR an earlier-queued due sibling — the exact claim-time
     ///   gate, <see cref="ServerTaskLease.ClaimDeferralPredicate"/>) is left Queued
-    ///   without taking a slot (F1). The read is issued only for a top-level
-    ///   deployment; a child, a runbook run, or a missing row skip it.</item>
+    ///   without taking a slot. The F1 read is deployments-only; a runbook run is
+    ///   F1-exempt and skips it.</item>
+    ///   <item>A target-conflict flag (F6) — a top-level task of EITHER kind whose
+    ///   assignment set shares a SERIAL target with an in-flight or older-queued
+    ///   task (<see cref="ServerTaskTargetExclusion.ConflictingTasksQuery"/>) is
+    ///   likewise left Queued without a slot. Skipped when F1 already decided, and
+    ///   for a child (exempt outright).</item>
     /// </list>
+    /// Every arm is racy-but-cheap; the advisory-locked claim is authoritative.
     /// Returns <c>null</c> for a missing row (dispatch proceeds, loads, and no-ops
     /// on the absent task — parity with the pre-F1 parentage probe).
     /// </summary>
@@ -322,6 +328,13 @@ public sealed class DeploymentWorker(
     /// whichever path a blocked task lands on, its log carries the reason. Runs
     /// in its OWN scope: the dispatch context may hold tracked entities, and the
     /// log append saves changes.
+    /// <para>
+    /// This runs on EVERY re-signal of a blocked task (minutely), but the line is
+    /// written once — so it takes the lock-free banner-exists fast-path first and
+    /// only resolves the (ranked, subquery-heavy) conflict on the first deferral.
+    /// Without it a machine with a backlog would re-run that read for every blocked
+    /// task every minute just to discard it inside the append.
+    /// </para>
     /// </summary>
     private async Task RecordTargetDeferralAsync(Guid taskId, CancellationToken ct)
     {
@@ -329,6 +342,18 @@ public sealed class DeploymentWorker(
         {
             await using var scope = scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
+
+            // Fast-path: the banner is already down from an earlier deferral, so
+            // there is nothing to write and no reason to resolve the conflict. The
+            // append below re-probes under its advisory lock, so a race here only
+            // costs one extra resolve, never a duplicate line.
+            if (await ServerTaskTargetExclusion
+                    .FirstDeferralAlreadyLoggedAsync(db, taskId, ct)
+                    .ConfigureAwait(false))
+            {
+                return;
+            }
+
             var conflict = await ServerTaskTargetExclusion
                 .DescribeConflictAsync(db, taskId, timeProvider.GetUtcNow(), ct)
                 .ConfigureAwait(false);
@@ -609,6 +634,14 @@ public sealed class DeploymentWorker(
                         logger.LogInformation(
                             "DeploymentWorker: offline deployment {Id} not started — the instance is " +
                             "in maintenance mode; staying Queued until maintenance is disabled.",
+                            deploymentId);
+                    }
+                    else if (offlineClaim == ServerTaskClaimResult.ClaimContended)
+                    {
+                        logger.LogWarning(
+                            "DeploymentWorker: offline deployment {Id} could not take the claim-decision " +
+                            "lock within the timeout (a wedged claim is holding it); staying Queued for " +
+                            "the minutely re-signal to retry.",
                             deploymentId);
                     }
                     else
@@ -1154,6 +1187,14 @@ public sealed class DeploymentWorker(
                     logger.LogInformation(
                         "DeploymentWorker: task {Id} not started — the instance is in maintenance " +
                         "mode; staying Queued until maintenance is disabled.",
+                        deploymentId);
+                }
+                else if (claim == ServerTaskClaimResult.ClaimContended)
+                {
+                    logger.LogWarning(
+                        "DeploymentWorker: task {Id} could not take the claim-decision lock within " +
+                        "the timeout (a wedged claim is holding it); staying Queued for the minutely " +
+                        "re-signal to retry.",
                         deploymentId);
                 }
                 else
