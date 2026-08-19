@@ -332,6 +332,36 @@ public class RunbookService(
         return runbook;
     }
 
+    /// <summary>
+    /// F6 — sets the runbook's "allow parallel task execution" consent (see
+    /// <see cref="Runbook.AllowParallelTaskExecution"/>). Kept separate from
+    /// <see cref="UpdateAsync"/> for the same reason as the retention override:
+    /// a name/description edit path that carries no concurrency field must never
+    /// silently clear an author's consent. A dispatched plan's AGENT-gate mode is
+    /// frozen at plan build, but the CLAIM-side conflict predicate reads this
+    /// flag LIVE — so enabling consent mid-run can let new consenting work
+    /// co-claim a box on which one of this runbook's runs is still exclusive
+    /// (accepted window, see <c>ServerTaskTargetExclusion</c>; disabling is
+    /// always safe — it only over-blocks).
+    /// </summary>
+    public async Task<Runbook?> SetAllowParallelTaskExecutionAsync(
+        Guid id, bool allow, CallerAuthorization caller, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(caller);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureRunbookScopeAsync(db, caller, id, ct).ConfigureAwait(false);
+
+        var runbook = await db.Runbooks.FindAsync([id], ct).ConfigureAwait(false);
+        if (runbook is null)
+        {
+            return null;
+        }
+
+        runbook.AllowParallelTaskExecution = allow;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return runbook;
+    }
+
     public async Task<bool> DeleteAsync(Guid id, CallerAuthorization caller, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(caller);

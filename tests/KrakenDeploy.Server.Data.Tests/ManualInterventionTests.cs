@@ -96,6 +96,13 @@ public sealed class ManualInterventionTests(PostgresFixture postgres)
         var env = await harness.SeedEnvironmentAsync($"ge-{Guid.NewGuid():N}"[..14]);
         var targets = await harness.SeedTargetsAsync($"gt-{Guid.NewGuid():N}"[..14]);
         harness.ConnectFakeAgent(targets[0]);
+        // The second deployment gets its OWN target: a Paused task HOLDS its
+        // targets (F6 — it is InFlightAfterClaim), so a same-box peer would be
+        // target-blocked at claim and this test would measure the wrong gate.
+        // The NodeTaskGate under test is node-global, so a second box still
+        // contends for the one slot.
+        var freeTargets = await harness.SeedTargetsAsync($"gt2-{Guid.NewGuid():N}"[..14]);
+        harness.ConnectFakeAgent(freeTargets[0]);
 
         // Two DIFFERENT projects so F1's (project, env, tenant) serialization is not
         // what lets the second one through — the freed gate slot is.
@@ -107,7 +114,7 @@ public sealed class ManualInterventionTests(PostgresFixture postgres)
         var freeProject = await harness.SeedProjectAsync($"gp2-{Guid.NewGuid():N}"[..14]);
         var freeRelease = await harness.SeedReleaseAsync(
             freeProject.Id, "1.0", StepBuilder.Script("work"));
-        var freeId = await harness.CreateDeploymentAsync(freeRelease.Id, env.Id, targets);
+        var freeId = await harness.CreateDeploymentAsync(freeRelease.Id, env.Id, freeTargets);
 
         await harness.StartWorkerAsync();
         await harness.EnqueueAsync(gatedId);

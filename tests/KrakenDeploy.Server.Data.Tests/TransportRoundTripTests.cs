@@ -207,21 +207,26 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
         status.Should().Be(DeploymentStatus.Failed);
     }
 
-    // ── F2-followup 1: the agent must accept a SECOND push while one is running ──
+    // ── F2-followup 1 / F6: two plans against one machine, over the real hub ──
     //
-    // These three are the only tests in the repo that can observe the defect: every
-    // other suite either fakes the agent side (so the SignalR client's single-reader
+    // These tests are the only ones in the repo with a REAL agent-side SignalR
+    // client: every other suite fakes the agent (so the client's single-reader
     // dispatch loop is absent) or dispatches exactly one deployment per agent.
 
     [Fact]
-    public async Task Second_deployment_to_the_same_machine_waits_for_the_gate()
+    public async Task Second_exclusive_deployment_is_refused_at_claim_until_the_first_finishes()
     {
+        // Pre-F6 this test pinned "the second plan queues on the AGENT gate".
+        // That scenario is now impossible by design: the server's per-plan
+        // target exclusion refuses the second plan's CLAIM, so it never reaches
+        // the agent at all — the two-layer model's whole point (the agent-gate
+        // queue-wait remains reachable only for ad-hoc work, which the claim
+        // cannot see). The F2-followup-1 concurrent-push property is still
+        // pinned by Parallel_flag_lets_a_second_deployment_co_run… below, whose
+        // consenting plans DO co-dispatch.
         await using var seeder = new OrchestratorTestHarness(postgres);
         await using var host = await RoundTripHost.StartAsync(postgres, new EngineOptions
         {
-            // Nothing server-side may un-hang this: the gate is the only thing that
-            // should hold the second deployment, and the release is the only thing
-            // that should let it through.
             MaxTargetWaveDuration    = TimeSpan.FromMinutes(5),
             AgentDisconnectWaveGrace = TimeSpan.Zero,
         });
@@ -233,37 +238,46 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
         try
         {
             await WaitUntilAsync(() => agent.Executor.IsExecuting,
-                "the blocking deployment must be executing and holding the machine gate");
-            await WaitUntilAsync(() => agent.Gate.IsHeld,
-                "the gate must actually be held, not merely registered in flight");
+                "the blocking deployment must be executing and holding the machine");
 
-            // The second push IS delivered now (pre-fix it was not: the client awaited
-            // the first handler), so the plan reaches the agent and queues on the gate.
-            var quickRun = host.RunDeploymentAsync(quick);
-            await Task.Delay(TimeSpan.FromSeconds(2));
-            quickRun.IsCompleted.Should().BeFalse(
-                "the second deployment must be QUEUED behind the first on the machine gate");
+            // The second, non-consenting plan is refused at claim: the dispatch
+            // attempt returns, the row stays Queued, and nothing reached the agent.
+            await host.RunDeploymentAsync(quick).WaitAsync(TestTimeout);
+            (await seeder.GetDeploymentAsync(quick)).Status
+                .Should().Be(DeploymentStatus.Queued,
+                    "a target-blocked claim must leave the task Queued for the re-signal");
             (await seeder.GetOutcomesAsync(quick)).Should().BeEmpty(
-                "a queued plan must not have run any step yet");
+                "a refused plan must not have run any step");
 
-            // Release the holder; the queued plan then inherits the machine.
+            // The reason surface: exactly ONE first-deferral banner line.
+            await using (var db = seeder.CreateContext())
+            {
+                var quickLog = await TaskLogService.ReadAllAsync(db, quick);
+                // Keyed on the LEVEL, which is what the dedup probe uses — the
+                // sentence itself is presentational and free to change.
+                quickLog.Should().ContainSingle(
+                    l => l.Level == ServerTaskTargetExclusion.TargetWaitLogLevel,
+                    "the first (and only the first) deferral writes the target-wait reason");
+            }
+
+            // Free the machine; the next wake-up (the minutely re-signal in
+            // production, an explicit re-run here) claims and completes.
             agent.Executor.TryCancel(blocking, "test releases the machine");
             await blockingRun.WaitAsync(TestTimeout);
-            await quickRun.WaitAsync(TestTimeout);
+            await host.RunDeploymentAsync(quick).WaitAsync(TestTimeout);
 
             (await seeder.GetDeploymentAsync(quick)).Status
                 .Should().Be(DeploymentStatus.Succeeded,
-                    "once the gate frees, the queued deployment runs to completion");
+                    "once the holder is terminal the target frees and the claim passes");
 
-            // The load-bearing assertion. "Did not complete" alone is satisfied by an
-            // UNDELIVERED plan, which is exactly the pre-fix behaviour — so prove the
-            // plan reached the agent and queued on the gate, by its own task log.
-            await using var db = seeder.CreateContext();
-            var quickLog = await TaskLogService.ReadAllAsync(db, quick);
-            quickLog.Should().Contain(
-                l => l.Message.Contains("Waiting for other work to finish on this machine"),
-                "the second plan must have been DELIVERED and queued on the machine gate — "
-                + "pre-fix it was never dispatched to the agent at all");
+            // Still exactly one deferral line — the successful re-claim must not
+            // have appended another.
+            await using (var db = seeder.CreateContext())
+            {
+                var quickLog = await TaskLogService.ReadAllAsync(db, quick);
+                quickLog.Count(l => l.Level == ServerTaskTargetExclusion.TargetWaitLogLevel)
+                    .Should().Be(1);
+            }
         }
         finally
         {

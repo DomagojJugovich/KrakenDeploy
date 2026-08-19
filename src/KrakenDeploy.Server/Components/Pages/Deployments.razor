@@ -11,6 +11,8 @@
 @inject IAuditLog Audit
 @inject MaintenanceModeService MaintenanceSvc
 @inject InterruptionService Interruptions
+@* F6 — the page-level target-exclusion probe for Queued rows. *@
+@inject KrakenDeploy.Server.Services.ServerTasksService TasksSvc
 @inject ISpaceContext SpaceCtx
 
 <PageTitle>Deployments - KrakenDeploy</PageTitle>
@@ -18,7 +20,13 @@
 <div class="page-head">
     <div>
         <h1 class="page-title">Deployments</h1>
-        <p class="page-sub">@_filtered.Count of @_all.Count deployments</p>
+        <p class="page-sub">
+            @_filtered.Count of @_all.Count loaded
+            @if (_olderCount > 0)
+            {
+                <span class="cell-muted">(@_olderCount.ToString("N0") older not loaded)</span>
+            }
+        </p>
     </div>
 </div>
 
@@ -143,6 +151,26 @@
     </Columns>
 </KrakenGrid>
 
+@if (_olderCount > 0)
+{
+    <div class="load-more-bar">
+        @* The list loads every non-terminal deployment plus the most recent
+           finished ones; older finished history is fetched on demand. The
+           page filters (search / env / status) narrow only what is already
+           loaded — so when a search comes up empty, more history is the fix,
+           not more filters. *@
+        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+            @if (_filtered.Count == 0)
+            {
+                <span>No match in the loaded deployments. </span>
+            }
+            @_olderCount.ToString("N0") older deployment(s) are not loaded.
+        </RadzenText>
+        <RadzenButton Text="Load more" Icon="expand_more" ButtonStyle="ButtonStyle.Light"
+                      Size="ButtonSize.Small" Click="@LoadMoreAsync" Disabled="@_loadingMore" />
+    </div>
+}
+
 @code {
     private RadzenDataGrid<Deployment>? _grid;
     private List<Deployment> _all = [];
@@ -173,15 +201,40 @@
     // InterruptionView.
     private HashSet<Guid> _awaitingApproval = [];
 
+    // Why each Queued row has not started, resolved once at load by the shared
+    // ServerTasksService resolver (the same one both detail pages use). The row
+    // renders the short form; the detail page names the blocking machine and queue
+    // position.
+    private Dictionary<Guid, ServerTasksService.QueueWaitResolution> _queueWaits = [];
+
+    // The terminal-row load budget (the "Load more" ceiling). Every non-terminal
+    // deployment is always loaded; this bounds only the finished tail. Raised in
+    // steps by LoadMoreAsync. _olderCount is how many terminal rows are NOT loaded.
+    private const int TerminalPageSize = 500;
+    private int _terminalLimit = TerminalPageSize;
+    private int _olderCount;
+    private bool _loadingMore;
+
     protected override async Task OnInitializedAsync()
     {
-        _all = await DeploymentSvc.GetAllAsync();
-        var maintenance = await MaintenanceSvc.GetStateAsync();
-        _maintenanceHold = maintenance.Enabled ? maintenance : null;
-        // Include archived: historical deployments to a since-retired
-        // environment must still filter and colour-map correctly.
+        // Include archived: historical deployments to a since-retired environment
+        // must still filter and colour-map correctly. Load-once — the reload path
+        // below does not touch it.
         _envs = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
         _envColor = _envs.Select((e, i) => (e.Id, i)).ToDictionary(x => x.Id, x => x.i);
+
+        await ReloadDeploymentsAsync();
+    }
+
+    // Loads all non-terminal deployments + the _terminalLimit most recent terminal
+    // ones, then the derived per-row state (approvals, queue reasons). Re-runnable:
+    // "Load more" raises _terminalLimit and calls this again.
+    private async Task ReloadDeploymentsAsync()
+    {
+        (_all, _olderCount) = await DeploymentSvc.GetForListAsync(_terminalLimit);
+
+        var maintenance = await MaintenanceSvc.GetStateAsync();
+        _maintenanceHold = maintenance.Enabled ? maintenance : null;
 
         // Only Paused rows can carry a pending gate, so scope the probe to them.
         var pausedIds = _all
@@ -191,7 +244,48 @@
         _awaitingApproval = await Interruptions.FindTasksAwaitingResponseAsync(
             pausedIds, SpaceCtx.CurrentSpaceId, await Guard.CurrentCallerAsync());
 
+        // Resolve the Queued rows' wait reasons once here so a backlog explains
+        // itself on the list, not only on each row's detail page — and so the grid
+        // template stays a dictionary lookup. Skipped entirely while maintenance is
+        // on (that gate refuses every claim, so it is the binding reason for every
+        // row). The resolver caps how many it explains; the rest fall back to the
+        // generic message and resolve on their detail page. Every non-terminal row
+        // is loaded, so no Queued row is ever missing from the candidate set.
+        if (_maintenanceHold is null)
+        {
+            var queued = _all
+                .Where(d => d.Status == DeploymentStatus.Queued)
+                .Select(d => new ServerTasksService.QueueWaitCandidate(
+                    d.Id,
+                    KrakenDeploy.Server.Core.Domain.Deployments.ServerTaskKind.Deployment,
+                    d.ProjectId, d.EnvironmentId, d.TenantId, d.CreatedUtc))
+                .ToList();
+            _queueWaits = await TasksSvc.ResolveQueueWaitsAsync(queued, withBlockerDetail: false);
+        }
+        else
+        {
+            _queueWaits = [];
+        }
+
         ApplyFilters();
+    }
+
+    private async Task LoadMoreAsync()
+    {
+        if (_loadingMore)
+        {
+            return;
+        }
+        _loadingMore = true;
+        try
+        {
+            _terminalLimit += TerminalPageSize;
+            await ReloadDeploymentsAsync();
+        }
+        finally
+        {
+            _loadingMore = false;
+        }
     }
 
     private void SetEnv(Guid? id) { _envFilter = id; ApplyFilters(); }
@@ -309,17 +403,11 @@
         _grid?.Reload();
     }
 
-    // F1 — the queue-wait reason for a Queued deployment blocked by the
-    // (project, environment, tenant) serialization rule. Computed in-memory over
-    // the already-loaded _all set (which holds every deployment in the Space,
-    // including the in-flight peers), so there is no per-row DB round-trip. Shares
-    // the exact status set the claim enforces
-    // (DeploymentStatusExtensions.InFlightAfterClaim) — so if that set changes the
-    // list can't drift — and mirrors the key comparison of
-    // ServerTaskLease.InFlightDeploymentPeerPredicate (null tenant is its own key
-    // via the == comparison).
-    // Maintenance mode wins: while the claim gate is closed no task can start, so
-    // reporting "another deployment is running" would name the wrong constraint.
+    // The queue-wait reason for a Queued deployment. Maintenance mode wins: while
+    // the claim gate is closed no task can start, so reporting "another deployment
+    // is running" would name the wrong constraint. Every other reason comes from
+    // the shared resolver (ServerTasksService.ResolveQueueWaitsAsync), resolved
+    // once at load — this method is a lookup, not a scan.
     private string? QueueWaitReason(Deployment d)
     {
         if (d.Status != DeploymentStatus.Queued)
@@ -330,17 +418,23 @@
         {
             return QueueWaitMessage.MaintenanceHold(hold.Reason);
         }
-        return IsBlockedByInFlightPeer(d)
-            ? QueueWaitMessage.RunningPeer(d.Release?.Project?.Name, d.Environment?.Name)
+        // Everything else was resolved ONCE at load by the shared resolver, which
+        // applies the claim's own order (F1 in-flight → F1 earlier-queued → F6
+        // target) using the claim's own predicates — so a row and its detail page
+        // can never name different constraints, and this template stays a
+        // dictionary lookup rather than re-scanning every loaded row per render.
+        return _queueWaits.TryGetValue(d.Id, out var reason)
+            ? reason.Block switch
+            {
+                QueueWaitBlock.InFlightPeer =>
+                    QueueWaitMessage.RunningPeer(d.Release?.Project?.Name, d.Environment?.Name),
+                QueueWaitBlock.EarlierQueuedPeer =>
+                    QueueWaitMessage.QueuedPeer(d.Release?.Project?.Name, d.Environment?.Name),
+                QueueWaitBlock.TargetBlocked => QueueWaitMessage.TargetWaitShort(),
+                _ => null,
+            }
             : null;
     }
-
-    private bool IsBlockedByInFlightPeer(Deployment d)
-        => _all.Any(o => o.Id != d.Id
-            && DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status)
-            && o.ProjectId == d.ProjectId
-            && o.EnvironmentId == d.EnvironmentId
-            && o.TenantId == d.TenantId);
 
     private string EnvColor(Guid envId)
         => _envColor.TryGetValue(envId, out var i) ? $"env-c{i % 6}" : "env-c0";

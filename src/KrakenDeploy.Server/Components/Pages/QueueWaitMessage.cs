@@ -5,7 +5,7 @@ namespace KrakenDeploy.Server.Components.Pages;
 /// queue-wait reason, shared by <c>Deployments</c> (list) and
 /// <c>DeploymentDetail</c> so the operator-facing wording stays identical (it was
 /// duplicated in both pages). The blocked-peer DETECTION lives in
-/// <c>ServerTaskLease.InFlightDeploymentPeerPredicate</c> /
+/// <c>ServerTaskLease.ClaimDeferralPredicate</c> /
 /// <c>DeploymentStatusExtensions.InFlightAfterClaim</c>; this only builds the
 /// sentence.
 /// </summary>
@@ -19,6 +19,14 @@ public static class QueueWaitMessage
         => $"Waiting: another deployment of {projectName ?? "this project"} to " +
            $"{environmentName ?? "this environment"} is running.";
 
+    /// <summary>F6-adjacent F1 arm — the reason shown when the claim's FIFO rule
+    /// holds a deployment behind an OLDER queued sibling of the same
+    /// (project, environment, tenant), with nothing in-flight. Rendered so the
+    /// F6 target probe never captures (and mislabels) an F1 refusal.</summary>
+    public static string QueuedPeer(string? projectName, string? environmentName)
+        => $"Waiting: an earlier deployment of {projectName ?? "this project"} to " +
+           $"{environmentName ?? "this environment"} is queued ahead of this one.";
+
     /// <summary>The reason shown for a Queued task held by the maintenance gate in
     /// <c>ServerTaskLease.TryClaimAsync</c>. Takes precedence over
     /// <see cref="RunningPeer"/> in the pages: while maintenance is on, the gate is
@@ -30,4 +38,20 @@ public static class QueueWaitMessage
               + "automatically once maintenance is disabled."
             : $"Waiting: the instance is in maintenance mode ({reason.Trim()}). "
               + "This task starts automatically once maintenance is disabled.";
+
+    /// <summary>F6 — the reason shown for a Queued task held by the per-plan
+    /// target exclusion ("Waiting for target X — busy with #N (title); M ahead").
+    /// Delegates to the Data-side formatter so the banner and the one-time
+    /// first-deferral task-log line render the SAME sentence.</summary>
+    public static string TargetWait(
+        KrakenDeploy.Server.Data.ServerTaskTargetExclusion.TargetConflict conflict)
+        => KrakenDeploy.Server.Data.ServerTaskTargetExclusion.Format(conflict);
+
+    /// <summary>F6 — the LIST-page form of <see cref="TargetWait"/>: grid rows get
+    /// a yes/no probe rather than the full blocker lookup, so they state the
+    /// constraint and point at the detail page for the machine and queue
+    /// position.</summary>
+    public static string TargetWaitShort()
+        => "Waiting: a machine this deployment needs is busy with another task. "
+           + "Open the deployment for the machine and queue position.";
 }

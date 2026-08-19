@@ -12,6 +12,7 @@
 @inject InterruptionService Interruptions
 @inject ISpaceContext SpaceCtx
 @inject UiActionGuard Guard
+@inject TargetService TargetSvc
 
 <PageTitle>Tasks - KrakenDeploy</PageTitle>
 
@@ -52,6 +53,20 @@
 
         <RadzenTextBox @bind-Value=@_search Placeholder="Search tasks…" Style="width: 280px"
                        Change="@(() => ApplyFilter())" />
+
+        @* F6 — the ?target= machine filter (deep-linked from TargetDetail's
+           "View tasks for this machine"). Resolved via the assignments join in
+           the services, never by string-matching row titles. *@
+        @if (TargetFilter is not null)
+        {
+            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.4rem">
+                <RadzenBadge BadgeStyle="BadgeStyle.Info" IsPill="true"
+                             Text="@($"Target: {_targetFilterName ?? TargetFilter.Value.ToString()[..8]}")" />
+                <RadzenButton Icon="close" Size="ButtonSize.ExtraSmall" Variant="Variant.Text"
+                              ButtonStyle="ButtonStyle.Light" title="Clear the target filter"
+                              Click="@(() => Nav.NavigateTo(Sp("/tasks")))" />
+            </RadzenStack>
+        }
     </RadzenStack>
 
     <KrakenGrid SettingsKey="tasks" Data="@_filtered" TItem="ServerTaskRow"
@@ -124,6 +139,14 @@
 </RequirePermission>
 
 @code {
+    // F6 — the machine filter from the query string; null = all tasks. A guid
+    // that matches no target simply yields zero assignment-joined rows.
+    [SupplyParameterFromQuery(Name = "target")]
+    public Guid? TargetFilter { get; set; }
+
+    private Guid? _appliedTargetFilter;
+    private string? _targetFilterName;
+
     private List<ServerTaskRow> _all = [];
     private List<ServerTaskRow> _filtered = [];
     private bool _loading;
@@ -154,7 +177,23 @@
             </RadzenAlert>
         </div>;
 
-    protected override async Task OnInitializedAsync() => await ReloadAsync();
+    // Initial load AND ?target= changes both land here (SupplyParameterFromQuery
+    // re-sets parameters on same-page navigation, e.g. clearing the filter chip).
+    private bool _hasLoaded;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_hasLoaded && _appliedTargetFilter == TargetFilter)
+        {
+            return;
+        }
+        _hasLoaded = true;
+        _appliedTargetFilter = TargetFilter;
+        _targetFilterName = TargetFilter is { } tid
+            ? (await TargetSvc.GetAsync(tid))?.Name
+            : null;
+        await ReloadAsync();
+    }
 
     protected override void OnAfterRender(bool firstRender)
     {
@@ -191,7 +230,7 @@
         _loading = true;
         try
         {
-            _all = await TasksSvc.GetTasksAsync(_cts.Token);
+            _all = await TasksSvc.GetTasksAsync(TargetFilter, _cts.Token);
 
             // WP3 — only Paused rows can carry a pending gate, so scope the probe.
             var pausedIds = _all

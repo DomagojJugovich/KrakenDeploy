@@ -792,6 +792,9 @@ table.dg tbody tr.row-accent td:first-child { box-shadow: inset 3px 0 0 var(--c,
 
 /* ── Toolbar (search + segmented filters) ── */
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+/* F6 — the deployments-list "Load more" footer: the list loads all non-terminal
+   rows + a capped terminal tail, and this bar surfaces the older-not-loaded count. */
+.load-more-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
 .search {
     display: flex; align-items: center; gap: 8px;
     background: var(--surface);

@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.19 |
-| **Date** | 2026-07-31 |
+| **Version** | 1.21 |
+| **Date** | 2026-08-19 |
 | **Authors** | Domagoj Jugovic, Claude (Fable 5), Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Draft |
 | **Technologies** | .NET 10, EF Core 10, PostgreSQL, SignalR, Octostache, Hangfire |
@@ -455,10 +455,11 @@ FKs keep even unfiltered joins intra-Space by construction
   the key until its result is imported or it is cancelled. A NULL tenant is its
   **own** key: untenanted deployments serialize among themselves, while different
   tenants of the same project+environment proceed in parallel. Enforced at
-  **claim** time in `ServerTaskLease.TryClaimAsync`: for a deployment the claim
-  runs inside `pg_advisory_xact_lock(hash64(project, env, tenant))` — a blocking,
-  transaction-scoped lock — and re-checks the "no in-flight peer" predicate
-  (`InFlightDeploymentPeerPredicate`) as a **separate statement**, so two
+  **claim** time in `ServerTaskLease.TryClaimAsync`: the claim runs inside the
+  ONE global claim-decision advisory lock (see the F6 bullet below — F6
+  **replaced** F1's per-`hash64(project, env, tenant)` key with a single constant
+  key, subsuming it) and re-checks the "no in-flight peer" predicate
+  (the in-flight arm of `ClaimDeferralPredicate`) as a **separate statement**, so two
   concurrent claimants of one key cannot both see "no peer" and both win: the
   lock-loser blocks until the winner commits, then its fresh READ COMMITTED
   snapshot sees the winner's `Running` row and is refused
@@ -472,13 +473,12 @@ FKs keep even unfiltered joins intra-Space by construction
   (capacity stays available for other keys); the minutely stale-`Queued`
   re-signal retries it once the running deployment goes terminal — **no new
   poller**. Deployments only — a `RunbookRun` is **exempt** (operational tooling
-  runs concurrently), expressed as the kind branch in `TryClaimAsync`. The rule
-  is **unavoidable** by design: no bypass setting, no per-project opt-out
-  (decision 2026-07-18). Backed by the partial index
-  `ix_server_tasks_running_deployment_peer` (running deployments only).
+  runs concurrently), expressed as the F1 kind branch in `TryClaimAsync` (it does
+  participate in F6 below). The rule is **unavoidable** by design: no bypass
+  setting, no per-project opt-out (decision 2026-07-18). Backed by the partial
+  index `ix_server_tasks_running_deployment_peer` (running deployments only).
   `BlockConcurrentDeployments` on the manual-intervention step remains
-  informational only. The only other concurrency guards are the per-task claim
-  and xmin.
+  informational only.
 - **Per-machine serialization — F2/F5.** Orthogonal to F1 and enforced
   **agent-side**: `MachineExecutionGate` is each box's reader-writer gate, so
   different tasks (including ad-hoc scripts and the agent's own self-upgrade)
@@ -492,7 +492,113 @@ FKs keep even unfiltered joins intra-Space by construction
   ANYWHERE; the machine gate stops two unrelated units of work from interleaving on
   ONE box. Turning the flag on cannot loosen F1. What the gate still does NOT give
   you is whole-plan exclusion — its unit is one WAVE, because the server dispatches
-  per wave (see §9); **F6** closes that server-side at claim time.
+  per wave (see §9); **F6** (next bullet) closes that server-side at claim time.
+- **Per-plan target exclusion — F6.** The TOP layer of a two-layer model: the
+  **server claim exclusion sits ABOVE the agent's RW gate**. The agent gate
+  serializes wave-sized units on one box; F6 serializes whole PLANS on one box,
+  at the only place whole plans are visible — the claim
+  (`ServerTaskLease.TryClaimAsync`, shared machinery in
+  `ServerTaskTargetExclusion`). No two tasks operate on the same SERIAL target
+  concurrently for the whole plan duration. Octopus has no equivalent (its
+  Tentacle mutex releases at every step boundary — source-verified); deliberate
+  divergence, from production experience of two deployment processes
+  interleaving at step boundaries. The model (locked decisions P1–P7,
+  2026-07-25):
+  - **Mode composition:** a task's mode on target `T` is `Shared` when
+    `T.AllowParallelTaskExecution` OR its source consents
+    (`Project.AllowParallelTaskExecution` for deployments,
+    `Runbook.AllowParallelTaskExecution` for runbook runs — separate flags, both
+    default off). Conflict = a shared target where at least one side is
+    Exclusive; mutual-Shared overlap neither defers nor orders. The same OR is
+    stamped into `DeploymentPlan.AllowParallelTaskExecution` at plan build, so
+    the two layers can't disagree on a plan's mode.
+  - **Enforcement:** every claim (BOTH kinds — full symmetry, unlike F1) runs
+    inside ONE transaction under ONE **global** constant advisory lock
+    (`ServerTaskLease.ClaimDecisionLockKey`; it REPLACED F1's per-key lock —
+    target overlap is set-valued, which per-key locks cannot serialize; claims
+    hold it for milliseconds). Inside the lock: the F1 check (deployments only),
+    then the target-conflict check — defer when any IN-FLIGHT task conflicts OR
+    any OLDER already-due `Queued` task conflicts (FIFO by overlap). The
+    in-flight `server_tasks` rows ARE the lock state: crash-release comes free
+    from the B1 lease/reconciler, and blue-green slots share one Postgres so the
+    exclusion spans processes.
+  - **Exemptions:** a CHILD task (`ParentTaskId != null`, spawned by an
+    `Octopus.DeployRelease` step) is exempt from the exclusion **outright** — the
+    claim skips the check, so a child is never `TargetBlocked`. Its targets are
+    already held by the parent that spawned it, so the parent's claim accounted
+    for them; this is the same bypass the maintenance gate and the E3
+    `NodeTaskGate` make, for the same reason. A PARTIAL exemption is not enough:
+    deferring a child to any non-ancestor task deadlocks whenever that task is
+    (transitively) waiting on the child's own parent — two mutually-consenting
+    parents on one box, each awaiting a non-consenting child, is reachable — and
+    nothing bounds it, because `DeployReleaseStepRunner` charges its child-wait
+    budget only after the child has PAUSED and a child stuck `Queued` never
+    pauses; the step then dies on its attempt timeout and leaves an orphaned
+    child that later claims under a parent that already failed. The residual of
+    exempting children (a child's waves interleaving with unrelated consenting
+    work on a shared box) is bounded by the F5 agent gate, which still takes the
+    writer side per wave for a non-consenting child. Also: a
+    resume never re-checks (a `Paused` task holds its targets — it is
+    `InFlightAfterClaim` to everyone else); ad-hoc scripts are not
+    `server_tasks` and stay invisible (accepted wave-gap residual — they take
+    the agent gate's READ side instead).
+  - **Unit of exclusion = the `DeploymentTarget` ROW, not the physical
+    machine** — the same aliasing residual the agent gate documents
+    (node-concurrency-and-cache.md Residuals): nothing enforces `MachineName`
+    uniqueness, so one box registered as two Target rows (twice in one Space, or
+    once per Space — targets are Space-scoped and assignments carry composite
+    Space FKs, so conflicts never cross Spaces by construction) is two
+    identities whose plans co-claim and interleave. F6 does not close that; it
+    serializes plans per Target row.
+  - **Reason surface:** a refused claim (`ServerTaskClaimResult.TargetBlocked`)
+    records the blocker via `ServerTaskTargetExclusion.DescribeConflictAsync` —
+    the task detail renders "Waiting for target X — busy with #N (title); next
+    in line / M tasks ahead." from the SAME query the claim refuses on (one
+    statement; the per-conflict label lookups project on the single winning row,
+    and the queue position `M` is one COUNT aggregate — no per-conflict fan-out),
+    and the worker appends that sentence to the task log ON THE FIRST DEFERRAL
+    ONLY — idempotence is a DB probe for the dedicated `target-wait` log LEVEL,
+    never the message copy, and the append re-checks the row is still `Queued`.
+    The worker takes the lock-free banner-exists probe BEFORE resolving the
+    conflict, so the minutely re-signal of a blocked task does not re-run that
+    read once the line is down. Both
+    detail pages read it through the kind-agnostic `ServerTasksService`; the
+    deployments LIST page probes its `Queued` rows in one page-level pass and
+    shows the short form. Reasons are rendered in CLAIM order everywhere:
+    maintenance → F1 in-flight peer → F1 earlier-queued sibling → F6 target.
+    The Tasks page gains the assignment-joined `?target=` filter;
+    `TargetDetail` links to it ("View tasks for this machine"). A blocked task
+    stays `Queued`; the minutely kind-agnostic stale-`Queued` re-signal retries
+    it — no new poller. Like F1, the pre-gate probe skips the `NodeTaskGate`
+    slot for target-blocked tasks.
+  - **Global-lock hardening (security review round 4).** The single constant
+    claim-decision lock is a deliberate instance-wide choke point; two guards
+    bound its blast radius so a wedged claim cannot stall the whole instance or
+    drain the worker connection pool. Each claim transaction sets
+    `lock_timeout` (`ClaimLockTimeout`, 15 s) and `statement_timeout`
+    (`ClaimStatementTimeout`, 30 s) via `SET LOCAL`: a waiter that cannot take
+    the lock in time, or a claim statement that overruns, errors out (SQLSTATE
+    55P03 / 57014) into `ServerTaskClaimResult.ClaimContended` — the same
+    stays-`Queued`-and-retry contract as the other bail-outs, logged as a warning
+    so the wedge is visible. Both timeouts sit far above a healthy claim
+    (single-digit ms) so they fire only on a genuine wedge. The claimant's own
+    source-consent read is hoisted OUT of the lock (it is that task's own flag —
+    reading it slightly earlier is the same accepted live-flip window the blocker
+    side already documents), keeping the critical section to the reads that must
+    be fresh-after-lock.
+  - **List-page cost bounds (security review round 4).** The per-`Queued`-row
+    wait-reason resolution (`ServerTasksService.ResolveQueueWaitsAsync`) is
+    capped at the 50 oldest candidates (`QueueWaitResolveCap`) — a flooded queue
+    (which F1/F6 make GROW, since they bound what RUNS, not what waits) can no
+    longer turn a list-page load into one read per waiting row; rows past the cap
+    render the generic wait text and resolve on their detail page (logged, not
+    silent). The Deployments list itself loads EVERY non-terminal deployment plus
+    a capped terminal tail (`DeploymentService.GetForListAsync`) — a plain
+    "top-N" would drop an old `Queued`/parked row off the page entirely, making
+    it un-cancellable and invisible to the resolver — with a truthful
+    "N older not loaded" subtitle and a "Load more" control (the page filters are
+    in-memory over the loaded set, so more history is fetched by Load more, not by
+    adding filters).
 
 ## 8. The deployment/runbook unification (D1 — execution-deep)
 
@@ -604,7 +710,9 @@ runbook block, behavior-identical).
   box. F5 deliberately did NOT fix this in `MachineExecutionGate` — holding an
   agent-side lease across a server round-trip means holding it with no dispatch
   guaranteed to follow, so a cancelled or failed wave would strand it until process
-  restart. **F6** closes it server-side at claim time, where whole plans are visible.
+  restart. **F6** closed it server-side at claim time, where whole plans are visible —
+  since F6 the wave-gap residual applies to AD-HOC scripts only (deployments and
+  runbook runs never reach a box while a serial plan holds it; see §7's F6 bullet).
   The ad-hoc wave-gap specifically is an ACCEPTED risk (locked decision P5).
   The one participant for which the gap was NOT acceptable is the agent's own
   self-upgrade, because it ends in `Environment.Exit` rather than merely interleaving —
@@ -617,6 +725,18 @@ runbook block, behavior-identical).
 - The machine gate is per agent PROCESS, not per physical machine: two targets
   modelled on one box are two processes, two gates, and no serialization between
   them. Nothing enforces `MachineName` uniqueness.
+- **F6 parked holds (ACCEPTED, operator-releasable).** A task in either NON-terminal
+  parked state holds its serial targets — against BOTH kinds since F6, where pre-F6
+  only same-key deployments were blocked. `Paused` (manual-intervention gate) is
+  BOUNDED by the gate's `ExpiresUtc` (≤ `MaxTimeoutHours` = one year), then the
+  timeout sweeper releases it. `PendingOfflineResult` is UNBOUNDED — it parks until
+  the bundle result is uploaded or the deployment cancelled — but its conflict set is
+  narrow: offline-drop is single-target and deployment-only, and no online deployment
+  can be assigned that box, so in practice it only defers OTHER offline deployments
+  to the same machine (arguably correct ordering). There is deliberately NO
+  force-release action (releasing a mid-flight plan's holds is unsound); the operator
+  escape hatch is to CANCEL the blocker, which the reason surface names, gated by
+  `Permission.TaskCancel`.
 - Rolling `MaxParallelism` never short-circuits (§4) — not a canary.
 - Wave retries re-run whole sub-plans — step idempotency is on the author.
 - `ServerTask.FormValues` is inert (reserved for prompted variables).
@@ -764,6 +884,8 @@ changed in the engine:
 
 | Version | Date | Change |
 |---|---|---|
+| 1.21 | 2026-08-19 | **F6 — security review round 4** (§7 F6 bullet, §9). No injection/XSS/RBAC/Space-leak defects found; the fixes are availability + cost hardening of the single global claim lock and the reason surface. Claim transaction now sets `SET LOCAL lock_timeout` (15 s) + `statement_timeout` (30 s) so a wedged claim cannot stall every claim instance-wide or drain the worker pool — a timeout maps to the new `ServerTaskClaimResult.ClaimContended` (stays `Queued`, retried, warn-logged); the claimant's own source-consent read is hoisted out of the lock. `RecordTargetDeferralAsync` takes a lock-free banner-exists probe before the ranked `DescribeConflictAsync`, so the minutely re-signal of a blocked task no longer re-runs that read once the line is down. `ServerTasksService.ResolveQueueWaitsAsync` caps at the 50 oldest candidates (`QueueWaitResolveCap`); the Deployments list loads all non-terminal rows + a capped terminal tail (`DeploymentService.GetForListAsync`) with a truthful "N older not loaded" subtitle + "Load more" — a plain top-N would drop old parked/`Queued` rows off the page. Parked-hold residual (`Paused` bounded by the gate timeout; `PendingOfflineResult` unbounded but narrow; `TaskCancel` is the operator escape hatch) documented. Cross-Space isolation + composite-FK tripwire + a claim-latency perf test added. Comment corrections (ancestor-chain, cost-independence, `ProbeGateAsync` kind). Branch `feat/eng-per-plan-target-exclusion`. |
+| 1.20 | 2026-08-18 | **F6 — server-side per-plan target exclusion at claim time** (§7 new bullet, §9). Two-layer model: the server claim exclusion sits ABOVE the agent's F5 RW gate — no two tasks operate on the same SERIAL target concurrently for the whole plan duration (Octopus has no equivalent; deliberate divergence). Mode on a target = Shared iff the target's flag OR the source's consent (new `projects.allow_parallel_task_execution` + `runbooks.allow_parallel_task_execution`, both default off, OR-composed into `DeploymentPlan.AllowParallelTaskExecution` at plan build); conflict = a shared serial target where not both sources consent. Enforced in `ServerTaskLease.TryClaimAsync` for BOTH kinds under ONE global constant advisory lock (`ClaimDecisionLockKey` — REPLACES and subsumes F1's per-key lock; the F1 predicate itself is unchanged, deployments-only): defer on any in-flight conflict or any older already-due Queued conflict (FIFO by overlap; ancestor chain exempt; resume never re-checks; ad-hoc invisible — accepted P5 residual, now the ONLY wave-gap occupant). New `ServerTaskClaimResult.TargetBlocked`; the pre-gate probe skips the `NodeTaskGate` slot symmetrically. Reason surface (`ServerTaskTargetExclusion`): task detail renders "Waiting for target X — busy with #N (title); M tasks ahead." from the same query the claim refuses on; ONE first-deferral task-log line (advisory-locked DB-probed idempotence); Tasks page `?target=` filter via the `task_target_assignments` join + TargetDetail "View tasks for this machine" link. CONTRACT CHANGE: none on the agent wire; EF migration `AddProjectRunbookAllowParallelTaskExecution` (two columns). Branch `feat/eng-per-plan-target-exclusion`. |
 | 1.19 | 2026-07-31 | **F5 round 6 — review remediation** (§6, §9). The agent's reconnect pacing regained an EPISODE count, which round 5 had deleted with the churn lane: `Reconnecting` does fire for a transport drop, so a link that establishes and drops repeatedly had no backoff at all. It is counted where the signal is correctly ordered (`PreviousRetryCount == 0` inside `NextRetryDelay`) rather than from the event, which lagged an episode. A 426 met during AUTOMATIC RECONNECT now opens the self-upgrade escape hatch — that path never raises `Closed`, so the supervisor's `StartAsync` catch never saw it and a contract bump could not self-heal. `RollBackAsync` disposes its EXCLUSIVE lease on the two shutdown paths that skip `Environment.Exit` (they had reintroduced the 1.16 'writer held by nobody'). `Agent:Update:SwapGateTimeout` warns and clamps instead of failing the boot when the updater is off. A rolled-back version is remembered beside its staged archive, so the maintenance-window bypass cannot turn a bad build into an ~8-minute restart loop. |
 | 1.18 | 2026-07-31 | **F5 review round 5** (§6, §9). Corrects the 1.17 row below, whose premise was measured and found false: a server-side rejection inside `OnConnectedAsync` — a throw OR `Context.Abort()` — lets `StartAsync` SUCCEED and then fires **`Closed`**, never `Reconnecting`, so automatic reconnect is not engaged at all and the retry policy is never consulted. Round 4's `AgentReconnectPolicy` "churn lane" therefore could not observe the failure it existed for, and (for the transport drop it could) `HubConnection` computes the delay *before* raising `Reconnecting`, so the counter lagged an episode. The churn lane is DELETED; pacing is back in `ServerLinkHostedService`'s supervision loop, which the `Closed` event does wake, counting cycles that never produced an ACCEPTED registration. Pinned by execution in `ReconnectE2ETests`. Contract bumped **3 → 4** (the handshake header move gets its own number). The refusal regained the Offline mark and status push it had silently lost, via `IAgentContractRefusalRecorder`. `registry.Add` moved to the END of `OnConnectedAsync` — SignalR skips `OnDisconnectedAsync` after an `OnConnectedAsync` failure, so an earlier `Add` leaked a fully dispatchable dead connection. The E7 cancel re-push moved BEFORE the machine-info write, its only call site, so a failed write no longer drops it. `Agent:Update:SwapGateTimeout` is now validated unconditionally and the derived wedged-gate wait is clamped — `DeploymentExecutor` reads it on the normal deployment path, so `Update:Enabled == false` was no excuse to skip it. |
 | 1.17 | 2026-07-31 | **F5 review round 4** (§6, §9). The agent wire-contract check moved from `AgentHub.RegisterAsync` onto the SignalR HANDSHAKE (`AgentContractHandshakeGate`, 426 Upgrade Required), so a skewed agent is refused before the connection is admitted. That deletes the connected-but-unverified state outright: `MarkRegistered`/`IsRegistered` and the liveness-vs-eligibility split are gone, a tracked connection IS a dispatchable one, and `RegisterAsync` no longer aborts the connection when it throws (it only records machine info and re-pushes cancels). Reconnect pacing moved into `AgentReconnectPolicy` as a CHURN lane over consecutive short-lived connections — the round-3 pacing sat on the supervision loop, which a `Context.Abort()` never wakes, because the abort drops the transport and the policy never gives up. Also fixes this table, which still advertised the deleted flat 30 s. |

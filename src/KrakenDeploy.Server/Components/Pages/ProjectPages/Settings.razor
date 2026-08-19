@@ -109,6 +109,41 @@
                     </RadzenStack>
                 </RadzenCard>
 
+                <RadzenCard>
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">
+                        Execution
+                    </RadzenText>
+                    @* F6 — author consent for per-plan target sharing. Off by
+                       default: a deployment of this project holds each target
+                       exclusively for the whole plan. Consent is mutual — this
+                       only co-runs with other consenting work. *@
+                    <RadzenStack Orientation="Orientation.Horizontal" Gap="10px" AlignItems="AlignItems.Center">
+                        <RadzenCheckBox @bind-Value="_form.AllowParallelTaskExecution"
+                                        Name="projectAllowParallel"
+                                        aria-label="Allow parallel task execution" />
+                        <RadzenLabel Component="projectAllowParallel"
+                                     Text="This deployment process is self-contained — it may run alongside other consenting work on a machine" />
+                    </RadzenStack>
+                    @if (_form.AllowParallelTaskExecution)
+                    {
+                        <div class="kraken-health kraken-health--warn kraken-health--inline rz-mt-2">
+                            <RadzenIcon Icon="warning" />
+                            <div>
+                                Two tasks running at once on one machine can interleave file,
+                                IIS and Windows service operations. Only consent here if this
+                                project's process touches nothing another process might touch
+                                — its own folders, sites and services.
+                            </div>
+                        </div>
+                    }
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mt-2">
+                        By default, deployments hold each of their machines exclusively for the
+                        whole run — other deployments and runbook runs on the same machine wait.
+                        This never bypasses deployment serialization: two deployments of this
+                        project to the same environment still run one at a time.
+                    </RadzenText>
+                </RadzenCard>
+
                 @if (_errorMessage is not null)
                 {
                     <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true"
@@ -195,6 +230,7 @@
         _form.Description = _project.Description;
         _form.LifecycleId = _project.LifecycleId;
         _form.ProjectGroupId = _project.ProjectGroupId;
+        _form.AllowParallelTaskExecution = _project.AllowParallelTaskExecution;
         _errorMessage = null;
     }
 
@@ -205,9 +241,38 @@
         _errorMessage = null;
         try
         {
+            // Three writes, each on its own DbContext — NOT one transaction. The
+            // first is the identity edit; if either of the later two fails, the
+            // name/slug change has already persisted, so report PARTIAL success
+            // instead of a bare error the operator reads as "nothing was saved"
+            // (same treatment RunbookDetail gives its secondary writes).
             await ProjectSvc.UpdateAsync(_project.Id, _form.Name, _form.Slug, _form.Description);
-            await ProjectSvc.SetLifecycleAndGroupAsync(
-                _project.Id, _form.LifecycleId, _form.ProjectGroupId);
+            try
+            {
+                await ProjectSvc.SetLifecycleAndGroupAsync(
+                    _project.Id, _form.LifecycleId, _form.ProjectGroupId);
+                await ProjectSvc.SetAllowParallelTaskExecutionAsync(
+                    _project.Id, _form.AllowParallelTaskExecution);
+            }
+            catch (InvalidOperationException secondaryEx)
+            {
+                Notifications.Notify(NotificationSeverity.Warning,
+                    "Name saved, other settings failed", secondaryEx.Message, 6000);
+                // The identity edit DID persist, so the slug redirect below applies
+                // here too: without it the page keeps a URL whose slug no longer
+                // resolves, and the next parameter set renders "not found" for a
+                // project that exists.
+                if (_form.Slug != _project.Slug)
+                {
+                    Nav.NavigateTo(Sp($"/projects/{_form.Slug}/settings"));
+                }
+                else
+                {
+                    _project = await ProjectSvc.GetBySlugAsync(_form.Slug);
+                    ResetForm();
+                }
+                return;
+            }
 
             Notifications.Notify(NotificationSeverity.Success, "Saved",
                 "Project settings updated.", 3000);
@@ -264,5 +329,6 @@
 
         public Guid? LifecycleId { get; set; }
         public Guid? ProjectGroupId { get; set; }
+        public bool AllowParallelTaskExecution { get; set; }
     }
 }

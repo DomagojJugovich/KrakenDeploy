@@ -9,6 +9,32 @@ using Microsoft.EntityFrameworkCore;
 namespace KrakenDeploy.Server.Data.Services;
 
 /// <summary>
+/// Why a <c>Queued</c> task has not started, in the order the CLAIM evaluates the
+/// rules — so every surface that shows a queue reason (the deployment list, both
+/// detail pages) names the same binding constraint. The instance-wide maintenance
+/// gate outranks all of these and is read separately (it is not per-task).
+/// </summary>
+public enum QueueWaitBlock
+{
+    /// <summary>Nothing found — the task is startable, or is waiting on something
+    /// this classification does not model (e.g. a future schedule).</summary>
+    None,
+
+    /// <summary>F1 — a same-key peer is IN-FLIGHT (Running, parked offline, or
+    /// paused at a gate); it holds the key until it goes terminal.</summary>
+    InFlightPeer,
+
+    /// <summary>F1 — nothing is in-flight, but an earlier already-due
+    /// <c>Queued</c> sibling of the same key claims first (FIFO).</summary>
+    EarlierQueuedPeer,
+
+    /// <summary>F6 — a SERIAL target in the task's assignment set is held by
+    /// another task (see <c>ServerTaskTargetExclusion</c>). Checked after F1,
+    /// exactly as the claim does.</summary>
+    TargetBlocked,
+}
+
+/// <summary>
 /// Creates deployments and enqueues them for dispatch to the target agent.
 /// </summary>
 public class DeploymentService(
@@ -295,6 +321,58 @@ public class DeploymentService(
         return await bounded.ToListAsync(ct).ConfigureAwait(false);
     }
 
+    /// <summary>The deployments-list payload: EVERY non-terminal deployment plus
+    /// the <paramref name="terminalLimit"/> most recent terminal ones, newest
+    /// first, and a count of the terminal rows NOT loaded.
+    /// <para>
+    /// A plain "top-N by CreatedUtc" cap would drop an OLD non-terminal row —
+    /// a far-future <c>ScheduledFor</c> deployment, or a long-parked
+    /// <c>PendingOfflineResult</c>/<c>Paused</c> one — off the page entirely,
+    /// making it un-cancellable from the list and invisible to the queue-reason
+    /// resolver. Those are exactly the rows the page exists to surface, so the
+    /// non-terminal set is loaded in FULL (it is bounded by the concurrency caps
+    /// plus parked/scheduled work, not by history) and only the finished tail is
+    /// capped. <paramref name="terminalLimit"/> is the "Load more" budget — the
+    /// page raises it and re-reads. <see cref="OlderTerminalCount"/> drives the
+    /// truthful "N older not loaded" subtitle, so the cap is never silent.
+    /// </para></summary>
+    public async Task<(List<Deployment> Rows, int OlderTerminalCount)> GetForListAsync(
+        int terminalLimit, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        static IQueryable<Deployment> WithIncludes(IQueryable<Deployment> q) => q
+            .Include(d => d.Release).ThenInclude(r => r.Project)
+            .Include(d => d.Environment)
+            .Include(d => d.Targets).ThenInclude(a => a.Target)
+            .Include(d => d.Tenant);
+
+        var nonTerminal = await WithIncludes(db.Deployments
+                .Where(d => !DeploymentStatusExtensions.Terminal.Contains(d.Status)))
+            .OrderByDescending(d => d.CreatedUtc)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var terminalTotal = await db.Deployments
+            .CountAsync(d => DeploymentStatusExtensions.Terminal.Contains(d.Status), ct)
+            .ConfigureAwait(false);
+
+        var terminal = terminalLimit > 0
+            ? await WithIncludes(db.Deployments
+                    .Where(d => DeploymentStatusExtensions.Terminal.Contains(d.Status)))
+                .OrderByDescending(d => d.CreatedUtc)
+                .Take(terminalLimit)
+                .ToListAsync(ct)
+                .ConfigureAwait(false)
+            : [];
+
+        var rows = nonTerminal
+            .Concat(terminal)
+            .OrderByDescending(d => d.CreatedUtc)
+            .ToList();
+        return (rows, Math.Max(0, terminalTotal - terminal.Count));
+    }
+
     /// <summary>Deployments that ran on one target (newest first, bounded) —
     /// powers the target-detail Deployments tab. Matches via the
     /// assignments join, the single authority for the target set.</summary>
@@ -305,6 +383,9 @@ public class DeploymentService(
         return await db.Deployments
             .Include(d => d.Release).ThenInclude(r => r.Project)
             .Include(d => d.Environment)
+            // The full assignment set, not just the filter match — the Tasks
+            // page's ?target= rows render the target column from it (F6).
+            .Include(d => d.Targets).ThenInclude(a => a.Target)
             .Include(d => d.Tenant)
             .Where(d => d.Targets.Any(a => a.TargetId == targetId))
             .OrderByDescending(d => d.CreatedUtc)
@@ -373,26 +454,68 @@ public class DeploymentService(
     }
 
     /// <summary>
-    /// F1 read-side helper — is a <c>Queued</c> deployment blocked by the
-    /// (project, environment, tenant) serialization rule, i.e. is another
-    /// deployment of the same key currently in-flight (claimed but not terminal —
-    /// <c>Running</c> or a parked offline-drop <c>PendingOfflineResult</c>)?
-    /// Powers the DeploymentDetail queue-reason banner. Uses the SAME predicate
-    /// the claim enforces (<see cref="ServerTaskLease.InFlightDeploymentPeerPredicate"/>)
-    /// so the shown reason can never drift from the actual gate. Space-scoped by
-    /// the global query filter (same-key deployments share one Space); no new state.
+    /// F1 read-side helper — WHICH arm of the claim's deferral
+    /// (<see cref="ServerTaskLease.ClaimDeferralPredicate"/>) currently holds a
+    /// <c>Queued</c> deployment, in ONE round-trip: an in-flight same-key peer, an
+    /// earlier already-due queued sibling, or neither. The detail page needs the
+    /// distinction to word the banner AND must consult it BEFORE the F6 target
+    /// probe — the claim checks F1 first, and a same-key sibling usually shares
+    /// targets, so an in-flight-only read would let the F6 arm capture (and
+    /// mislabel) an F1 refusal. Ordering in-flight first and taking a single row
+    /// answers both questions without a second query.
     /// </summary>
-    public async Task<bool> HasInFlightPeerAsync(
+    public Task<QueueWaitBlock> GetSerializationBlockAsync(
         Guid queuedDeploymentId, Guid projectId, Guid environmentId, Guid? tenantId,
-        CancellationToken ct = default)
+        DateTimeOffset createdUtc, CancellationToken ct = default)
+        => GetSerializationBlockAsync(
+            null, queuedDeploymentId, projectId, environmentId, tenantId, createdUtc, ct);
+
+    /// <summary>
+    /// As <see cref="GetSerializationBlockAsync(Guid, Guid, Guid, Guid?, DateTimeOffset, CancellationToken)"/>,
+    /// but reusing a caller's <see cref="KrakenDbContext"/> when it has one — the
+    /// queue-reason resolver classifies a whole page of rows on one context instead
+    /// of renting one per row.
+    /// </summary>
+    public async Task<QueueWaitBlock> GetSerializationBlockAsync(
+        KrakenDbContext? context,
+        Guid queuedDeploymentId, Guid projectId, Guid environmentId, Guid? tenantId,
+        DateTimeOffset createdUtc, CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        return await db.ServerTasks
-            .AnyAsync(
-                ServerTaskLease.InFlightDeploymentPeerPredicate(
-                    queuedDeploymentId, projectId, environmentId, tenantId),
-                ct)
-            .ConfigureAwait(false);
+        var owned = context is null
+            ? await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false)
+            : null;
+        var db = context ?? owned!;
+        try
+        {
+            // null = no peer at all; 1 = the winning peer is in-flight; 0 = the only
+            // peers are earlier queued siblings. Ranking the matched rows rather than
+            // re-stating either arm keeps ClaimDeferralPredicate the one encoding.
+            var topPeerInFlight = await db.ServerTasks
+                .Where(
+                    ServerTaskLease.ClaimDeferralPredicate(
+                        queuedDeploymentId, projectId, environmentId, tenantId,
+                        createdUtc, time.GetUtcNow()))
+                .OrderByDescending(o =>
+                    DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status) ? 1 : 0)
+                .Select(o =>
+                    (int?)(DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status) ? 1 : 0))
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            return topPeerInFlight switch
+            {
+                null => QueueWaitBlock.None,
+                1    => QueueWaitBlock.InFlightPeer,
+                _    => QueueWaitBlock.EarlierQueuedPeer,
+            };
+        }
+        finally
+        {
+            if (owned is not null)
+            {
+                await owned.DisposeAsync().ConfigureAwait(false);
+            }
+        }
     }
 
     /// <summary>

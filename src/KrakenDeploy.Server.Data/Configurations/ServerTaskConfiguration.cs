@@ -74,8 +74,8 @@ public sealed class ServerTaskConfiguration : IEntityTypeConfiguration<ServerTas
         builder.HasIndex(x => x.ProjectId);
         builder.Property(x => x.ChannelId);
 
-        // F1 — (project, environment, tenant) serialization. The claim's peer
-        // check (ServerTaskLease.InFlightDeploymentPeerPredicate), the worker's
+        // F1 — (project, environment, tenant) serialization. The claim's deferral
+        // check (ServerTaskLease.ClaimDeferralPredicate), the worker's
         // pre-gate skip and the UI queue-reason read all probe for ANOTHER
         // IN-FLIGHT deployment of the same key, and the claim path runs on every
         // dispatch. Partial index on the IN-FLIGHT-DEPLOYMENT set only (status IN

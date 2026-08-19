@@ -2,7 +2,15 @@ using System.Text;
 using Hangfire;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
+using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
+using Microsoft.EntityFrameworkCore;
+
+// This file declares its own Tasks-grid `ServerTaskKind` DTO below, which shadows
+// the domain enum of the same name for everything in this namespace. The queue-wait
+// resolver classifies real server_tasks rows, so it needs the DOMAIN kind — alias it
+// rather than relying on which one wins name resolution.
+using DomainTaskKind = KrakenDeploy.Server.Core.Domain.Deployments.ServerTaskKind;
 
 namespace KrakenDeploy.Server.Services;
 
@@ -96,8 +104,156 @@ public sealed record ServerTaskRow
 public sealed class ServerTasksService(
     DeploymentService deployments,
     RunbookService runbooks,
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    TimeProvider time,
     ILogger<ServerTasksService> logger)
 {
+    // ── The queue-reason resolver (kind-agnostic, ONE implementation) ─────────
+    //
+    // Every surface that explains why a Queued task has not started goes through
+    // ResolveQueueWaitsAsync: the deployment LIST page (many rows, no blocker
+    // detail) and both DETAIL pages (one row, full blocker detail). It lives here
+    // rather than on DeploymentService/RunbookService because the underlying reads
+    // are by TASK id and cover both kinds — putting it on either kind's service
+    // would make the other kind's page inject a service for work it has nothing to
+    // do with, and duplicating it invites the surfaces to disagree in front of an
+    // operator.
+
+    /// <summary>What the resolver needs about one <c>Queued</c> task. The caller
+    /// already holds these fields on the rows it is rendering, so passing them
+    /// avoids a round-trip that would re-read a row's own columns — and makes the
+    /// contract explicit. <c>Kind</c> is the DOMAIN enum (this file also declares a
+    /// same-named Tasks-grid DTO enum, so it is qualified deliberately).</summary>
+    public sealed record QueueWaitCandidate(
+        Guid TaskId,
+        DomainTaskKind Kind,
+        Guid ProjectId,
+        Guid EnvironmentId,
+        Guid? TenantId,
+        DateTimeOffset CreatedUtc);
+
+    /// <summary>Why one task is waiting. <see cref="Conflict"/> is populated only
+    /// for <see cref="QueueWaitBlock.TargetBlocked"/> when the caller asked for
+    /// blocker detail (the detail pages); the list page renders the short form from
+    /// <see cref="Block"/> alone.</summary>
+    public sealed record QueueWaitResolution(
+        QueueWaitBlock Block,
+        ServerTaskTargetExclusion.TargetConflict? Conflict);
+
+    /// <summary>
+    /// Classifies why each candidate is waiting, in the order the CLAIM evaluates
+    /// the rules: F1's in-flight arm, F1's earlier-queued arm, then F6's target
+    /// exclusion — so a row and its detail page can never name different
+    /// constraints, and neither restates a rule the claim owns (F1 comes from
+    /// <c>ServerTaskLease.ClaimDeferralPredicate</c>, F6 from
+    /// <c>ServerTaskTargetExclusion</c>). The instance-wide maintenance gate
+    /// outranks all of this and is read once by the caller, since it is not
+    /// per-task.
+    /// <para>
+    /// One context for the whole batch and ONE consent round-trip for the whole
+    /// candidate set; the remaining reads are per candidate because both rules are
+    /// per-task (each row carries its own key, <c>CreatedUtc</c> and consent).
+    /// Re-expressing either rule set-wise would be a second encoding of it —
+    /// exactly the drift the shared predicates exist to prevent.
+    /// </para>
+    /// <para>
+    /// A backlog is exactly what F1/F6 make GROW (they bound what RUNS, not what
+    /// waits), so the candidate set is NOT inherently small — a deliberately flooded
+    /// queue would make the list page issue one read per row. The batch is therefore
+    /// capped at <see cref="QueueWaitResolveCap"/> rows (the oldest, i.e. those
+    /// closest to claiming and most worth explaining); rows past the cap are left
+    /// out of the result, so the list renders the generic "Waiting to start." for
+    /// them while their DETAIL page still resolves the full reason on demand. Not a
+    /// silent truncation — the cap is logged when it bites.
+    /// </para>
+    /// </summary>
+    public async Task<Dictionary<Guid, QueueWaitResolution>> ResolveQueueWaitsAsync(
+        IReadOnlyCollection<QueueWaitCandidate> candidates,
+        bool withBlockerDetail,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+        var resolved = new Dictionary<Guid, QueueWaitResolution>(candidates.Count);
+        if (candidates.Count == 0)
+        {
+            return resolved;
+        }
+
+        // Cap at the oldest N (a task's CreatedUtc is its FIFO rank — the oldest
+        // claim next, so their reasons are the ones an operator acts on). Anything
+        // past the cap falls through to the generic list message; the detail page
+        // resolves it individually.
+        var toResolve = candidates.Count <= QueueWaitResolveCap
+            ? candidates
+            : (IReadOnlyCollection<QueueWaitCandidate>)
+                [.. candidates.OrderBy(c => c.CreatedUtc).Take(QueueWaitResolveCap)];
+        if (toResolve.Count < candidates.Count)
+        {
+            logger.LogDebug(
+                "ResolveQueueWaitsAsync: {Total} queued candidates exceed the cap of {Cap}; " +
+                "resolving reasons for the {Resolved} oldest, the rest render the generic wait text.",
+                candidates.Count, QueueWaitResolveCap, toResolve.Count);
+        }
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var now = time.GetUtcNow();
+        var consenting = await ServerTaskTargetExclusion.SourceConsentingTaskIdsAsync(
+            db, [.. toResolve.Select(c => c.TaskId)], ct);
+
+        foreach (var candidate in toResolve)
+        {
+            // F1 first, exactly as the claim does — a same-key sibling is the more
+            // specific reason, and consenting to parallel execution never relaxes
+            // it, so naming F6 here would send the operator after the wrong knob.
+            // Deployments only: runbook runs are F1-exempt.
+            if (candidate.Kind == DomainTaskKind.Deployment)
+            {
+                var f1 = await deployments.GetSerializationBlockAsync(
+                    db, candidate.TaskId, candidate.ProjectId, candidate.EnvironmentId,
+                    candidate.TenantId, candidate.CreatedUtc, ct);
+                if (f1 != QueueWaitBlock.None)
+                {
+                    resolved[candidate.TaskId] = new QueueWaitResolution(f1, Conflict: null);
+                    continue;
+                }
+            }
+
+            // F6. The detail pages need the blocker + queue position; the list page
+            // needs only the yes/no, so it skips the label lookups entirely.
+            if (withBlockerDetail)
+            {
+                var conflict = await ServerTaskTargetExclusion
+                    .DescribeConflictAsync(db, candidate.TaskId, now, ct);
+                resolved[candidate.TaskId] = conflict is null
+                    ? new QueueWaitResolution(QueueWaitBlock.None, null)
+                    : new QueueWaitResolution(QueueWaitBlock.TargetBlocked, conflict);
+                continue;
+            }
+
+            var blocked = await ServerTaskTargetExclusion
+                .ConflictingTasksQuery(
+                    db, candidate.TaskId, consenting.Contains(candidate.TaskId),
+                    candidate.CreatedUtc, now)
+                .AnyAsync(ct);
+            resolved[candidate.TaskId] = new QueueWaitResolution(
+                blocked ? QueueWaitBlock.TargetBlocked : QueueWaitBlock.None, null);
+        }
+
+        return resolved;
+    }
+
+    /// <summary>Single-candidate form of <see cref="ResolveQueueWaitsAsync"/> for
+    /// the detail pages, which always want the blocker detail.</summary>
+    public async Task<QueueWaitResolution> ResolveQueueWaitAsync(
+        QueueWaitCandidate candidate, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        var resolved = await ResolveQueueWaitsAsync([candidate], withBlockerDetail: true, ct);
+        return resolved.TryGetValue(candidate.TaskId, out var reason)
+            ? reason
+            : new QueueWaitResolution(QueueWaitBlock.None, null);
+    }
+
     // Bounds on the Hangfire pull. Recurring jobs (subscription poller, scheduled-
     // dispatch, digest flush) fire every minute, so the succeeded bucket is the
     // noisy one; cap it and let the page's Kind filter isolate real deployments.
@@ -133,25 +289,51 @@ public sealed class ServerTasksService(
     /// </summary>
     private const int RecentRowCap = 500;
 
-    public async Task<List<ServerTaskRow>> GetTasksAsync(CancellationToken ct = default)
+    /// <summary>
+    /// Ceiling on how many Queued rows one <see cref="ResolveQueueWaitsAsync"/> call
+    /// explains, so a flooded queue cannot turn a list-page load into one read per
+    /// waiting row. The oldest this-many are resolved (they claim first); the rest
+    /// render the generic wait text and resolve individually on their detail page.
+    /// </summary>
+    public const int QueueWaitResolveCap = 50;
+
+    /// <summary>
+    /// The unified task list, optionally narrowed to one machine. The
+    /// <paramref name="targetId"/> filter (F6 — the Tasks page's <c>?target=</c>
+    /// query) resolves through the <c>task_target_assignments</c> join in the DB
+    /// services — the single authority for a task's target set. A row's
+    /// <c>Title</c>/<c>Target</c> strings never reliably contain machine names
+    /// (multi-target rows collapse to "N targets"), so a string match would be
+    /// wrong. System jobs carry no target and are omitted from a filtered read.
+    /// </summary>
+    public async Task<List<ServerTaskRow>> GetTasksAsync(
+        Guid? targetId = null, CancellationToken ct = default)
     {
         var rows = new List<ServerTaskRow>();
 
-        var deps = await deployments.GetAllAsync(limit: RecentRowCap, ct: ct);
+        var deps = targetId is { } tid
+            ? await deployments.GetForTargetAsync(tid, limit: RecentRowCap, ct: ct)
+            : await deployments.GetAllAsync(limit: RecentRowCap, ct: ct);
         rows.AddRange(deps.Select(ToRow));
 
-        var runs = await runbooks.GetAllRunsAsync(limit: RecentRowCap, ct: ct);
+        var runs = targetId is { } tid2
+            ? await runbooks.GetRunsForTargetAsync(tid2, limit: RecentRowCap, ct: ct)
+            : await runbooks.GetAllRunsAsync(limit: RecentRowCap, ct: ct);
         rows.AddRange(runs.Select(ToRow));
 
         // Hangfire is best-effort: a storage hiccup must never blank the whole
         // page (deployments + runbook runs are the operator's primary signal).
-        try
+        // Skipped under a target filter — system jobs run on no machine.
+        if (targetId is null)
         {
-            rows.AddRange(ReadSystemJobs());
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to read Hangfire system jobs for the Tasks page");
+            try
+            {
+                rows.AddRange(ReadSystemJobs());
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to read Hangfire system jobs for the Tasks page");
+            }
         }
 
         return rows

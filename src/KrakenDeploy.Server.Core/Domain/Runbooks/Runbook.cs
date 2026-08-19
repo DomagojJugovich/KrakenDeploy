@@ -36,4 +36,16 @@ public class Runbook : AuditableEntity, ISpaceScoped
     /// <c>keepOverride</c> hook.
     /// </summary>
     public int? RetentionKeepRuns { get; set; }
+
+    /// <summary>
+    /// F6 — author consent that this runbook's process is self-contained and may
+    /// run alongside other CONSENTING work on a shared machine. The runbook
+    /// analogue of <c>Project.AllowParallelTaskExecution</c> (a deliberately
+    /// SEPARATE flag — locked decision 2026-07-25: one project knob must not
+    /// silently cover its runbooks). OR-composed with the target's own flag into
+    /// the run's per-target mode at claim time and into
+    /// <c>DeploymentPlan.AllowParallelTaskExecution</c> at plan build. Default
+    /// <c>false</c>: runs hold each target exclusively for the whole plan.
+    /// </summary>
+    public bool AllowParallelTaskExecution { get; set; }
 }

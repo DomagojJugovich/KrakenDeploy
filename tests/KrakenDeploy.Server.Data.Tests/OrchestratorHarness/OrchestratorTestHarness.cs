@@ -10,6 +10,7 @@ using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Core.Domain.Security;
+using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Tenants;
 using KrakenDeploy.Server.Core.Domain.Variables;
@@ -345,7 +346,15 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
     /// <summary>Seeds N targets in the Default Space with TransportMode.Reverse
     /// (the agent-side mode the orchestrator targets). Returns them in the
     /// order names were supplied.</summary>
-    public async Task<List<DeploymentTarget>> SeedTargetsAsync(params string[] names)
+    public Task<List<DeploymentTarget>> SeedTargetsAsync(params string[] names)
+        => SeedTargetsInSpaceAsync(WellKnown.DefaultSpaceId, names);
+
+    /// <summary>As <see cref="SeedTargetsAsync"/> but in a caller-chosen Space —
+    /// for cross-Space isolation tests. Names need NOT be unique (nothing enforces
+    /// MachineName uniqueness), so two Spaces can hold identically-named targets
+    /// that are still distinct identities.</summary>
+    public async Task<List<DeploymentTarget>> SeedTargetsInSpaceAsync(
+        Guid spaceId, params string[] names)
     {
         ArgumentNullException.ThrowIfNull(names);
         await using var db = _postgres.CreateContext();
@@ -354,7 +363,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         {
             var t = new DeploymentTarget
             {
-                SpaceId       = WellKnown.DefaultSpaceId,
+                SpaceId       = spaceId,
                 Name          = n,
                 Roles         = ["web"],
                 TransportMode = TransportMode.Reverse,
@@ -365,6 +374,23 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         }
         await db.SaveChangesAsync();
         return list;
+    }
+
+    /// <summary>Seeds a second active Space (a real <c>spaces</c> row — the
+    /// ISpaceScoped FK is Restrict, so a Space must exist before anything can be
+    /// seeded into it). For cross-Space isolation tests.</summary>
+    public async Task<Guid> SeedSpaceAsync(string name)
+    {
+        await using var db = _postgres.CreateContext();
+        var space = new Space
+        {
+            Name   = name,
+            Slug   = $"sp-{Guid.NewGuid():N}"[..12],
+            Status = SpaceStatus.Active,
+        };
+        db.Spaces.Add(space);
+        await db.SaveChangesAsync();
+        return space.Id;
     }
 
     /// <summary>
@@ -405,6 +431,30 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         await db.DeploymentTargets.IgnoreQueryFilters()
             .Where(t => t.Id == targetId)
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.AllowParallelTaskExecution, allow));
+    }
+
+    /// <summary>F6 — flips a seeded project's parallel-execution consent, the
+    /// SOURCE side of the claim-time target exclusion for deployments.</summary>
+    public async Task SetProjectAllowParallelTaskExecutionAsync(Guid projectId, bool allow)
+    {
+        await using var db = _postgres.CreateContext();
+        await db.Projects.IgnoreQueryFilters()
+            .Where(p => p.Id == projectId)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.AllowParallelTaskExecution, allow));
+    }
+
+    /// <summary>F6 — flips the consent of the runbook OWNING the given run (the
+    /// harness seeds a fresh runbook per run, so tests address it via the run).</summary>
+    public async Task SetRunbookAllowParallelTaskExecutionForRunAsync(Guid runId, bool allow)
+    {
+        await using var db = _postgres.CreateContext();
+        var runbookId = await db.RunbookRuns.IgnoreQueryFilters()
+            .Where(r => r.Id == runId)
+            .Select(r => r.RunbookId)
+            .FirstAsync();
+        await db.Runbooks.IgnoreQueryFilters()
+            .Where(r => r.Id == runbookId)
+            .ExecuteUpdateAsync(s => s.SetProperty(r => r.AllowParallelTaskExecution, allow));
     }
 
     /// <summary>
