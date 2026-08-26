@@ -95,12 +95,12 @@
             </ul>
         </RadzenAlert>
     }
-    @if (_validation is { } v && v.WarningsOrEmpty.Count > 0)
+    @if (_validation is { } warningsView && warningsView.WarningsOrEmpty.Count > 0)
     {
         <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false"
                      class="rz-mb-3">
             <ul class="rz-mt-0 rz-mb-0" style="padding-left: 1.25rem;">
-                @foreach (var warning in v.WarningsOrEmpty)
+                @foreach (var warning in warningsView.WarningsOrEmpty)
                 {
                     <li>@warning</li>
                 }
@@ -418,6 +418,11 @@
     /// </summary>
     private ProcessValidator.Result? _validation;
 
+    /// <summary>The project <see cref="_validation"/> was computed for — a failed
+    /// refresh keeps the last result only for the SAME project, so navigating to
+    /// another project's process page cannot show the previous project's errors.</summary>
+    private Guid? _validationProjectId;
+
     /// <summary>
     /// Forces the Lifecycle aside visible on narrow viewports
     /// where it auto-collapses (see .kraken-process-layout--aside-open in
@@ -497,12 +502,19 @@
         try
         {
             _validation = await ProcessSvc.ValidateAsync(_project.Id);
+            _validationProjectId = _project.Id;
         }
         catch
         {
-            // Advisory surface only — a refresh failure must not take the
-            // process editor down with it.
-            _validation = null;
+            // Advisory surface only — a refresh failure must not take the process
+            // editor down with it. Deliberately KEEPS the last known result: nulling
+            // it would silently erase errors already on screen, and "no panel" is
+            // indistinguishable from "no errors". Kept only for the SAME project —
+            // another project's stale errors must never render here.
+            if (_validationProjectId != _project.Id)
+            {
+                _validation = null;
+            }
         }
     }
 

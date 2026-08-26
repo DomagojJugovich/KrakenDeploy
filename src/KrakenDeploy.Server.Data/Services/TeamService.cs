@@ -234,6 +234,29 @@ public class TeamService(IDbContextFactory<KrakenDbContext> dbFactory)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
+        // WP3-c — a system-only role (today: System Administrator) must not be pinned
+        // to a Space. The evaluator now honours the assignment's SpaceId, so a pinned
+        // AdministerSystem row is a broken grant: god mode inside one Space but denied
+        // for every system-wide surface (Hangfire dashboard, maintenance bypass,
+        // reach-every-Space). Refusing here — rather than silently widening to
+        // system-wide, which would be an escalation — keeps membership in the seeded
+        // system team as the one way to mint a global administrator.
+        if (spaceId is not null)
+        {
+            var isSystemOnly = await db.Roles
+                .Where(r => r.Id == roleId)
+                .Select(r => r.IsSystemOnly)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+            if (isSystemOnly)
+            {
+                throw new InvalidOperationException(
+                    "This role is system-only and cannot be pinned to a Space. Grant it " +
+                    "through the system-level team (no Space), or add the user to the " +
+                    "built-in administrators team instead.");
+            }
+        }
+
         var assignment = new RoleAssignment
         {
             TeamId  = teamId,

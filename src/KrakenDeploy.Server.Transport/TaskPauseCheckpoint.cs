@@ -65,6 +65,18 @@ internal sealed record TaskPauseCheckpoint
     /// </summary>
     public bool InterventionRejected { get; init; }
 
+    /// <summary>
+    /// WP3-c — an EARLIER resume of this task found its checkpoint no longer matched
+    /// the rebuilt wave partition and failed THROUGH the loop so cleanup could run.
+    /// Persisted for the same reason as <see cref="InterventionRejected"/>: a cleanup
+    /// wave can hold its own gate (<c>Condition=Always</c>/<c>Failure</c>), so the
+    /// fail-through can PAUSE again — without this field that second checkpoint would
+    /// carry only <see cref="HasFailed"/> and the run would finalise
+    /// <c>SucceededWithWarnings</c> instead of <c>Failed</c>. Defaults false on
+    /// checkpoints written before the field existed.
+    /// </summary>
+    public bool ResumeInvalidated { get; init; }
+
     /// <summary>Targets still eligible for later waves, in dispatch order. Drop-out
     /// is applied to the in-memory <c>aliveTargets</c> list only.</summary>
     public Guid[] AliveTargetIds { get; init; } = [];

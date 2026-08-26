@@ -46,11 +46,6 @@ public sealed class PermissionEvaluator(
     // ("non-concurrent collections must have exclusive access") on a cold
     // circuit. Each entry carries its fetch time so reads can honour the TTL.
     private readonly ConcurrentDictionary<CacheKey, CacheEntry<IReadOnlyList<RoleAssignment>>> _assignmentCache = new();
-    // WP3-c — keyed by (UserId, SpaceId), NOT just UserId: admin-ness is now
-    // scope-dependent (a Space-pinned AdministerSystem is god mode only inside
-    // that Space), so a per-user bool would serve the first Space's answer to
-    // every other Space for the TTL — a cross-Space grant/deny leak.
-    private readonly ConcurrentDictionary<CacheKey, CacheEntry<bool>> _systemAdminCache = new();
 
     public async Task<bool> HasPermissionAsync(
         ClaimsPrincipal user,
@@ -396,8 +391,10 @@ public sealed class PermissionEvaluator(
         //    that team's Space-scoped ProjectViewer grant on EVERY Space — total
         //    cross-tenant read. Include a per-Space Everyone team ONLY for Spaces
         //    the user is a real member of (i.e. belongs to a concrete team scoped
-        //    to that Space via a/b above). System admins are unaffected:
-        //    HasPermission/GetPermissions short-circuit before assignment lookup.
+        //    to that Space via a/b above). SYSTEM-scope admins are unaffected —
+        //    their short-circuit needs only the Space-less assignment — while a
+        //    Space-PINNED AdministerSystem (WP3-c) reaches its Space through the
+        //    same membership rules as any other grant.
         var memberSpaceIds = await db.Teams
             .Where(t => teamIds.Contains(t.Id) && t.SpaceId != null)
             .Select(t => t.SpaceId!.Value)
@@ -431,6 +428,11 @@ public sealed class PermissionEvaluator(
     /// question (Hangfire dashboard, maintenance bypass, "reach every Space"),
     /// which only a system-scope assignment may answer — previously a grant
     /// pinned to ONE Space short-circuited every check globally.
+    /// <para>
+    /// Answered from <see cref="GetCachedAssignmentsAsync"/>: since the Space-reach
+    /// predicate became identical to the assignment fetch's, a second query (and a
+    /// second cache that could drift from the first) bought nothing.
+    /// </para>
     /// </summary>
     private async Task<bool> UserIsSystemAdminAsync(
         ClaimsPrincipal user, Guid? spaceId, bool bypassCache, CancellationToken ct)
@@ -441,46 +443,9 @@ public sealed class PermissionEvaluator(
             return false;
         }
 
-        // Fast path — a fresh (within-TTL) cache entry, no DB needed. Keyed per
-        // (user, Space): the answer differs across Spaces now.
-        var key = new CacheKey(userId.Value, spaceId);
-        if (!bypassCache
-            && _systemAdminCache.TryGetValue(key, out var cached)
-            && IsFresh(cached.CachedAtUtc))
-        {
-            return cached.Value;
-        }
-
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-
-        var teamIds = await GetUserTeamIdsAsync(db, userId.Value, ct).ConfigureAwait(false);
-
-        bool isAdmin;
-        if (teamIds.Count == 0)
-        {
-            isAdmin = false;
-        }
-        else
-        {
-            // GrantedPermissions is a jsonb column — EF Core cannot translate
-            // Enumerable.Contains inside a server-side predicate. Pull only the
-            // permissions lists into memory and evaluate in C#.
-            // IgnoreQueryFilters is query-compilation-WIDE (EF Core 10, see
-            // execution-engine.md §6), so the SpaceId reach predicate below is
-            // deliberately explicit — same shape as GetCachedAssignmentsAsync.
-            var permissionLists = await db.RoleAssignments
-                .IgnoreQueryFilters()
-                .Where(a => teamIds.Contains(a.TeamId))
-                .Where(a => a.SpaceId == null || a.SpaceId == spaceId)
-                .Select(a => a.Role.GrantedPermissions)
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
-
-            isAdmin = permissionLists.Any(p => p.Contains(Permission.AdministerSystem));
-        }
-
-        _systemAdminCache[key] = new CacheEntry<bool>(isAdmin, timeProvider.GetUtcNow());
-        return isAdmin;
+        var assignments = await GetCachedAssignmentsAsync(userId.Value, spaceId, bypassCache, ct)
+            .ConfigureAwait(false);
+        return assignments.Any(a => a.Role.GrantedPermissions.Contains(Permission.AdministerSystem));
     }
 
     private bool IsFresh(DateTimeOffset cachedAtUtc) =>

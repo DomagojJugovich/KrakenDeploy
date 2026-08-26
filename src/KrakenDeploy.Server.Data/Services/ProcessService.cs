@@ -687,9 +687,10 @@ public class ProcessService(
     /// runner also accepts a slug or name, and re-implementing that resolution here would
     /// be a second source of truth for it).
     /// <para>
-    /// Public so the step editor can show it immediately after a save: <c>ValidateAsync</c>
-    /// is the aggregate view, but nothing in the product calls it yet, and an advisory
-    /// nobody sees is not worth computing.
+    /// Public so the step editor can show it immediately after a save. <c>ValidateAsync</c>
+    /// is the aggregate view (WP3-c wired it to the process page's validation panel and
+    /// <c>GET /api/projects/{id}/process/validation</c>); this per-step form stays so the
+    /// advisory appears the moment the step is saved, before any panel refresh.
     /// </para>
     /// </summary>
     public async Task<string?> DescribeGatedChildAsync(
@@ -719,8 +720,12 @@ public class ProcessService(
             return null;
         }
 
+        // Deliberately Space-FILTERED (WP3-c): the child project id is a raw Guid from
+        // the step's jsonb Config, not an FK, so a foreign Space's id can be planted
+        // there. An unfiltered lookup leaked that Space's project name and gate step
+        // names through the validation surface. A cross-Space child is not deployable
+        // anyway, so "no advisory" is also the accurate answer.
         var gateNames = await db.Processes
-            .IgnoreQueryFilters()
             .Where(p => p.OwnerKind == ProcessOwnerKind.Project && p.OwnerId == childProjectId)
             .SelectMany(p => p.Steps)
             // ILike keeps the comparison case-insensitive IN POSTGRES — a client-side
@@ -735,7 +740,7 @@ public class ProcessService(
             return null;
         }
 
-        var childName = await db.Projects.IgnoreQueryFilters()
+        var childName = await db.Projects
             .Where(p => p.Id == childProjectId)
             .Select(p => p.Name)
             .FirstOrDefaultAsync(ct)

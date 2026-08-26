@@ -105,7 +105,8 @@ internal static class ManualInterventionGate
     /// <summary>
     /// Decides what to do about <paramref name="gateSteps"/> on the wave about to run.
     /// <para>
-    /// <b>Order matters, and it is: recorded refusals → run condition → approvals.</b>
+    /// <b>Order matters, and it is: recorded refusals → run condition (recorded
+    /// approvals bypass it, WP3-c) → approvals.</b>
     /// </para>
     /// <para>
     /// <b>1. A recorded REFUSAL wins outright</b>, before the condition is consulted.
@@ -194,6 +195,25 @@ internal static class ManualInterventionGate
         foreach (var step in gateSteps)
         {
             var snapshot = snapshotSteps[step.Index];
+
+            // WP3-c — a recorded APPROVAL is honoured before the filter, the same
+            // way §1 honours a refusal and for the same reason: both filters read
+            // LIVE state and can flip during the pause. Without this, a fail-through
+            // resume (hasFailed forced true) recorded a human's approval as
+            // "Run condition excluded this gate" — the approval vanished from the
+            // change-control record. Identity is checked by NAME too: after a
+            // partition shift the same index can hold a different gate, and an
+            // approval must not launder onto it (step 4 refuses that case when the
+            // new gate is applicable; when the filter excludes it, the stale row is
+            // simply not consumed and the gate skips like any other excluded step).
+            if (existing.TryGetValue(step.Index, out var priorDecision)
+                && priorDecision.Status == InterruptionStatus.Approved
+                && string.Equals(priorDecision.StepName, snapshot.Name, StringComparison.Ordinal))
+            {
+                applicable.Add(step);
+                continue;
+            }
+
             var decision = StepConditionEvaluator.Evaluate(
                 snapshot.Condition, snapshot.ConditionVariableExpression,
                 hasFailedAtWaveStart, varDict);
@@ -244,9 +264,24 @@ internal static class ManualInterventionGate
             // gated wave, with OutcomeFor then throwing out of the wave loop.
             switch (interruption.Status)
             {
-                case InterruptionStatus.Approved:
+                // WP3-c — the approval must belong to THIS gate. StepIndex alone is
+                // not identity once a partition shift is survivable (the fail-through
+                // resume): the same index can now hold a different gate, and applying
+                // the old approval to it would run work nobody reviewed.
+                case InterruptionStatus.Approved when string.Equals(
+                    interruption.StepName, snapshotSteps[step.Index].Name,
+                    StringComparison.Ordinal):
                     resolved.Add(interruption);
                     break;
+
+                case InterruptionStatus.Approved:
+                    return new ManualGateDecision(ManualGateAction.Fail, interruption,
+                        FailureReason:
+                        $"A recorded approval belongs to step '{interruption.StepName}', " +
+                        $"but this wave's gate is '{snapshotSteps[step.Index].Name}'. The " +
+                        "plan shifted while the task was paused — refusing to apply an " +
+                        "approval to a different gate.",
+                        SkippedSteps: skipped, SkipReason: skipReason);
 
                 case InterruptionStatus.Pending:
                     // An INVARIANT VIOLATION, not a state to recover from: the only way

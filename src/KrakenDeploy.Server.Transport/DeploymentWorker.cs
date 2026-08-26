@@ -1287,6 +1287,11 @@ public sealed class DeploymentWorker(
             // runs so Failure/Always cleanup executes — an early FailAsync here
             // was exactly the fail-without-cleanup shape WP3-b removed.
             var resumeInvalidated = false;
+            // WP3-c — during a fail-through resume whose wave COUNT still matches,
+            // the checkpoint's recorded kinds; a wave whose kind flipped is skipped
+            // instead of executed on the unapproved side. Null when no per-index
+            // comparison is possible (fresh dispatch, clean resume, count mismatch).
+            string[]? invalidatedWaveKinds = null;
             // WP3 — the wave to start at. 0 for a fresh dispatch; the checkpoint's
             // resume point when continuing past an approved gate.
             var startWaveIndex = 0;
@@ -1339,17 +1344,38 @@ public sealed class DeploymentWorker(
                     // waves.Count — no remaining wave can be mapped, so the run goes
                     // straight to Failed finalisation without re-running earlier
                     // waves' Always steps a second time.
+                    logger.LogWarning(
+                        "Task {Id} ({Kind}) resume invalidated: {Reason}",
+                        deployment.Id, deployment.Kind, rf.Reason);
                     hasFailed            = true;
                     resumeInvalidated    = true;
                     interventionRejected = cp.InterventionRejected;
+                    // Per-index kind verification is only meaningful when the counts
+                    // still line up (the kind-flip arm). On a COUNT mismatch the old
+                    // kinds cannot be mapped onto the new partition — that residual
+                    // is documented in design-manual-intervention.md §11.
+                    invalidatedWaveKinds = cp.WaveKinds.Length == waves.Count
+                        ? cp.WaveKinds
+                        : null;
                     startWaveIndex       = cp.ResumeWaveIndex >= 0 && cp.ResumeWaveIndex < waves.Count
                         ? cp.ResumeWaveIndex
                         : waves.Count;
+                    if (startWaveIndex >= waves.Count)
+                    {
+                        // Be truthful with the operator: the mismatch message says
+                        // cleanup runs where waves still map — here nothing maps.
+                        await logSeq.AppendAsync(-1, null, "error",
+                            "--- No remaining wave maps onto the re-partitioned plan — " +
+                            "no cleanup steps could be run. ---", ct).ConfigureAwait(false);
+                    }
                 }
                 else
                 {
                     hasFailed            = cp.HasFailed;
                     interventionRejected = cp.InterventionRejected;
+                    // WP3-c — an earlier fail-through may have re-paused at a cleanup
+                    // gate; the Failed verdict must survive that checkpoint.
+                    resumeInvalidated    = cp.ResumeInvalidated;
                     startWaveIndex       = cp.ResumeWaveIndex;
                 }
                 // NOTE: the checkpoint column was already cleared by TryResumeAsync's
@@ -1387,6 +1413,32 @@ public sealed class DeploymentWorker(
                         "Deployment {Id} no longer Running — halting before the remaining wave(s).",
                         deployment.Id);
                     return;
+                }
+
+                // ── WP3-c: fail-through locus guard ──────────────────────────
+                // A fail-through resume must never EXECUTE a wave whose execution
+                // side no longer matches what was approved — that is the harm the
+                // wave-kind check exists to prevent, and it applies to the
+                // Failure/Always cleanup steps too. The flipped wave is skipped
+                // (with visible outcomes); kind-stable waves still run cleanup.
+                // Sits AFTER the ownership boundary so a cancelled/reaped task
+                // stops writing outcome rows exactly like every other wave.
+                if (resumeInvalidated
+                    && invalidatedWaveKinds is not null
+                    && !string.Equals(
+                        invalidatedWaveKinds[waveIndex], wave.Kind.ToString(),
+                        StringComparison.Ordinal))
+                {
+                    await RecordSkippedStepsAsync(
+                        db, logSeq, deployment, wave.Steps,
+                        canonicalCtx.SnapshotByPlanIndex,
+                        what: "step",
+                        $"This wave ran {invalidatedWaveKinds[waveIndex]}-side when the " +
+                        $"task was approved but now routes {wave.Kind}-side — not run.",
+                        timeProvider, ct,
+                        isServerSide: wave.Kind == WavePartitioner.WaveKind.Server)
+                        .ConfigureAwait(false);
+                    continue;
                 }
 
                 // ── WP3: manual-intervention gate ───────────────────────────
@@ -1444,7 +1496,14 @@ public sealed class DeploymentWorker(
                         await PauseForInterventionAsync(
                             db, deployment, source.Audit, auditLog, logSeq,
                             decision.Pending!, decision.ResponsibleTeamNames,
-                            waveIndex, waves, hasFailed, interventionRejected, aliveTargets,
+                            waveIndex, waves, hasFailed, interventionRejected,
+                            resumeInvalidated,
+                            // WP3-c — during an invalidated fail-through, checkpoint
+                            // the APPROVED kinds, not the flipped partition's: a
+                            // re-snapshot would make the next resume's kind check
+                            // pass and drop the locus guard on the remaining waves.
+                            overrideWaveKinds: invalidatedWaveKinds,
+                            aliveTargets,
                             droppedTargets, softFailedTargets, outputAccumulator,
                             encryption, ct).ConfigureAwait(false);
                         return;
@@ -2251,6 +2310,8 @@ public sealed class DeploymentWorker(
         IReadOnlyList<WavePartitioner.Wave> waves,
         bool hasFailed,
         bool interventionRejected,
+        bool resumeInvalidated,
+        string[]? overrideWaveKinds,
         IReadOnlyList<DeploymentTarget> aliveTargets,
         IReadOnlyList<DroppedTargetInfo> droppedTargets,
         IReadOnlySet<Guid> softFailedTargets,
@@ -2263,13 +2324,19 @@ public sealed class DeploymentWorker(
         {
             ResumeWaveIndex      = waveIndex,
             // Recorded so the resume can prove the remaining waves still run on the
-            // side they ran on when the approval was given.
-            WaveKinds            = [.. waves.Select(w => w.Kind.ToString())],
+            // side they ran on when the approval was given. During an invalidated
+            // fail-through the caller passes the ORIGINAL approved kinds (WP3-c) —
+            // re-snapshotting the already-flipped partition would launder the flip
+            // into a checkpoint the next resume's kind check accepts.
+            WaveKinds            = overrideWaveKinds ?? [.. waves.Select(w => w.Kind.ToString())],
             HasFailed            = hasFailed,
             // Without this a rejection recorded on an EARLIER wave is lost across this
             // pause, and the run finalises SucceededWithWarnings after the next gate is
             // approved — a refused change reported as a warning-level success.
             InterventionRejected = interventionRejected,
+            // WP3-c — same rationale: a fail-through can pause again at a cleanup
+            // wave's own gate, and the Failed verdict must survive that checkpoint.
+            ResumeInvalidated    = resumeInvalidated,
             AliveTargetIds      = [.. aliveTargets.Select(t => t.Id)],
             DroppedTargets      = [.. droppedTargets.Select(d => new CheckpointDroppedTarget(
                                       d.Target.Id, d.Reason.ToString(), d.StepName, d.Error))],
@@ -2403,12 +2470,13 @@ public sealed class DeploymentWorker(
     }
 
     /// <summary>
-    /// Records a <c>Skipped</c> outcome + log line for steps the gate block removed
-    /// from a wave without running them, so they behave like every other skipped step
-    /// instead of silently vanishing from the Steps tab. Two callers, both in the gate
-    /// block: gates their own run condition or role filter excluded
-    /// (<paramref name="what"/> = "manual intervention"), and the non-gate companions of
-    /// a wave abandoned because a gate was refused (<paramref name="what"/> = "step").
+    /// Records a <c>Skipped</c> outcome + log line for steps a wave-level decision
+    /// removed without running them, so they behave like every other skipped step
+    /// instead of silently vanishing from the Steps tab. Callers: gates their own run
+    /// condition or role filter excluded (<paramref name="what"/> = "manual
+    /// intervention"), the non-gate companions of a wave abandoned because a gate was
+    /// refused, and (WP3-c) a fail-through wave whose kind flipped — the only caller
+    /// that can pass a TARGET-kind wave, hence <paramref name="isServerSide"/>.
     /// <para>
     /// No <see cref="Interruption"/> row is created and nothing is audited: a step that
     /// did not run was never a change-control question, so putting it in front of a
@@ -2429,7 +2497,8 @@ public sealed class DeploymentWorker(
         string what,
         string reason,
         TimeProvider time,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool isServerSide = true)
     {
         var now = time.GetUtcNow();
         foreach (var step in skippedSteps)
@@ -2444,7 +2513,7 @@ public sealed class DeploymentWorker(
                 errorMessage: reason,
                 startedUtc:   null,
                 completedUtc: now,
-                isServerSide: true,
+                isServerSide: isServerSide,
                 required:     snap.Required, ct).ConfigureAwait(false);
         }
 
@@ -2496,6 +2565,10 @@ public sealed class DeploymentWorker(
         DeploymentOutputAccumulator outputAccumulator,
         bool isRunbookRun)
     {
+        // A runbook run has no release, so "re-deploy the release" is not an action
+        // its operator can take.
+        var redoAdvice = isRunbookRun ? "re-run the runbook" : "re-deploy the release";
+
         var byId = targets.ToDictionary(t => t.Id);
 
         aliveTargets.Clear();
@@ -2506,7 +2579,7 @@ public sealed class DeploymentWorker(
                 return new RestoreFailure(
                     $"Resume checkpoint lists target {id} as still deploying, but it is no " +
                     "longer assigned to this task. The target set changed while the task was " +
-                    "paused — re-deploy the release.",
+                    $"paused — {redoAdvice}.",
                     FailThroughCleanup: false);
             }
             aliveTargets.Add(target);
@@ -2522,7 +2595,7 @@ public sealed class DeploymentWorker(
                 return new RestoreFailure(
                     $"Resume checkpoint records target {dropped.TargetId} as dropped, but it " +
                     "is no longer assigned to this task. The target set changed while the " +
-                    "task was paused — re-deploy the release.",
+                    $"task was paused — {redoAdvice}.",
                     FailThroughCleanup: false);
             }
             if (!Enum.TryParse<DropReason>(dropped.Reason, out var reason))
@@ -2547,10 +2620,11 @@ public sealed class DeploymentWorker(
             ? "Runbook runs resolve variables live, so a variable edited while this " +
               "run was paused — typically one driving a ForEach collection — is the " +
               "likely cause (a runbook process edit would do the same). Cleanup steps " +
-              "(run condition Failure/Always) still run; review the change and re-run " +
-              "the runbook."
+              "(run condition Failure/Always) run where the remaining waves still " +
+              "map; review the change and re-run the runbook."
             : "The approved process no longer matches this task. Cleanup steps (run " +
-              "condition Failure/Always) still run — re-deploy the release.";
+              "condition Failure/Always) run where the remaining waves still map — " +
+              "re-deploy the release.";
 
         if (checkpoint.ResumeWaveIndex < 0 || checkpoint.ResumeWaveIndex >= waves.Count)
         {
@@ -2590,8 +2664,9 @@ public sealed class DeploymentWorker(
                         $"Wave {(i + 1).ToString(CultureInfo.InvariantCulture)} ran " +
                         $"{checkpoint.WaveKinds[i]}-side when this task was approved but " +
                         $"now routes {nowKind}-side. A step package's declared execution " +
-                        "locus changed while the task was paused — re-deploy the release " +
-                        "so the change is reviewed and approved explicitly.",
+                        $"locus changed while the task was paused — {redoAdvice} " +
+                        "so the change is reviewed and approved explicitly. Flipped waves " +
+                        "are skipped; cleanup runs only in waves whose side is unchanged.",
                         FailThroughCleanup: true);
                 }
             }

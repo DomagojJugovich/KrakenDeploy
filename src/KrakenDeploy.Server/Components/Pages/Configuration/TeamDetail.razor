@@ -480,14 +480,24 @@ else
 
         if (!await Guard.AllowAsync(Permission.TeamEdit)) return;
 
-        await TeamSvc.AddRoleAssignmentAsync(
-            teamId: _team.Id,
-            roleId: _assignRoleId.Value,
-            spaceId: _team.SpaceId ?? SpaceCtx.CurrentSpaceId,
-            projectGroupIds: null,
-            projectIds: _assignProjectIds.ToList(),
-            environmentIds: _assignEnvironmentIds.ToList(),
-            tenantIds: _assignTenantIds.ToList());
+        try
+        {
+            await TeamSvc.AddRoleAssignmentAsync(
+                teamId: _team.Id,
+                roleId: _assignRoleId.Value,
+                spaceId: _team.SpaceId ?? SpaceCtx.CurrentSpaceId,
+                projectGroupIds: null,
+                projectIds: _assignProjectIds.ToList(),
+                environmentIds: _assignEnvironmentIds.ToList(),
+                tenantIds: _assignTenantIds.ToList());
+        }
+        catch (InvalidOperationException ex)
+        {
+            // WP3-c — the service refuses e.g. a system-only role pinned to a Space;
+            // surface the reason instead of tearing the circuit down.
+            Notify.Notify(NotificationSeverity.Error, "Assignment refused", ex.Message, 8000);
+            return;
+        }
 
         _showAddAssignmentForm = false;
         _assignRoleId          = null;

@@ -1176,14 +1176,28 @@ public sealed class StepBuilder
     /// wave partitioner classifies it server-side, so it runs in-process on the
     /// orchestrator, NOT on the target agent — the D1 security fix for runbook
     /// runs (which previously executed RunOnServer steps on the target because
-    /// the partitioner never ran).</summary>
-    public static StepBuilder ServerScript(string name, bool required = true)
+    /// the partitioner never ran). WP3-c: pass <paramref name="scriptBody"/> when
+    /// the step must actually EXECUTE and succeed — server scripts run for real,
+    /// and an empty body is a runner error.</summary>
+    public static StepBuilder ServerScript(
+        string name,
+        bool required = true,
+        KrakenDeploy.Execution.StepCondition condition
+            = KrakenDeploy.Execution.StepCondition.Success,
+        string? scriptBody = null)
         => new()
         {
             Name        = name,
             StepType    = "Octopus.Script",
             Required    = required,
             RunOnServer = true,
+            Condition   = condition,
+            Config      = scriptBody is null
+                ? null
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Octopus.Action.Script.ScriptBody"] = scriptBody,
+                },
         };
 
     /// <summary>

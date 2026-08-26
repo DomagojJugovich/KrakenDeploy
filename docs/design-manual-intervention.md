@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.5 |
+| **Version** | 1.6 |
 | **Date** | 2026-08-26 |
 | **Authors** | Domagoj Jugovic, Claude (Opus 5) |
 | **Status** | Draft |
@@ -153,7 +153,18 @@ still runs against the restored target state, and a new `resumeInvalidated`
 resolver input forces `Failed`), while target-set corruption still hard-fails
 before the loop, because no wave has a trustworthy target set to run cleanup
 against. On a runbook run the wave-count message names a live-variable edit as
-the likely cause rather than blaming the process.
+the likely cause rather than blaming the process. Guard rails on the
+fail-through (post-review): `ResumeInvalidated` is a CHECKPOINT field, so the
+verdict survives a second pause at a cleanup wave's own gate; when the wave
+count still matches, a wave whose KIND flipped is skipped (with visible
+outcomes) rather than executed on the unapproved side; when the count changed,
+per-index kind verification is impossible and an out-of-range resume point runs
+no cleanup at all — both logged truthfully. Two accepted residuals: on an
+in-range count mismatch an `Always` step that executed before the pause can run
+a second time (the engine already requires step idempotency —
+`execution-engine.md` §9 "Wave retries re-run whole sub-plans"), and cleanup
+waves on the count-mismatch arm run on unverified kinds (a registry change in
+the same window as a variable edit).
 
 ## 5. Data model
 
@@ -357,6 +368,7 @@ engine notes at the bottom; the master plan's WP3-c row records the decisions.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.6 | 2026-08-26 | **WP3-c max-effort review remediation** (§4.3, §6, §11). Fail-through hardening: `ResumeInvalidated` persisted in `TaskPauseCheckpoint` (a re-pause at a cleanup gate no longer downgrades `Failed` to `SucceededWithWarnings`); kind-flipped waves are SKIPPED with visible outcomes instead of executed on the unapproved side; the out-of-range arm logs "no cleanup could be run" and the mismatch messages stopped over-promising; target-corruption/kind-flip advice is kind-aware ("re-run the runbook"). Gate: a recorded APPROVAL now outranks the run-condition filter (the fail-through's `hasFailed` recorded approvals as condition-skipped) and decisions are identity-checked by step NAME, refusing an approval laundered onto a different gate by a partition shift. RBAC: the gated-child advisory no longer reads past the Space filter (a planted foreign project id leaked that Space's project name + gate names); `TeamService.AddRoleAssignmentAsync` refuses pinning a system-only role to a Space; `UserIsSystemAdminAsync` answers from the shared assignment cache (second cache deleted). Two accepted residuals documented in §4.3. |
 | 1.5 | 2026-08-26 | **WP3-c — the three fixable residuals are FIXED** (§4.3, §11). (a) `ProcessService.ValidateAsync` wired: new `GET /api/projects/{projectId}/process/validation` (`ProcessView`, Space-filtered project lookup → 404 on foreign ids) + a validation panel on the process page (Errors + Warnings, refreshed per step mutation); the per-save advisory stays. (b) A resume checkpoint invalidated by a wave-count/wave-kind change now fails THROUGH the wave loop — new `resumeInvalidated` resolver input (Failed in every mode), `Failure`/`Always` cleanup runs, runbook message names a live-variable edit as the likely cause; the runbook variable contract is UNCHANGED (no trigger-time snapshot), and target-set corruption still hard-fails without cleanup. (c) `PermissionEvaluator.UserIsSystemAdminAsync` honours `RoleAssignment.SpaceId` (Space-pinned `AdministerSystem` = god mode only in that Space; system-wide checks need a Space-less assignment); `_systemAdminCache` re-keyed to (user, Space). Privilege reduction only — the seeder never creates Space-pinned `AdministerSystem` rows, so no migration. The two engine notes (no server-wave deadline ceiling; checkpoint only at pause boundary) remain documented-and-accepted. |
 | 1.4 | 2026-07-30 | §11 residuals are now TRACKED rather than described: the `Engine:DefaultInterventionTimeout` breadcrumb (plus `Engine:MaxDeployReleaseGatedWaitDuration`, both positive-only) folded into the master plan's **F3** row, and the remaining four grouped as **WP3-c** "polishing". Three of those four are pre-existing defects WP3 illuminated rather than caused, which is why they are a separate WP and not a WP3 follow-up commit. |
 | 1.3 | 2026-07-30 | Corrects §11: two entries were listed as open but had already been fixed later in the same WP3-b pass — `ForEach` flatten warnings no longer re-emit on a resume dispatch (`DeploymentWorker.isResumeDispatch`), and an API-key response is now labelled `(via API key)` in the responder display (`InterruptionService.ResponderLabel`). No code change; the section was written before those two fixes landed and not revisited. |

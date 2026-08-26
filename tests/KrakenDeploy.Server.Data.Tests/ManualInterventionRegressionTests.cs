@@ -469,20 +469,10 @@ public sealed class ManualInterventionRegressionTests(PostgresFixture postgres)
         [
             StepBuilder.Manual("hold"),
             group,
-            new StepBuilder
-            {
-                Name = "iterate", StepType = "Octopus.Script", RunOnServer = true,
-            }.InGroup(group.Id),
-            new StepBuilder
-            {
-                Name = "cleanup", StepType = "Octopus.Script", RunOnServer = true,
-                Required = false, Condition = StepCondition.Always,
-                // Server scripts execute for real — an empty body is a runner error.
-                Config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["Octopus.Action.Script.ScriptBody"] = "Write-Host cleanup",
-                },
-            },
+            StepBuilder.ServerScript("iterate").InGroup(group.Id),
+            StepBuilder.ServerScript(
+                "cleanup", required: false,
+                condition: StepCondition.Always, scriptBody: "Write-Host cleanup"),
         ]);
 
         await harness.RunDeploymentAsync(runId);
@@ -506,6 +496,10 @@ public sealed class ManualInterventionRegressionTests(PostgresFixture postgres)
             o => o.StepName == "cleanup" && o.Outcome == StepOutcomeKind.Succeeded,
             because: "the mismatch must fail THROUGH the wave loop so Condition=Always " +
                      "cleanup still executes — abort-before-resume left no cleanup at all");
+        outcomes.Should().Contain(
+            o => o.StepName == "hold" && o.Outcome == StepOutcomeKind.ManualInterventionApproved,
+            because: "the recorded approval outranks the run-condition filter — the " +
+                     "fail-through's hasFailed must not re-record it as condition-skipped");
 
         // The task is terminal, so the banner has been compacted from staging into
         // the step-log blobs — read through the stitched view.
@@ -530,16 +524,9 @@ public sealed class ManualInterventionRegressionTests(PostgresFixture postgres)
             project.Id, "1.0",
             StepBuilder.Manual("hold"),
             StepBuilder.Script("work"), // target-side when the approval was given
-            new StepBuilder
-            {
-                Name = "cleanup", StepType = "Octopus.Script", RunOnServer = true,
-                Required = false, Condition = StepCondition.Always,
-                // Server scripts execute for real — an empty body is a runner error.
-                Config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["Octopus.Action.Script.ScriptBody"] = "Write-Host cleanup",
-                },
-            });
+            StepBuilder.ServerScript(
+                "cleanup", required: false,
+                condition: StepCondition.Always, scriptBody: "Write-Host cleanup"));
         var taskId = await harness.CreateDeploymentAsync(release.Id, env.Id, targets);
         var agent = harness.ConnectFakeAgent(targets[0]);
 
@@ -547,8 +534,9 @@ public sealed class ManualInterventionRegressionTests(PostgresFixture postgres)
         (await harness.GetServerTaskAsync(taskId)).Status.Should().Be(DeploymentStatus.Paused);
 
         // The registry is read LIVE on every dispatch, so this flips the "work"
-        // wave's kind under the pause. The catalog is class-shared — restore it.
-        await SetScriptLocusAsync(harness, StepTypeExecutionLocus.ServerRunner);
+        // wave's kind under the pause. The catalog is class-shared — restore the
+        // CAPTURED value, not a guess at the seeded default.
+        var originalLocus = await SetScriptLocusAsync(harness, StepTypeExecutionLocus.ServerRunner);
         try
         {
             var gate = (await harness.GetInterruptionsAsync(taskId)).Single();
@@ -557,7 +545,7 @@ public sealed class ManualInterventionRegressionTests(PostgresFixture postgres)
         }
         finally
         {
-            await SetScriptLocusAsync(harness, StepTypeExecutionLocus.AgentPackage);
+            await SetScriptLocusAsync(harness, originalLocus);
         }
 
         (await harness.GetServerTaskAsync(taskId)).Status.Should().Be(DeploymentStatus.Failed,
@@ -582,16 +570,73 @@ public sealed class ManualInterventionRegressionTests(PostgresFixture postgres)
             because: "the kind-flip keeps its own message — a package change, not a variable");
     }
 
-    /// <summary>Flips the seeded script step types' execution locus in the LIVE
+    [Fact]
+    public async Task An_invalidated_resume_verdict_survives_a_second_pause_at_a_cleanup_gate()
+    {
+        // The fail-through sets hasFailed, which makes a Condition=Always cleanup
+        // gate applicable — the run pauses AGAIN. Without TaskPauseCheckpoint
+        // carrying ResumeInvalidated, the second resume restored only HasFailed and
+        // the run finalised SucceededWithWarnings: a plan that was never executed
+        // reported as a warning-level success.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var (project, env, targets) = await SeedAsync(harness, "reinv");
+        var variableId = await harness.SeedVariableAsync(
+            project.Id, "Servers", "one,two", VariableType.StringArray);
+
+        var group = new StepBuilder
+        {
+            Name              = "loop",
+            StepType          = KrakenStepTypes.StepGroup,
+            Required          = false,
+            ForEachCollection = "Servers",
+        };
+        var runId = await harness.CreateRunbookRunAsync(project.Id, env.Id, targets,
+        [
+            StepBuilder.Manual("hold"),
+            group,
+            StepBuilder.ServerScript("iterate").InGroup(group.Id),
+            StepBuilder.Manual("confirm-rollback", required: false,
+                condition: StepCondition.Always),
+        ]);
+
+        await harness.RunDeploymentAsync(runId);
+        await harness.UpdateVariableValueAsync(
+            variableId, "Servers", "one,two,three", VariableType.StringArray);
+
+        var holdGate = (await harness.GetInterruptionsAsync(runId)).Single();
+        await harness.ResolveInterruptionAsync(holdGate.Id, InterruptionStatus.Approved);
+        await harness.RunDeploymentAsync(runId);
+
+        // The fail-through reached the Always-conditioned cleanup gate and paused.
+        (await harness.GetServerTaskAsync(runId)).Status.Should().Be(DeploymentStatus.Paused,
+            because: "a cleanup gate is still a gate — the fail-through parks on it");
+
+        var rollbackGate = (await harness.GetInterruptionsAsync(runId))
+            .Single(i => i.StepName == "confirm-rollback");
+        await harness.ResolveInterruptionAsync(rollbackGate.Id, InterruptionStatus.Approved);
+        await harness.RunDeploymentAsync(runId);
+
+        (await harness.GetServerTaskAsync(runId)).Status.Should().Be(DeploymentStatus.Failed,
+            because: "the invalidated-resume verdict must survive the second checkpoint — " +
+                     "hasFailed alone would launder it into SucceededWithWarnings");
+    }
+
+    /// <summary>Flips the seeded script step type's execution locus in the LIVE
     /// registry — the mechanism by which a step-package install during an approval
-    /// window changes a wave's kind.</summary>
-    private static async Task SetScriptLocusAsync(
+    /// window changes a wave's kind. Returns the PREVIOUS locus so the caller can
+    /// restore the class-shared catalog exactly.</summary>
+    private static async Task<StepTypeExecutionLocus> SetScriptLocusAsync(
         OrchestratorTestHarness harness, StepTypeExecutionLocus locus)
     {
         await using var db = harness.CreateContext();
+        var current = await db.StepTypes
+            .Where(t => t.TypeId == "octopus.script")
+            .Select(t => t.ExecutionLocus)
+            .FirstAsync();
         await db.StepTypes
             .Where(t => t.TypeId == "octopus.script")
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.ExecutionLocus, locus));
+        return current;
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
