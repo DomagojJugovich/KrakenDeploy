@@ -513,10 +513,9 @@ public sealed class InterruptionService(
         //
         // SCOPED to this task (WP3-b). An unscoped check would let AdministerSystem
         // granted for one Space override an author-chosen approver restriction in
-        // another. NOTE this only closes the call site: PermissionEvaluator's
-        // system-admin short-circuit still ignores the role assignment's own SpaceId, so
-        // a Space-pinned AdministerSystem grant remains global there — pre-existing and
-        // out of scope for WP3-b, flagged in the plan.
+        // another. WP3-c closed the other half: PermissionEvaluator's system-admin
+        // short-circuit now honours the role assignment's own SpaceId too, so a
+        // Space-pinned AdministerSystem grant is no longer global anywhere.
         var isAdmin = await permissions.HasPermissionAsync(
             caller.User, Permission.AdministerSystem,
             ScopeOf(interruption.Task), bypassCache: true, ct: ct).ConfigureAwait(false);

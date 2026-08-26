@@ -48,6 +48,21 @@ public sealed class DeploymentTerminalStatusResolverTests
     [Theory]
     [InlineData(DeploymentFailureMode.BestEffort)]
     [InlineData(DeploymentFailureMode.Atomic)]
+    public void An_invalidated_resume_is_Failed_in_every_mode(DeploymentFailureMode mode)
+        // WP3-c — the pause checkpoint no longer matched the rebuilt wave partition
+        // and the run failed THROUGH the loop so cleanup could execute. Same
+        // rationale as interventionRejected: however cleanly the cleanup ran, the
+        // approved work was not done, and hasFailed alone would report
+        // SucceededWithWarnings.
+        => DeploymentTerminalStatusResolver.Resolve(
+                mode, hasFailed: true, requiredStepDropped: false,
+                droppedTargetCount: 0, softFailedCount: 0,
+                resumeInvalidated: true)
+            .Should().Be(DeploymentStatus.Failed);
+
+    [Theory]
+    [InlineData(DeploymentFailureMode.BestEffort)]
+    [InlineData(DeploymentFailureMode.Atomic)]
     public void Clean_run_is_Succeeded(DeploymentFailureMode mode)
         => Resolve(mode, hasFailed: false, requiredDropped: false,
                    droppedCount: 0, softFailedCount: 0)

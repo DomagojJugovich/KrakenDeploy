@@ -18,8 +18,11 @@ public interface IPermissionEvaluator
 {
     /// <summary>
     /// True when <paramref name="user"/> has <paramref name="permission"/>
-    /// within <paramref name="scope"/>. Always true for users with the
-    /// <see cref="Permission.AdministerSystem"/> permission anywhere.
+    /// within <paramref name="scope"/>. Always true when the user holds
+    /// <see cref="Permission.AdministerSystem"/> with reach over the scope's
+    /// Space (WP3-c): a system-scope assignment (<c>RoleAssignment.SpaceId ==
+    /// null</c>) is god mode everywhere, a Space-pinned one only inside its
+    /// own Space.
     /// <para>
     /// Set <paramref name="bypassCache"/> for an authoritative, never-stale
     /// read — used by execution-time action guards so a stale UI cache cannot
@@ -56,12 +59,15 @@ public interface IPermissionEvaluator
     /// <summary>
     /// Returns the set of Space ids <paramref name="user"/> may access. The
     /// authoritative source for the hard tenant boundary: every <em>Active</em>
-    /// Space when the user holds <see cref="Permission.AdministerSystem"/>;
-    /// otherwise the Active Spaces they reach through a <em>real</em> team
-    /// membership (explicit <c>TeamMember</c>, external-group match, or a
-    /// per-Space "Everyone" team they belong to). System-wide role assignments
-    /// (<c>RoleAssignment.SpaceId == null</c>) pin no Space and are excluded —
-    /// they are only meaningful for the AdministerSystem short-circuit above.
+    /// Space when the user holds <see cref="Permission.AdministerSystem"/>
+    /// through a system-scope (Space-less) assignment; otherwise the Active
+    /// Spaces they reach through a <em>real</em> team membership (explicit
+    /// <c>TeamMember</c>, external-group match, or a per-Space "Everyone" team
+    /// they belong to). A Space-PINNED AdministerSystem assignment reaches its
+    /// own Space through that membership sweep like any other Space-scoped
+    /// grant (WP3-c). System-wide role assignments (<c>RoleAssignment.SpaceId
+    /// == null</c>) pin no Space and are excluded from the sweep — they are
+    /// only meaningful for the AdministerSystem short-circuit above.
     /// <para>
     /// Used to gate the Space switcher, the <c>/api/spaces</c> listing, and the
     /// active-space cookie/circuit resolution. Returns an empty set for an

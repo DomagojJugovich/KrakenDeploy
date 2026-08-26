@@ -34,16 +34,26 @@ public static class DeploymentTerminalStatusResolver
     /// early <c>FailAsync</c> at the gate because the run must CONTINUE past the gate
     /// to execute its <c>Failure</c>/<c>Always</c> cleanup steps.
     /// </param>
+    /// <param name="resumeInvalidated">
+    /// WP3-c — the pause checkpoint no longer matched the rebuilt wave partition
+    /// (wave count changed, or a wave's execution side flipped) and the run failed
+    /// THROUGH the wave loop so <c>Failure</c>/<c>Always</c> cleanup could execute.
+    /// Unconditionally <see cref="DeploymentStatus.Failed"/> for the same reason as
+    /// <paramref name="interventionRejected"/>: however cleanly the cleanup ran, the
+    /// approved work was not done.
+    /// </param>
     public static DeploymentStatus Resolve(
         DeploymentFailureMode mode,
         bool hasFailed,
         bool requiredStepDropped,
         int droppedTargetCount,
         int softFailedCount,
-        bool interventionRejected = false)
+        bool interventionRejected = false,
+        bool resumeInvalidated = false)
     {
         // WP3: a rejected approval gate is a hard failure regardless of mode.
-        if (interventionRejected)
+        // WP3-c: so is an invalidated resume checkpoint.
+        if (interventionRejected || resumeInvalidated)
         {
             return DeploymentStatus.Failed;
         }

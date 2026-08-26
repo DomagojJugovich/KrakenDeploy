@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.4 |
-| **Date** | 2026-07-30 |
+| **Version** | 1.5 |
+| **Date** | 2026-08-26 |
 | **Authors** | Domagoj Jugovic, Claude (Opus 5) |
 | **Status** | Draft |
 | **Technologies** | .NET 10, EF Core 10, PostgreSQL, SignalR, Blazor Server (Radzen), Hangfire |
@@ -145,8 +145,15 @@ the new values. That is the documented runbook variable contract
 
 Invariants are enforced, not papered over (pre-production policy): a checkpoint
 whose `AliveTargetIds` are no longer in the task's assignment set, or whose
-`ResumeWaveIndex` is out of range for the re-partitioned wave list, **fails the
-task** with a clear reason instead of silently continuing.
+wave partition no longer matches (count changed, or a wave's execution side
+flipped), **fails the task** with a clear reason instead of silently continuing.
+WP3-c refined the SHAPE of that failure: a wave-partition mismatch fails
+*through* the wave loop (the §8 rejection shape — `Failure`/`Always` cleanup
+still runs against the restored target state, and a new `resumeInvalidated`
+resolver input forces `Failed`), while target-set corruption still hard-fails
+before the loop, because no wave has a trustworthy target set to run cleanup
+against. On a runbook run the wave-count message names a live-variable edit as
+the likely cause rather than blaming the process.
 
 ## 5. Data model
 
@@ -291,29 +298,45 @@ path — only the recorded outcome differs:
 
 ## 11. Known limits / follow-ups
 
-All five are TRACKED, so this section is a description and the master plan is the
-state: the `Engine:DefaultInterventionTimeout` breadcrumb is folded into the **F3**
-row, and the other four are **WP3-c** (`docs/master-plan-2026-07-18.md`). Nothing here
-is an untracked intention.
+**WP3-c (2026-08-26) closed three of the four residuals this section tracked.**
+What remains open is the F3 breadcrumb plus the two documented-and-accepted
+engine notes at the bottom; the master plan's WP3-c row records the decisions.
 
-- **F3 breadcrumb**: fold `Engine:DefaultInterventionTimeout` into F3's Engine
-  settings document (D6).
-- **Process validation has no surface.** `ProcessService.ValidateAsync` — including
-  the v1.2 gated-child advisory — has no caller anywhere: no REST endpoint, no UI.
-  The advisory reaches the operator only via the step editor's post-save
-  notification (`DescribeGatedChildAsync`). Structural validation ERRORS are
-  equally unsurfaced, which is pre-existing and not WP3's doing.
-- **A runbook run's live variables can invalidate its checkpoint.** Runbook runs
-  resolve variables live and have no snapshot, so a variable driving a `ForEach`
-  collection changes the flattened wave count. Editing it during the approval
-  window makes `RestoreFromCheckpoint` fail the run with "the approved process no
-  longer matches", blaming the process for a variable edit — and that abort runs
-  before the resume branch, so no `Failure`/`Always` cleanup executes.
-- **`PermissionEvaluator.UserIsSystemAdminAsync` ignores the role assignment's own
-  `SpaceId`**, so `AdministerSystem` granted for one Space is global. WP3's
-  break-glass check passes a scope, but that only closes the call site. Pre-existing
-  and out of WP3's scope; WP3 is the first consumer that uses god mode to override
-  a non-permission, per-step authorization dimension, so the blast radius grew.
+- **F3 breadcrumb (still open)**: fold `Engine:DefaultInterventionTimeout` into F3's
+  Engine settings document (D6).
+- ~~Process validation has no surface.~~ **FIXED (WP3-c a) — wired, not deleted.**
+  `ProcessService.ValidateAsync` now has two callers:
+  `GET /api/projects/{projectId}/process/validation` (`ProcessView`; the project
+  lookup runs under the Space query filter, so a foreign project id 404s exactly
+  like an unknown one) and a panel on the process page rendering structural
+  `Errors` (danger alert) and the non-blocking `Warnings` (the v1.2 gated-child
+  advisory), refreshed on load and after every step mutation. The step editor's
+  per-save advisory notification remains; the panel is additive.
+  `ProcessValidator.Result` is unchanged.
+- ~~A runbook run's live variables can invalidate its checkpoint.~~ **FIXED
+  (WP3-c b) — by failing cleanly, NOT by snapshotting.** Runbook runs still
+  resolve variables live (the deliberate contract, §4.3). A wave-count or
+  wave-kind mismatch in `RestoreFromCheckpoint` now fails THROUGH the wave loop:
+  a new `resumeInvalidated` input to `DeploymentTerminalStatusResolver` forces
+  `Failed` in every mode while the remaining waves run only `Failure`/`Always`
+  cleanup (the §8 rejection shape), and the runbook message names a variable
+  edit as the likely cause instead of "the process changed". The wave-KIND
+  protection (a step package installed during the window flipping a wave
+  Target→Server) keeps failing — just cleanly, with its own package-change
+  message. Target-set corruption still hard-fails without cleanup: no wave has
+  a trustworthy target set to run against.
+- ~~`UserIsSystemAdminAsync` ignores the role assignment's own `SpaceId`.~~
+  **FIXED (WP3-c c).** The system-admin short-circuit honours
+  `RoleAssignment.SpaceId`: a Space-pinned `AdministerSystem` is god mode only
+  inside its own Space, and system-wide questions (the Hangfire dashboard, the
+  maintenance bypass, "reach every Space") require a system-scope (Space-less)
+  assignment — the only shape `BuiltInRbacSeeder` ever creates, so this is a
+  pure privilege REDUCTION with no migration. `GetAccessibleSpaceIdsAsync`
+  passes a null scope: a system-scope admin reaches every Active Space, while a
+  Space-pinned one reaches its Space through the ordinary membership sweep. The
+  evaluator's `_systemAdminCache` is re-keyed to (user, Space) — the old
+  per-user bool would have served one Space's answer to every other Space for
+  the TTL.
 - Server-side waves still have no generic deadline ceiling
   (`execution-engine.md` §9); a paused wave is bounded by its interruption
   timeout instead, which is the stronger guarantee.
@@ -334,6 +357,7 @@ is an untracked intention.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.5 | 2026-08-26 | **WP3-c — the three fixable residuals are FIXED** (§4.3, §11). (a) `ProcessService.ValidateAsync` wired: new `GET /api/projects/{projectId}/process/validation` (`ProcessView`, Space-filtered project lookup → 404 on foreign ids) + a validation panel on the process page (Errors + Warnings, refreshed per step mutation); the per-save advisory stays. (b) A resume checkpoint invalidated by a wave-count/wave-kind change now fails THROUGH the wave loop — new `resumeInvalidated` resolver input (Failed in every mode), `Failure`/`Always` cleanup runs, runbook message names a live-variable edit as the likely cause; the runbook variable contract is UNCHANGED (no trigger-time snapshot), and target-set corruption still hard-fails without cleanup. (c) `PermissionEvaluator.UserIsSystemAdminAsync` honours `RoleAssignment.SpaceId` (Space-pinned `AdministerSystem` = god mode only in that Space; system-wide checks need a Space-less assignment); `_systemAdminCache` re-keyed to (user, Space). Privilege reduction only — the seeder never creates Space-pinned `AdministerSystem` rows, so no migration. The two engine notes (no server-wave deadline ceiling; checkpoint only at pause boundary) remain documented-and-accepted. |
 | 1.4 | 2026-07-30 | §11 residuals are now TRACKED rather than described: the `Engine:DefaultInterventionTimeout` breadcrumb (plus `Engine:MaxDeployReleaseGatedWaitDuration`, both positive-only) folded into the master plan's **F3** row, and the remaining four grouped as **WP3-c** "polishing". Three of those four are pre-existing defects WP3 illuminated rather than caused, which is why they are a separate WP and not a WP3 follow-up commit. |
 | 1.3 | 2026-07-30 | Corrects §11: two entries were listed as open but had already been fixed later in the same WP3-b pass — `ForEach` flatten warnings no longer re-emit on a resume dispatch (`DeploymentWorker.isResumeDispatch`), and an API-key response is now labelled `(via API key)` in the responder display (`InterruptionService.ResponderLabel`). No code change; the section was written before those two fixes landed and not revisited. |
 | 1.2 | 2026-07-30 | **WP3-b — remediation of the max-effort review** (§5 rewritten, §7, §11). The §5 LIFETIME premise is retracted: the `interruptions` row is CASCADE-deleted with its task and retention deletes tasks, so it never was the durable change-control record — that is now the `Interruption.*` audit entry behind `ChangeControlAuditRetentionDays` (default never-purge), with `ResponsibleTeamNames` snapshotted and the resolution entry made self-contained. Instructions are masked in the variable DICTIONARY, because Octostache filters defeat redact-after-evaluate. `Cancelled` documented; approval is now an allow-list, so it (and any future status) refuses rather than proceeding. `TimeoutHours = 0` and a zero engine default are both refused — an unexpiring gate held the F1 key forever. The freeze exemption on resume is now conditional on the task having executed nothing. New §11 residuals: unsurfaced process validation, the runbook live-variable checkpoint mismatch, `ForEach` warnings re-emitting per resume, API-key responses indistinguishable from human ones, and the unscoped system-admin check. CONTRACT CHANGE: `interruptions.responsible_team_names` (`text[]`). |

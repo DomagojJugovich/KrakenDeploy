@@ -909,6 +909,47 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             caller: CallerAuthorization.System);
     }
 
+    /// <summary>
+    /// WP3-c — seeds a plain (non-sensitive) PROJECT variable through the real
+    /// service and returns its id. Runbook runs resolve project variables LIVE
+    /// (no snapshot), so this — unlike <see cref="SnapshotVariableAsync"/>, which
+    /// needs a release — is how a test hands a runbook run a <c>#{Name}</c>, and
+    /// <see cref="UpdateVariableValueAsync"/> is how it changes it mid-pause.
+    /// StringArray values accept the UI's comma-separated form ("a,b,c").
+    /// </summary>
+    public async Task<Guid> SeedVariableAsync(
+        Guid projectId, string name, string value,
+        KrakenDeploy.Server.Core.Domain.Variables.VariableType type
+            = KrakenDeploy.Server.Core.Domain.Variables.VariableType.Text)
+    {
+        await using var scope = _services.GetRequiredService<IServiceScopeFactory>()
+            .CreateAsyncScope();
+        var vars = scope.ServiceProvider
+            .GetRequiredService<KrakenDeploy.Server.Data.Services.VariableService>();
+        var variable = await vars.CreateVariableAsync(
+            projectId, name, value, type,
+            scope: new KrakenDeploy.Server.Core.Domain.Variables.VariableScope(),
+            caller: CallerAuthorization.System);
+        return variable.Id;
+    }
+
+    /// <summary>WP3-c — updates a variable's value through the real service, keeping
+    /// its name/type/scope. The live-resolution edit a runbook approval window sees.</summary>
+    public async Task UpdateVariableValueAsync(
+        Guid variableId, string name, string value,
+        KrakenDeploy.Server.Core.Domain.Variables.VariableType type
+            = KrakenDeploy.Server.Core.Domain.Variables.VariableType.Text)
+    {
+        await using var scope = _services.GetRequiredService<IServiceScopeFactory>()
+            .CreateAsyncScope();
+        var vars = scope.ServiceProvider
+            .GetRequiredService<KrakenDeploy.Server.Data.Services.VariableService>();
+        await vars.UpdateVariableAsync(
+            variableId, name, value, type,
+            scope: new KrakenDeploy.Server.Core.Domain.Variables.VariableScope(),
+            caller: CallerAuthorization.System);
+    }
+
     /// <summary>WP3-a — seeds an ordinary named team, Space-scoped, so a test can prove
     /// an approver list resolves (and that a team of ANOTHER Space does not).</summary>
     public async Task<Guid> SeedTeamAsync(string name, Guid spaceId)

@@ -1281,6 +1281,12 @@ public sealed class DeploymentWorker(
             // hard Failed whatever the failure mode (see
             // DeploymentTerminalStatusResolver).
             var interventionRejected = false;
+            // WP3-c — the resume checkpoint no longer matches the rebuilt wave
+            // partition (count changed, or a wave's execution side flipped).
+            // Like a rejection this forces a terminal Failed, but the loop still
+            // runs so Failure/Always cleanup executes — an early FailAsync here
+            // was exactly the fail-without-cleanup shape WP3-b removed.
+            var resumeInvalidated = false;
             // WP3 — the wave to start at. 0 for a fresh dispatch; the checkpoint's
             // resume point when continuing past an approved gate.
             var startWaveIndex = 0;
@@ -1309,17 +1315,43 @@ public sealed class DeploymentWorker(
             {
                 var restoreFailure = RestoreFromCheckpoint(
                     cp, waves, targets, aliveTargets, droppedTargets, softFailedTargets,
-                    outputAccumulator);
-                if (restoreFailure is not null)
+                    outputAccumulator,
+                    isRunbookRun: deployment.Kind == ServerTaskKind.RunbookRun);
+                if (restoreFailure is { } rf)
                 {
-                    await logSeq.AppendAsync(-1, null, "error", restoreFailure, ct)
+                    await logSeq.AppendAsync(-1, null, "error", rf.Reason, ct)
                         .ConfigureAwait(false);
-                    await FailAsync(db, deployment, restoreFailure, ct).ConfigureAwait(false);
-                    return;
+                    if (!rf.FailThroughCleanup)
+                    {
+                        // Target-set corruption: the checkpoint names targets that are
+                        // no longer assigned, so no wave — cleanup included — has a
+                        // trustworthy target set to run against. Hard-fail as before.
+                        await FailAsync(db, deployment, rf.Reason, ct).ConfigureAwait(false);
+                        return;
+                    }
+                    // WP3-c — wave-partition mismatch: fail THROUGH the wave loop
+                    // (the rejected-gate shape) so remaining waves' Failure/Always
+                    // cleanup steps still run against the restored target state.
+                    // hasFailed skips their Condition=Success steps;
+                    // resumeInvalidated forces the terminal verdict to Failed.
+                    // An out-of-range resume index (negative = corrupt, too large =
+                    // the partition shrank past the pause point) clamps to
+                    // waves.Count — no remaining wave can be mapped, so the run goes
+                    // straight to Failed finalisation without re-running earlier
+                    // waves' Always steps a second time.
+                    hasFailed            = true;
+                    resumeInvalidated    = true;
+                    interventionRejected = cp.InterventionRejected;
+                    startWaveIndex       = cp.ResumeWaveIndex >= 0 && cp.ResumeWaveIndex < waves.Count
+                        ? cp.ResumeWaveIndex
+                        : waves.Count;
                 }
-                hasFailed            = cp.HasFailed;
-                interventionRejected = cp.InterventionRejected;
-                startWaveIndex       = cp.ResumeWaveIndex;
+                else
+                {
+                    hasFailed            = cp.HasFailed;
+                    interventionRejected = cp.InterventionRejected;
+                    startWaveIndex       = cp.ResumeWaveIndex;
+                }
                 // NOTE: the checkpoint column was already cleared by TryResumeAsync's
                 // conditional UPDATE (and mirrored onto the tracked entity). Clearing it
                 // HERE instead would leave the tracked entity dirty with a stale xmin —
@@ -1638,7 +1670,9 @@ public sealed class DeploymentWorker(
                 softFailedCount:     softFailedTargets.Count,
                 // WP3 — a rejected/expired gate is Failed in every mode, but only
                 // AFTER the cleanup waves above have run.
-                interventionRejected: interventionRejected);
+                interventionRejected: interventionRejected,
+                // WP3-c — same contract for an invalidated resume checkpoint.
+                resumeInvalidated: resumeInvalidated);
             var didSucceed = false;
             DateTimeOffset finalCompletedUtc;
             await using (var finalDb = await scope.ServiceProvider
@@ -2418,65 +2452,50 @@ public sealed class DeploymentWorker(
     }
 
     /// <summary>
+    /// WP3-c — how a checkpoint restore failed. <see cref="FailThroughCleanup"/> is
+    /// true for wave-partition mismatches (count changed / a wave's kind flipped):
+    /// the run must FAIL, but through the wave loop, so the remaining waves'
+    /// <c>Failure</c>/<c>Always</c> cleanup steps still execute. It is false for
+    /// target-set corruption, where no wave has a trustworthy target set to run
+    /// cleanup against and the caller hard-fails as before.
+    /// </summary>
+    private readonly record struct RestoreFailure(string Reason, bool FailThroughCleanup);
+
+    /// <summary>
     /// Re-seeds the wave loop's mutable state from a pause checkpoint. Returns
-    /// <c>null</c> on success, or an operator-readable reason the resume must FAIL.
+    /// <c>null</c> on success, or a <see cref="RestoreFailure"/> whose reason is
+    /// operator-readable.
     /// <para>
-    /// Both invariant checks matter. A <c>ResumeWaveIndex</c> outside the rebuilt wave
-    /// list means the process snapshot no longer partitions the way it did at pause
+    /// All invariant checks matter. A <c>ResumeWaveIndex</c> outside the rebuilt wave
+    /// list means the plan no longer partitions the way it did at pause
     /// time, so "continue from wave N" is meaningless. An alive target id that is no
     /// longer assigned means the target set changed under the pause. Either way,
     /// continuing would deploy something other than what was approved — so it fails
     /// loudly instead (pre-production policy: no soft-fallback for stale state).
+    /// Target state is restored BEFORE the wave checks so a wave-mismatch
+    /// fail-through leaves the caller with the checkpoint's alive/dropped/soft-failed
+    /// target state for its cleanup waves.
+    /// </para>
+    /// <para>
+    /// WP3-c — a wave-count change on a RUNBOOK run is not "the process changed":
+    /// runbook runs deliberately resolve variables live (no trigger-time snapshot),
+    /// so editing a variable that drives a <c>ForEach</c> collection during the
+    /// approval window re-flattens to a different wave count. The message names
+    /// that likely cause instead of blaming the process. Deployments rebuild from
+    /// the frozen release snapshot, so their wording keeps blaming a process/plan
+    /// change.
     /// </para>
     /// </summary>
-    private static string? RestoreFromCheckpoint(
+    private static RestoreFailure? RestoreFromCheckpoint(
         TaskPauseCheckpoint checkpoint,
         List<WavePartitioner.Wave> waves,
         IReadOnlyList<DeploymentTarget> targets,
         List<DeploymentTarget> aliveTargets,
         List<DroppedTargetInfo> droppedTargets,
         HashSet<Guid> softFailedTargets,
-        DeploymentOutputAccumulator outputAccumulator)
+        DeploymentOutputAccumulator outputAccumulator,
+        bool isRunbookRun)
     {
-        if (checkpoint.ResumeWaveIndex < 0 || checkpoint.ResumeWaveIndex >= waves.Count)
-        {
-            return $"Resume checkpoint points at wave " +
-                   $"{checkpoint.ResumeWaveIndex.ToString(CultureInfo.InvariantCulture)}, but the " +
-                   $"process now partitions into " +
-                   $"{waves.Count.ToString(CultureInfo.InvariantCulture)} wave(s). The approved " +
-                   "process no longer matches this task — re-deploy the release.";
-        }
-
-        // The count matching is not enough: wave SIDE comes from the step-type
-        // registry at dispatch time, so a package installed during the approval
-        // window can flip a remaining wave from Target to Server without changing
-        // the count. Resuming then executes on the server box instead of the
-        // approved targets, with no operator-visible signal.
-        if (checkpoint.WaveKinds.Length > 0)
-        {
-            if (checkpoint.WaveKinds.Length != waves.Count)
-            {
-                return "Resume checkpoint recorded " +
-                       $"{checkpoint.WaveKinds.Length.ToString(CultureInfo.InvariantCulture)} " +
-                       "wave(s) but the process now partitions into " +
-                       $"{waves.Count.ToString(CultureInfo.InvariantCulture)}. The approved " +
-                       "process no longer matches this task — re-deploy the release.";
-            }
-
-            for (var i = checkpoint.ResumeWaveIndex; i < waves.Count; i++)
-            {
-                var nowKind = waves[i].Kind.ToString();
-                if (!string.Equals(checkpoint.WaveKinds[i], nowKind, StringComparison.Ordinal))
-                {
-                    return $"Wave {(i + 1).ToString(CultureInfo.InvariantCulture)} ran " +
-                           $"{checkpoint.WaveKinds[i]}-side when this task was approved but " +
-                           $"now routes {nowKind}-side. A step package's declared execution " +
-                           "locus changed while the task was paused — re-deploy the release " +
-                           "so the change is reviewed and approved explicitly.";
-                }
-            }
-        }
-
         var byId = targets.ToDictionary(t => t.Id);
 
         aliveTargets.Clear();
@@ -2484,9 +2503,11 @@ public sealed class DeploymentWorker(
         {
             if (!byId.TryGetValue(id, out var target))
             {
-                return $"Resume checkpoint lists target {id} as still deploying, but it is no " +
-                       "longer assigned to this task. The target set changed while the task was " +
-                       "paused — re-deploy the release.";
+                return new RestoreFailure(
+                    $"Resume checkpoint lists target {id} as still deploying, but it is no " +
+                    "longer assigned to this task. The target set changed while the task was " +
+                    "paused — re-deploy the release.",
+                    FailThroughCleanup: false);
             }
             aliveTargets.Add(target);
         }
@@ -2498,14 +2519,18 @@ public sealed class DeploymentWorker(
             // assignment change), so a missing row here is the same corruption as above.
             if (!byId.TryGetValue(dropped.TargetId, out var target))
             {
-                return $"Resume checkpoint records target {dropped.TargetId} as dropped, but it " +
-                       "is no longer assigned to this task. The target set changed while the " +
-                       "task was paused — re-deploy the release.";
+                return new RestoreFailure(
+                    $"Resume checkpoint records target {dropped.TargetId} as dropped, but it " +
+                    "is no longer assigned to this task. The target set changed while the " +
+                    "task was paused — re-deploy the release.",
+                    FailThroughCleanup: false);
             }
             if (!Enum.TryParse<DropReason>(dropped.Reason, out var reason))
             {
-                return $"Resume checkpoint records an unknown drop reason " +
-                       $"'{dropped.Reason}' for target {dropped.TargetId}.";
+                return new RestoreFailure(
+                    $"Resume checkpoint records an unknown drop reason " +
+                    $"'{dropped.Reason}' for target {dropped.TargetId}.",
+                    FailThroughCleanup: false);
             }
             droppedTargets.Add(new DroppedTargetInfo(
                 target, reason, dropped.StepName, dropped.Error));
@@ -2515,6 +2540,63 @@ public sealed class DeploymentWorker(
         softFailedTargets.UnionWith(checkpoint.SoftFailedTargetIds);
 
         outputAccumulator.RestoreFrom(checkpoint.TargetOutputs, checkpoint.ServerOutputs);
+
+        // ── Wave-partition checks — fail THROUGH cleanup on mismatch ─────────
+        // WP3-c: the operator-facing cause differs by task kind (see remarks).
+        var waveCountMismatchCause = isRunbookRun
+            ? "Runbook runs resolve variables live, so a variable edited while this " +
+              "run was paused — typically one driving a ForEach collection — is the " +
+              "likely cause (a runbook process edit would do the same). Cleanup steps " +
+              "(run condition Failure/Always) still run; review the change and re-run " +
+              "the runbook."
+            : "The approved process no longer matches this task. Cleanup steps (run " +
+              "condition Failure/Always) still run — re-deploy the release.";
+
+        if (checkpoint.ResumeWaveIndex < 0 || checkpoint.ResumeWaveIndex >= waves.Count)
+        {
+            return new RestoreFailure(
+                $"Resume checkpoint points at wave " +
+                $"{checkpoint.ResumeWaveIndex.ToString(CultureInfo.InvariantCulture)}, but the " +
+                $"plan now partitions into " +
+                $"{waves.Count.ToString(CultureInfo.InvariantCulture)} wave(s). " +
+                waveCountMismatchCause,
+                FailThroughCleanup: true);
+        }
+
+        // The count matching is not enough: wave SIDE comes from the step-type
+        // registry at dispatch time, so a package installed during the approval
+        // window can flip a remaining wave from Target to Server without changing
+        // the count. Resuming then executes on the server box instead of the
+        // approved targets, with no operator-visible signal.
+        if (checkpoint.WaveKinds.Length > 0)
+        {
+            if (checkpoint.WaveKinds.Length != waves.Count)
+            {
+                return new RestoreFailure(
+                    "Resume checkpoint recorded " +
+                    $"{checkpoint.WaveKinds.Length.ToString(CultureInfo.InvariantCulture)} " +
+                    "wave(s) but the plan now partitions into " +
+                    $"{waves.Count.ToString(CultureInfo.InvariantCulture)}. " +
+                    waveCountMismatchCause,
+                    FailThroughCleanup: true);
+            }
+
+            for (var i = checkpoint.ResumeWaveIndex; i < waves.Count; i++)
+            {
+                var nowKind = waves[i].Kind.ToString();
+                if (!string.Equals(checkpoint.WaveKinds[i], nowKind, StringComparison.Ordinal))
+                {
+                    return new RestoreFailure(
+                        $"Wave {(i + 1).ToString(CultureInfo.InvariantCulture)} ran " +
+                        $"{checkpoint.WaveKinds[i]}-side when this task was approved but " +
+                        $"now routes {nowKind}-side. A step package's declared execution " +
+                        "locus changed while the task was paused — re-deploy the release " +
+                        "so the change is reviewed and approved explicitly.",
+                        FailThroughCleanup: true);
+                }
+            }
+        }
+
         return null;
     }
 
