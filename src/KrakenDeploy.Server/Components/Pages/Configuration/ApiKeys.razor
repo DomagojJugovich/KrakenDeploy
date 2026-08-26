@@ -155,8 +155,9 @@
         // System-wide scope (new PermissionScope() = null SpaceId): GetAllAsync
         // is NOT Space-filtered (ApiKey isn't ISpaceScoped), so it discloses
         // every Space's keys. A per-Space grant of ApiKeyViewAll must NOT
-        // unlock that — only a system-wide assignment (or AdministerSystem)
-        // may. Mirrors MaintenanceMiddleware's BypassMaintenance check.
+        // unlock that — only a system-wide assignment (or a system-scope
+        // AdministerSystem; a Space-pinned one no longer passes, WP3-c) may.
+        // Mirrors MaintenanceMiddleware's BypassMaintenance check.
         if (_view == KeyViewFilter.All
             && !await Guard.AllowAsync(Permission.ApiKeyViewAll, new PermissionScope()))
         {

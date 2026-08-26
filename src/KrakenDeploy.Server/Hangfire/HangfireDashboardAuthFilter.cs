@@ -9,7 +9,8 @@ namespace KrakenDeploy.Server.Hangfire;
 
 /// <summary>
 /// Restricts the Hangfire dashboard to users who hold the
-/// <see cref="Permission.AdministerSystem"/> permission (i.e. System Administrators).
+/// <see cref="Permission.AdministerSystem"/> permission through a SYSTEM-scope
+/// assignment (a Space-pinned grant does not open this instance-wide surface — WP3-c).
 /// Unauthenticated requests and insufficient-permission requests are denied.
 /// <para>
 /// In multi-account mode the Hangfire job store is a SINGLE shared control-plane store,

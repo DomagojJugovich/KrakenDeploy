@@ -31,8 +31,9 @@ namespace KrakenDeploy.Server.Core.Domain.Maintenance;
 /// </para>
 ///
 /// <para>
-/// Bypass is permission-gated (<c>BypassMaintenance</c>). Sys-admins
-/// always pass (via the god-mode <c>AdministerSystem</c> implication);
+/// Bypass is permission-gated (<c>BypassMaintenance</c>). Holders of a
+/// SYSTEM-scope <c>AdministerSystem</c> assignment always pass (the check is
+/// system-wide, so a Space-pinned admin does not — WP3-c);
 /// <c>SystemManager</c> gets the bypass explicitly so the delegated-
 /// admin tier can still run the maintenance work itself. Normal users
 /// hit the 503 wall.

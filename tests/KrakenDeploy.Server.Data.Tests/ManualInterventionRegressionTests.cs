@@ -1,12 +1,16 @@
 using System.Threading.Channels;
 using FluentAssertions;
+using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Environments;
+using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Security;
+using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Core.Domain.Targets;
+using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
 using Microsoft.EntityFrameworkCore;
 
@@ -437,6 +441,202 @@ public sealed class ManualInterventionRegressionTests(PostgresFixture postgres)
             .Should().BeCloseTo(TimeSpan.FromHours(5), TimeSpan.FromMinutes(1),
                 because: "a distinctive value proves Engine:DefaultInterventionTimeout " +
                          "is actually consulted");
+    }
+
+    // ── WP3-c (b): resume-checkpoint mismatches fail THROUGH cleanup ────────
+
+    [Fact]
+    public async Task A_live_variable_edit_during_the_approval_window_fails_a_runbook_run_through_cleanup()
+    {
+        // Runbook runs resolve variables LIVE (no snapshot), so editing a variable
+        // that drives a ForEach collection during the approval window changes the
+        // flattened wave count. Before WP3-c the restore failure aborted BEFORE the
+        // resume branch: the run failed blaming "the process changed" and no
+        // Failure/Always cleanup executed.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var (project, env, targets) = await SeedAsync(harness, "lvar");
+        var variableId = await harness.SeedVariableAsync(
+            project.Id, "Servers", "one,two", VariableType.StringArray);
+
+        var group = new StepBuilder
+        {
+            Name              = "loop",
+            StepType          = KrakenStepTypes.StepGroup,
+            Required          = false,
+            ForEachCollection = "Servers",
+        };
+        var runId = await harness.CreateRunbookRunAsync(project.Id, env.Id, targets,
+        [
+            StepBuilder.Manual("hold"),
+            group,
+            StepBuilder.ServerScript("iterate").InGroup(group.Id),
+            StepBuilder.ServerScript(
+                "cleanup", required: false,
+                condition: StepCondition.Always, scriptBody: "Write-Host cleanup"),
+        ]);
+
+        await harness.RunDeploymentAsync(runId);
+        (await harness.GetServerTaskAsync(runId)).Status.Should().Be(DeploymentStatus.Paused);
+
+        // The edit the checkpoint cannot survive: the ForEach collection grows,
+        // so the resumed flatten partitions into one more wave.
+        await harness.UpdateVariableValueAsync(
+            variableId, "Servers", "one,two,three", VariableType.StringArray);
+
+        var gate = (await harness.GetInterruptionsAsync(runId)).Single();
+        await harness.ResolveInterruptionAsync(gate.Id, InterruptionStatus.Approved);
+        await harness.RunDeploymentAsync(runId);
+
+        var run = await harness.GetServerTaskAsync(runId);
+        run.Status.Should().Be(DeploymentStatus.Failed,
+            because: "the approved plan no longer matches — the run must not execute it");
+
+        var outcomes = await harness.GetOutcomesAsync(runId);
+        outcomes.Should().Contain(
+            o => o.StepName == "cleanup" && o.Outcome == StepOutcomeKind.Succeeded,
+            because: "the mismatch must fail THROUGH the wave loop so Condition=Always " +
+                     "cleanup still executes — abort-before-resume left no cleanup at all");
+        outcomes.Should().Contain(
+            o => o.StepName == "hold" && o.Outcome == StepOutcomeKind.ManualInterventionApproved,
+            because: "the recorded approval outranks the run-condition filter — the " +
+                     "fail-through's hasFailed must not re-record it as condition-skipped");
+
+        // The task is terminal, so the banner has been compacted from staging into
+        // the step-log blobs — read through the stitched view.
+        await using var db = harness.CreateContext();
+        var lines = await KrakenDeploy.Server.Data.Services.TaskLogService.ReadAllAsync(db, runId);
+        lines.Should().Contain(
+            l => l.Level == "error" && l.Message.Contains("Runbook runs resolve variables live"),
+            because: "the operator message must name a variable edit as the likely cause " +
+                     "instead of blaming the runbook process");
+    }
+
+    [Fact]
+    public async Task A_wave_kind_flip_during_the_approval_window_fails_but_still_runs_cleanup()
+    {
+        // The kind-flip protection (a step package installed during the window can
+        // flip a remaining wave Target→Server) must KEEP failing the resume — WP3-c
+        // only changes the shape: through the wave loop, with cleanup, not an abort
+        // before the resume branch.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var (project, env, targets) = await SeedAsync(harness, "kflip");
+        var release = await harness.SeedReleaseAsync(
+            project.Id, "1.0",
+            StepBuilder.Manual("hold"),
+            StepBuilder.Script("work"), // target-side when the approval was given
+            StepBuilder.ServerScript(
+                "cleanup", required: false,
+                condition: StepCondition.Always, scriptBody: "Write-Host cleanup"));
+        var taskId = await harness.CreateDeploymentAsync(release.Id, env.Id, targets);
+        var agent = harness.ConnectFakeAgent(targets[0]);
+
+        await harness.RunDeploymentAsync(taskId);
+        (await harness.GetServerTaskAsync(taskId)).Status.Should().Be(DeploymentStatus.Paused);
+
+        // The registry is read LIVE on every dispatch, so this flips the "work"
+        // wave's kind under the pause. The catalog is class-shared — restore the
+        // CAPTURED value, not a guess at the seeded default.
+        var originalLocus = await SetScriptLocusAsync(harness, StepTypeExecutionLocus.ServerRunner);
+        try
+        {
+            var gate = (await harness.GetInterruptionsAsync(taskId)).Single();
+            await harness.ResolveInterruptionAsync(gate.Id, InterruptionStatus.Approved);
+            await harness.RunDeploymentAsync(taskId);
+        }
+        finally
+        {
+            await SetScriptLocusAsync(harness, originalLocus);
+        }
+
+        (await harness.GetServerTaskAsync(taskId)).Status.Should().Be(DeploymentStatus.Failed,
+            because: "a wave whose execution side changed under the approval must not run");
+
+        agent.ReceivedPlans.Should().BeEmpty(
+            because: "nothing may reach the target: 'work' was approved target-side and " +
+                     "its wave no longer matches");
+
+        var outcomes = await harness.GetOutcomesAsync(taskId);
+        outcomes.Should().Contain(
+            o => o.StepName == "cleanup" && o.Outcome == StepOutcomeKind.Succeeded,
+            because: "Condition=Always cleanup still runs on the mismatch path");
+        outcomes.Should().NotContain(
+            o => o.StepName == "work" && o.Outcome == StepOutcomeKind.Succeeded,
+            because: "the flipped wave's own work must not execute on either side");
+
+        await using var db = harness.CreateContext();
+        var lines = await KrakenDeploy.Server.Data.Services.TaskLogService.ReadAllAsync(db, taskId);
+        lines.Should().Contain(
+            l => l.Level == "error" && l.Message.Contains("locus changed"),
+            because: "the kind-flip keeps its own message — a package change, not a variable");
+    }
+
+    [Fact]
+    public async Task An_invalidated_resume_verdict_survives_a_second_pause_at_a_cleanup_gate()
+    {
+        // The fail-through sets hasFailed, which makes a Condition=Always cleanup
+        // gate applicable — the run pauses AGAIN. Without TaskPauseCheckpoint
+        // carrying ResumeInvalidated, the second resume restored only HasFailed and
+        // the run finalised SucceededWithWarnings: a plan that was never executed
+        // reported as a warning-level success.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var (project, env, targets) = await SeedAsync(harness, "reinv");
+        var variableId = await harness.SeedVariableAsync(
+            project.Id, "Servers", "one,two", VariableType.StringArray);
+
+        var group = new StepBuilder
+        {
+            Name              = "loop",
+            StepType          = KrakenStepTypes.StepGroup,
+            Required          = false,
+            ForEachCollection = "Servers",
+        };
+        var runId = await harness.CreateRunbookRunAsync(project.Id, env.Id, targets,
+        [
+            StepBuilder.Manual("hold"),
+            group,
+            StepBuilder.ServerScript("iterate").InGroup(group.Id),
+            StepBuilder.Manual("confirm-rollback", required: false,
+                condition: StepCondition.Always),
+        ]);
+
+        await harness.RunDeploymentAsync(runId);
+        await harness.UpdateVariableValueAsync(
+            variableId, "Servers", "one,two,three", VariableType.StringArray);
+
+        var holdGate = (await harness.GetInterruptionsAsync(runId)).Single();
+        await harness.ResolveInterruptionAsync(holdGate.Id, InterruptionStatus.Approved);
+        await harness.RunDeploymentAsync(runId);
+
+        // The fail-through reached the Always-conditioned cleanup gate and paused.
+        (await harness.GetServerTaskAsync(runId)).Status.Should().Be(DeploymentStatus.Paused,
+            because: "a cleanup gate is still a gate — the fail-through parks on it");
+
+        var rollbackGate = (await harness.GetInterruptionsAsync(runId))
+            .Single(i => i.StepName == "confirm-rollback");
+        await harness.ResolveInterruptionAsync(rollbackGate.Id, InterruptionStatus.Approved);
+        await harness.RunDeploymentAsync(runId);
+
+        (await harness.GetServerTaskAsync(runId)).Status.Should().Be(DeploymentStatus.Failed,
+            because: "the invalidated-resume verdict must survive the second checkpoint — " +
+                     "hasFailed alone would launder it into SucceededWithWarnings");
+    }
+
+    /// <summary>Flips the seeded script step type's execution locus in the LIVE
+    /// registry — the mechanism by which a step-package install during an approval
+    /// window changes a wave's kind. Returns the PREVIOUS locus so the caller can
+    /// restore the class-shared catalog exactly.</summary>
+    private static async Task<StepTypeExecutionLocus> SetScriptLocusAsync(
+        OrchestratorTestHarness harness, StepTypeExecutionLocus locus)
+    {
+        await using var db = harness.CreateContext();
+        var current = await db.StepTypes
+            .Where(t => t.TypeId == "octopus.script")
+            .Select(t => t.ExecutionLocus)
+            .FirstAsync();
+        await db.StepTypes
+            .Where(t => t.TypeId == "octopus.script")
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.ExecutionLocus, locus));
+        return current;
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

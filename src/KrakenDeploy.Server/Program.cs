@@ -1867,6 +1867,34 @@ public static class Program
                 }
             }).RequirePermission(Permission.ProcessEdit);
 
+        // WP3-c (a) — surfaces ProcessService.ValidateAsync: structural validation
+        // Errors plus the non-blocking Warnings (WP3-b's gated-child advisory).
+        // The project lookup runs through the Space query filter, so a projectId
+        // from another Space 404s exactly like an unknown one (no IDOR probe).
+        app.MapGet("/api/projects/{projectId:guid}/process/validation",
+            async (Guid projectId, ProjectService projectSvc, ProcessService processSvc,
+                CancellationToken ct) =>
+            {
+                var project = await projectSvc.GetAsync(projectId, ct).ConfigureAwait(false);
+                if (project is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var result = await processSvc.ValidateAsync(projectId, ct).ConfigureAwait(false);
+                return Results.Ok(new
+                {
+                    result.IsValid,
+                    Errors = result.Errors.Select(e => new
+                    {
+                        e.StepId,
+                        Code = e.Code.ToString(),
+                        e.Message,
+                    }),
+                    Warnings = result.WarningsOrEmpty,
+                });
+            }).RequirePermission(Permission.ProcessView);
+
         // ── Release API ──────────────────────────────────────────────────────
         app.MapGet("/api/projects/{projectId:guid}/releases",
             async (Guid projectId, ReleaseService releaseSvc, CancellationToken ct) =>

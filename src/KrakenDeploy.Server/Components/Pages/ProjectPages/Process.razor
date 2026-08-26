@@ -76,6 +76,37 @@
     }
     else
     {
+    @* WP3-c (a) — the aggregate validation panel. Structural ERRORS (the process
+       will not deploy / flatten as authored) and non-blocking WARNINGS (WP3-b's
+       gated-child advisory) previously had no surface at all: ValidateAsync had
+       no caller and the advisory only flashed in the step editor's post-save
+       notification. Refreshed on load and after every step mutation. *@
+    @if (_validation is { } validation && validation.Errors.Count > 0)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false"
+                     class="rz-mb-3">
+            <strong>This process has @validation.Errors.Count structural
+                error@(validation.Errors.Count == 1 ? "" : "s"):</strong>
+            <ul class="rz-mt-1 rz-mb-0" style="padding-left: 1.25rem;">
+                @foreach (var error in validation.Errors)
+                {
+                    <li>@error.Message</li>
+                }
+            </ul>
+        </RadzenAlert>
+    }
+    @if (_validation is { } warningsView && warningsView.WarningsOrEmpty.Count > 0)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false"
+                     class="rz-mb-3">
+            <ul class="rz-mt-0 rz-mb-0" style="padding-left: 1.25rem;">
+                @foreach (var warning in warningsView.WarningsOrEmpty)
+                {
+                    <li>@warning</li>
+                }
+            </ul>
+        </RadzenAlert>
+    }
     <div class="kraken-process-layout @(_asideOpen ? "kraken-process-layout--aside-open" : null)">
         @* ── Left: step list ───────────────────────────────────────────── *@
         <div class="kraken-process-steps">
@@ -380,6 +411,19 @@
     private bool _assistantEnabled;
 
     /// <summary>
+    /// WP3-c (a) — aggregate process validation (structural errors + non-blocking
+    /// warnings such as WP3-b's gated-child advisory), refreshed on load and after
+    /// every step mutation via <see cref="ReloadStepsAsync"/>. Null until loaded;
+    /// a failed refresh leaves the panel hidden rather than failing the page.
+    /// </summary>
+    private ProcessValidator.Result? _validation;
+
+    /// <summary>The project <see cref="_validation"/> was computed for — a failed
+    /// refresh keeps the last result only for the SAME project, so navigating to
+    /// another project's process page cannot show the previous project's errors.</summary>
+    private Guid? _validationProjectId;
+
+    /// <summary>
     /// Forces the Lifecycle aside visible on narrow viewports
     /// where it auto-collapses (see .kraken-process-layout--aside-open in
     /// app.css). No effect on wide viewports — the aside is always shown there.
@@ -414,6 +458,7 @@
             var process = await ProcessSvc.GetAsync(_project.Id);
             BuildStepTree(process?.Steps ?? []);
             await ReloadLatestInstalledMapAsync();
+            await ReloadValidationAsync();
 
             if (_project.LifecycleId is { } lifecycleId)
             {
@@ -448,6 +493,29 @@
         var process = await ProcessSvc.GetAsync(_project.Id);
         BuildStepTree(process?.Steps ?? []);
         await ReloadLatestInstalledMapAsync();
+        await ReloadValidationAsync();
+    }
+
+    private async Task ReloadValidationAsync()
+    {
+        if (_project is null) return;
+        try
+        {
+            _validation = await ProcessSvc.ValidateAsync(_project.Id);
+            _validationProjectId = _project.Id;
+        }
+        catch
+        {
+            // Advisory surface only — a refresh failure must not take the process
+            // editor down with it. Deliberately KEEPS the last known result: nulling
+            // it would silently erase errors already on screen, and "no panel" is
+            // indistinguishable from "no errors". Kept only for the SAME project —
+            // another project's stale errors must never render here.
+            if (_validationProjectId != _project.Id)
+            {
+                _validation = null;
+            }
+        }
     }
 
     /// <summary>

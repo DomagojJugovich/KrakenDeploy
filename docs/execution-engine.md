@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.21 |
-| **Date** | 2026-08-19 |
+| **Version** | 1.23 |
+| **Date** | 2026-08-26 |
 | **Authors** | Domagoj Jugovic, Claude (Fable 5), Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Draft |
 | **Technologies** | .NET 10, EF Core 10, PostgreSQL, SignalR, Octostache, Hangfire |
@@ -794,6 +794,23 @@ Full design in `docs/design-manual-intervention.md`; the engine-relevant shape:
   execute, then resolve `Failed` via a dedicated `interventionRejected` input to
   `DeploymentTerminalStatusResolver` (`hasFailed` alone would give
   `SucceededWithWarnings`).
+- **An invalidated resume checkpoint fails THROUGH the loop (WP3-c).** A
+  wave-count or wave-kind mismatch in `RestoreFromCheckpoint` no longer aborts
+  before the resume branch: the run continues from the checkpoint's wave index
+  with `hasFailed` set, so remaining waves run only `Failure`/`Always` cleanup
+  against the RESTORED target state, and a new `resumeInvalidated` resolver
+  input — carried in the checkpoint too, so it survives a second pause at a
+  cleanup wave's own gate — forces `Failed` in every mode (same rationale as
+  `interventionRejected`). When the wave count still matches, a wave whose KIND
+  flipped is SKIPPED with visible outcomes rather than executed on the
+  unapproved side. On a runbook run the wave-count message names a live-variable
+  edit as the likely cause — runbooks resolve variables live (§8), so a `ForEach`-driving
+  variable edited during the approval window re-partitions the plan; that is not
+  "the process changed". Target-set corruption (a checkpointed target no longer
+  assigned) still hard-fails before the loop: no wave has a trustworthy target
+  set to run cleanup against. An out-of-range resume index skips the loop
+  entirely (logged as "no cleanup could be run") rather than re-running earlier
+  waves' `Always` steps a second time.
 - **Timeout** is a minutely Hangfire sweeper (`InterruptionTimeoutJob`); the
   per-step override is `Kraken.Action.Manual.TimeoutHours`, the global default
   `Engine:DefaultInterventionTimeout` (72 h; an F3 breadcrumb).
@@ -884,6 +901,8 @@ changed in the engine:
 
 | Version | Date | Change |
 |---|---|---|
+| 1.23 | 2026-08-26 | **WP3-c review remediation** (§10). The fail-through gained guard rails: `TaskPauseCheckpoint.ResumeInvalidated` persists the verdict across a second pause at a cleanup wave's own gate; during a count-matching fail-through, a wave whose KIND flipped is skipped (Skipped outcomes) instead of executed on the unapproved locus; the out-of-range arm logs that no cleanup could run. `ManualInterventionGate.EvaluateAsync`: a recorded APPROVAL bypasses the run-condition/role filter (same rationale as refusals — both filters read live state), and Approved rows are identity-checked by step name so a partition shift cannot launder an approval onto a different gate. Restore-failure advice is kind-aware for runbook runs. Accepted residuals (documented in design-manual-intervention.md §4.3): in-range count-mismatch can re-run an already-executed `Always` step (step idempotency is on the author, §9), and count-mismatch cleanup waves run on unverified kinds. |
+| 1.22 | 2026-08-26 | **WP3-c — invalidated resume checkpoints fail THROUGH cleanup** (§10 new bullet). `RestoreFromCheckpoint` returns a typed failure: wave-count/wave-kind mismatches set `hasFailed` + the new `resumeInvalidated` input to `DeploymentTerminalStatusResolver` (Failed in every mode) and the wave loop runs the remaining waves' `Failure`/`Always` cleanup against the restored target state, instead of `FailAsync`-and-return before the resume branch. Runbook wave-count message names a live-variable edit as the likely cause (runbooks resolve variables live, §8); the wave-kind flip keeps its package-locus message; target-set corruption still hard-fails without cleanup; an out-of-range resume index skips the loop rather than re-running earlier `Always` steps. Target restore now happens BEFORE the wave checks. §9's deadline-ceiling and checkpoint-at-pause-boundary notes re-verified — both still accurate and still accepted. |
 | 1.21 | 2026-08-19 | **F6 — security review round 4** (§7 F6 bullet, §9). No injection/XSS/RBAC/Space-leak defects found; the fixes are availability + cost hardening of the single global claim lock and the reason surface. Claim transaction now sets `SET LOCAL lock_timeout` (15 s) + `statement_timeout` (30 s) so a wedged claim cannot stall every claim instance-wide or drain the worker pool — a timeout maps to the new `ServerTaskClaimResult.ClaimContended` (stays `Queued`, retried, warn-logged); the claimant's own source-consent read is hoisted out of the lock. `RecordTargetDeferralAsync` takes a lock-free banner-exists probe before the ranked `DescribeConflictAsync`, so the minutely re-signal of a blocked task no longer re-runs that read once the line is down. `ServerTasksService.ResolveQueueWaitsAsync` caps at the 50 oldest candidates (`QueueWaitResolveCap`); the Deployments list loads all non-terminal rows + a capped terminal tail (`DeploymentService.GetForListAsync`) with a truthful "N older not loaded" subtitle + "Load more" — a plain top-N would drop old parked/`Queued` rows off the page. Parked-hold residual (`Paused` bounded by the gate timeout; `PendingOfflineResult` unbounded but narrow; `TaskCancel` is the operator escape hatch) documented. Cross-Space isolation + composite-FK tripwire + a claim-latency perf test added. Comment corrections (ancestor-chain, cost-independence, `ProbeGateAsync` kind). Branch `feat/eng-per-plan-target-exclusion`. |
 | 1.20 | 2026-08-18 | **F6 — server-side per-plan target exclusion at claim time** (§7 new bullet, §9). Two-layer model: the server claim exclusion sits ABOVE the agent's F5 RW gate — no two tasks operate on the same SERIAL target concurrently for the whole plan duration (Octopus has no equivalent; deliberate divergence). Mode on a target = Shared iff the target's flag OR the source's consent (new `projects.allow_parallel_task_execution` + `runbooks.allow_parallel_task_execution`, both default off, OR-composed into `DeploymentPlan.AllowParallelTaskExecution` at plan build); conflict = a shared serial target where not both sources consent. Enforced in `ServerTaskLease.TryClaimAsync` for BOTH kinds under ONE global constant advisory lock (`ClaimDecisionLockKey` — REPLACES and subsumes F1's per-key lock; the F1 predicate itself is unchanged, deployments-only): defer on any in-flight conflict or any older already-due Queued conflict (FIFO by overlap; ancestor chain exempt; resume never re-checks; ad-hoc invisible — accepted P5 residual, now the ONLY wave-gap occupant). New `ServerTaskClaimResult.TargetBlocked`; the pre-gate probe skips the `NodeTaskGate` slot symmetrically. Reason surface (`ServerTaskTargetExclusion`): task detail renders "Waiting for target X — busy with #N (title); M tasks ahead." from the same query the claim refuses on; ONE first-deferral task-log line (advisory-locked DB-probed idempotence); Tasks page `?target=` filter via the `task_target_assignments` join + TargetDetail "View tasks for this machine" link. CONTRACT CHANGE: none on the agent wire; EF migration `AddProjectRunbookAllowParallelTaskExecution` (two columns). Branch `feat/eng-per-plan-target-exclusion`. |
 | 1.19 | 2026-07-31 | **F5 round 6 — review remediation** (§6, §9). The agent's reconnect pacing regained an EPISODE count, which round 5 had deleted with the churn lane: `Reconnecting` does fire for a transport drop, so a link that establishes and drops repeatedly had no backoff at all. It is counted where the signal is correctly ordered (`PreviousRetryCount == 0` inside `NextRetryDelay`) rather than from the event, which lagged an episode. A 426 met during AUTOMATIC RECONNECT now opens the self-upgrade escape hatch — that path never raises `Closed`, so the supervisor's `StartAsync` catch never saw it and a contract bump could not self-heal. `RollBackAsync` disposes its EXCLUSIVE lease on the two shutdown paths that skip `Environment.Exit` (they had reintroduced the 1.16 'writer held by nobody'). `Agent:Update:SwapGateTimeout` warns and clamps instead of failing the boot when the updater is off. A rolled-back version is remembered beside its staged archive, so the maintenance-window bypass cannot turn a bad build into an ~8-minute restart loop. |
