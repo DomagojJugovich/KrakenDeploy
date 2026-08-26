@@ -27,6 +27,7 @@ using KrakenDeploy.Server.Services;
 using KrakenDeploy.Server.Transport;
 using KrakenDeploy.Server.Core.Domain.Lifecycles;
 using KrakenDeploy.Server.Core.Domain.Security;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Core.Domain.Targets;
@@ -141,6 +142,8 @@ public static class Program
     private static async Task<int> RunWebAsync(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
+        var startupSettings = ResolveStartupSettings(builder);
+        var runtimeLogging = new RuntimeLoggingSettings(ResolveLoggingSeed(builder.Configuration, startupSettings.Operational));
 
         // ── DI validation (C3/T1-18) ─────────────────────────────────────────
         // Validate the service graph in EVERY environment, not just Development.
@@ -172,6 +175,7 @@ public static class Program
         builder.Host.UseSerilog((context, services, lc) =>
         {
             lc.ReadFrom.Configuration(context.Configuration)
+                .MinimumLevel.ControlledBy(runtimeLogging.MinimumLevel)
                 .ReadFrom.Services(services)
                 .Enrich.FromLogContext()
                 .Enrich.WithMachineName()
@@ -190,8 +194,13 @@ public static class Program
                         "{SourceContext}{NewLine}{Message:lj}{NewLine}{Exception}",
                     formatProvider: CultureInfo.InvariantCulture);
 
-            var seqServerUrl = context.Configuration["Otel:SeqServerUrl"];
-            var otelOn = context.Configuration.GetValue("Otel:Enabled", false);
+            foreach (var (category, levelSwitch) in runtimeLogging.Overrides)
+            {
+                lc.MinimumLevel.Override(category, levelSwitch);
+            }
+
+            var seqServerUrl = startupSettings.Operational.SeqServerUrl;
+            var otelOn = startupSettings.Operational.OtelEnabled;
             if (otelOn && !string.IsNullOrWhiteSpace(seqServerUrl))
             {
                 lc.WriteTo.Seq(seqServerUrl);
@@ -244,19 +253,22 @@ public static class Program
         }
         // Bind the SSRF policy over the deny-by-default options registered by
         // AddKrakenDeployData. No `Ssrf` section => secure defaults stand.
-        builder.Services.Configure<SsrfOptions>(
-            builder.Configuration.GetSection(SsrfOptions.SectionName));
+        builder.Services.AddSingleton<IOptions<SsrfOptions>>(
+            Options.Create(startupSettings.Ssrf));
         // B3 — engine resilience ceilings (wave deadline, disconnect grace,
         // runbook max duration). No `Engine` section => sane defaults stand.
         // F2-followup 5 — validated at startup: a bare number binds as DAYS, and a
         // multi-week ceiling overflows CancelAfter and fails EVERY dispatch. Fail
         // the host with a named key instead of every deployment with "Parameter 'delay'".
         builder.Services.AddOptions<KrakenDeploy.Server.Data.EngineOptions>()
-            .Bind(builder.Configuration.GetSection(KrakenDeploy.Server.Data.EngineOptions.SectionName))
+            .Configure(options => CopyEngineSettings(startupSettings.Engine, options))
             .ValidateOnStart();
         builder.Services.AddSingleton<
             IValidateOptions<KrakenDeploy.Server.Data.EngineOptions>,
             KrakenDeploy.Server.Data.EngineOptionsValidator>();
+        builder.Services.AddSingleton<IOptions<OperationalSettings>>(
+            Options.Create(startupSettings.Operational));
+        builder.Services.AddSingleton(runtimeLogging);
         // Registers IKrakenAi + KrakenAiClientFactory + prompt sanitiser/cost
         // catalog. AddKrakenDeployData already registered the DB-backed
         // IKrakenAiSettingsProvider / IKrakenAiCallSink / IBudgetTracker, so
@@ -435,7 +447,7 @@ public static class Program
         // expiration keeps a live session alive indefinitely, so ExpireTimeSpan is
         // NOT the revocation bound — this interval is.
         var sessionRevalidation = TimeSpan.FromMinutes(
-            builder.Configuration.GetValue<int?>("Auth:SessionRevalidationMinutes") ?? 15);
+            startupSettings.Operational.AuthSessionRevalidationMinutes);
 
         builder.Services.AddAuthentication(IdentityConstants.ApplicationScheme)
             .AddCookie(IdentityConstants.ApplicationScheme, options =>
@@ -526,7 +538,7 @@ public static class Program
         }
         else
         {
-            OidcRegistrar.RegisterSchemes(builder);
+            OidcRegistrar.RegisterSchemes(builder, startupSettings.Ssrf.Oidc);
         }
 
         // Agent JWT bearer — separate scheme so it doesn't conflict with the
@@ -787,8 +799,8 @@ public static class Program
         var serviceVersion =
             typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
 
-        var otelEnabled = builder.Configuration.GetValue("Otel:Enabled", false);
-        var otlpEndpoint = builder.Configuration["Otel:OtlpEndpoint"];
+        var otelEnabled = startupSettings.Operational.OtelEnabled;
+        var otlpEndpoint = startupSettings.Operational.OtelEndpoint;
         var otelActive = otelEnabled && !string.IsNullOrWhiteSpace(otlpEndpoint);
 
         builder.Services
@@ -811,7 +823,7 @@ public static class Program
 
                 if (otelActive)
                 {
-                    tracing.AddOtlpExporter(o => ConfigureOtlp(o, builder.Configuration));
+                    tracing.AddOtlpExporter(o => ConfigureOtlp(o, startupSettings.Operational, builder.Configuration));
                 }
             })
             .WithMetrics(metrics =>
@@ -827,7 +839,7 @@ public static class Program
 
                 if (otelActive)
                 {
-                    metrics.AddOtlpExporter(o => ConfigureOtlp(o, builder.Configuration));
+                    metrics.AddOtlpExporter(o => ConfigureOtlp(o, startupSettings.Operational, builder.Configuration));
                 }
             });
 
@@ -872,13 +884,6 @@ public static class Program
             client.Timeout = TimeSpan.FromSeconds(60);
             client.DefaultRequestHeaders.Add("User-Agent", "KrakenDeploy/1.0 (+catalog-poll)");
             client.DefaultRequestHeaders.Add("Accept", "application/vnd.github+json");
-
-            var token = builder.Configuration["GitHub:Token"];
-            if (!string.IsNullOrWhiteSpace(token))
-            {
-                client.DefaultRequestHeaders.Authorization =
-                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-            }
         })
         // SSRF: pin the validated IP on every hop. Redirects stay ON — GitHub
         // release-asset URLs (browser_download_url) 302 to a CDN — but each hop's
@@ -4108,9 +4113,11 @@ public static class Program
     /// throws a descriptive error rather than failing obscurely at export time.
     /// </summary>
     private static void ConfigureOtlp(
-        OpenTelemetry.Exporter.OtlpExporterOptions options, ConfigurationManager configuration)
+        OpenTelemetry.Exporter.OtlpExporterOptions options,
+        OperationalSettings operational,
+        ConfigurationManager configuration)
     {
-        var endpoint = configuration["Otel:OtlpEndpoint"]!;
+        var endpoint = operational.OtelEndpoint;
         if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
         {
             throw new InvalidOperationException(
@@ -4119,7 +4126,7 @@ public static class Program
         }
 
         options.Endpoint = uri;
-        options.Protocol = ResolveOtlpProtocol(configuration["Otel:Protocol"]);
+        options.Protocol = ResolveOtlpProtocol(operational.OtelProtocol);
 
         var headers = configuration["Otel:Headers"];
         if (!string.IsNullOrWhiteSpace(headers))
@@ -4150,5 +4157,173 @@ public static class Program
 
         throw new InvalidOperationException(
             $"Otel:Protocol '{protocol}' is not supported. Use 'grpc' or 'http/protobuf'.");
+    }
+
+    private sealed record StartupSettings(
+        EngineSettings Engine,
+        OperationalSettings Operational,
+        SsrfOptions Ssrf);
+
+    private static StartupSettings ResolveStartupSettings(WebApplicationBuilder builder)
+    {
+        EngineSettings? persistedEngine = null;
+        OperationalSettings? persistedOperational = null;
+        SsrfSettings? persistedSsrf = null;
+
+        var multiAccount = builder.Configuration.GetValue(
+            $"{MultiAccountOptions.SectionName}:{nameof(MultiAccountOptions.Enabled)}", false);
+        var connectionString = multiAccount
+            ? null
+            : builder.Configuration.GetConnectionString("KrakenDb");
+
+        if (!string.IsNullOrWhiteSpace(connectionString))
+        {
+            try
+            {
+                var options = new DbContextOptionsBuilder<KrakenDbContext>()
+                    .UseNpgsql(connectionString)
+                    .UseSnakeCaseNamingConvention()
+                    .Options;
+                using var db = new KrakenDbContext(
+                    options, new KrakenDeploy.Server.Data.Spaces.DefaultSpaceContext());
+                persistedEngine = SettingsService.TryReadAsync<EngineSettings>(db)
+                    .GetAwaiter().GetResult();
+                persistedOperational = SettingsService.TryReadAsync<OperationalSettings>(db)
+                    .GetAwaiter().GetResult();
+                persistedSsrf = SettingsService.TryReadAsync<SsrfSettings>(db)
+                    .GetAwaiter().GetResult();
+            }
+            catch
+            {
+                // First run, pending migration, or unavailable DB: file/default
+                // values keep startup possible. The normal migration path follows.
+            }
+        }
+
+        var engine = persistedEngine ?? new EngineSettings();
+        if (persistedEngine is null)
+        {
+            builder.Configuration.GetSection(EngineOptions.SectionName).Bind(engine);
+        }
+
+        var operational = persistedOperational ?? ResolveOperationalFallback(builder.Configuration);
+        EffectiveSettingsService.ValidateOperational(operational);
+
+        // SSRF is the deliberate inversion: every file-provided property pins that
+        // property over the DB document. Apply properties individually so arrays
+        // replace rather than ConfigurationBinder-appending to the persisted list.
+        var ssrfDocument = persistedSsrf ?? new SsrfSettings();
+        ApplySsrfPins(builder.Configuration, nameof(ssrfDocument.Webhook), ssrfDocument.Webhook);
+        ApplySsrfPins(builder.Configuration, nameof(ssrfDocument.StepCatalog), ssrfDocument.StepCatalog);
+        ApplySsrfPins(builder.Configuration, nameof(ssrfDocument.Oidc), ssrfDocument.Oidc);
+        ApplySsrfPins(builder.Configuration, nameof(ssrfDocument.Ai), ssrfDocument.Ai);
+        EffectiveSettingsService.ValidateSsrfPolicy(nameof(ssrfDocument.Webhook), ssrfDocument.Webhook);
+        EffectiveSettingsService.ValidateSsrfPolicy(nameof(ssrfDocument.StepCatalog), ssrfDocument.StepCatalog);
+        EffectiveSettingsService.ValidateSsrfPolicy(nameof(ssrfDocument.Oidc), ssrfDocument.Oidc);
+        EffectiveSettingsService.ValidateSsrfPolicy(nameof(ssrfDocument.Ai), ssrfDocument.Ai);
+
+        return new StartupSettings(engine, operational, new SsrfOptions
+        {
+            Webhook = ssrfDocument.Webhook.ToSsrfPolicy(),
+            StepCatalog = ssrfDocument.StepCatalog.ToSsrfPolicy(),
+            Oidc = ssrfDocument.Oidc.ToSsrfPolicy(),
+            Ai = ssrfDocument.Ai.ToSsrfPolicy(),
+        });
+    }
+
+    private static OperationalSettings ResolveOperationalFallback(ConfigurationManager configuration)
+    {
+        var settings = new OperationalSettings
+        {
+            AuthSessionRevalidationMinutes =
+                configuration.GetValue<int?>("Auth:SessionRevalidationMinutes") ?? 15,
+            ServerBaseUrl = configuration["Server:BaseUrl"] ?? "",
+            AgentTokenLifetimeDays = configuration.GetValue<int?>("Agent:TokenLifetimeDays") ?? 90,
+            SerilogMinimumLevel = configuration["Serilog:MinimumLevel:Default"] ?? "Information",
+            OtelEnabled = configuration.GetValue("Otel:Enabled", false),
+            OtelEndpoint = configuration["Otel:OtlpEndpoint"] ?? "",
+            OtelProtocol = configuration["Otel:Protocol"] ?? "grpc",
+            SeqServerUrl = configuration["Otel:SeqServerUrl"] ?? "",
+        };
+
+        var overrides = configuration.GetSection("Serilog:MinimumLevel:Override")
+            .Get<Dictionary<string, string>>();
+        if (overrides is not null)
+        {
+            settings.SerilogCategoryOverrides = overrides;
+        }
+        return settings;
+    }
+
+    private static void ApplySsrfPins(
+        ConfigurationManager configuration, string name, SsrfPolicySettings policy)
+    {
+        var prefix = $"{SsrfOptions.SectionName}:{name}";
+        if (HasConfigurationValue(configuration, $"{prefix}:AllowLoopback"))
+        {
+            policy.AllowLoopback = configuration.GetValue<bool>($"{prefix}:AllowLoopback");
+        }
+        if (HasConfigurationValue(configuration, $"{prefix}:AllowPrivate"))
+        {
+            policy.AllowPrivate = configuration.GetValue<bool>($"{prefix}:AllowPrivate");
+        }
+        if (HasConfigurationValue(configuration, $"{prefix}:AllowedHosts"))
+        {
+            policy.AllowedHosts = configuration.GetSection($"{prefix}:AllowedHosts")
+                .Get<string[]>() ?? [];
+        }
+    }
+
+    private static bool HasConfigurationValue(ConfigurationManager configuration, string key)
+    {
+        if (configuration.GetSection(key).GetChildren().Any())
+        {
+            return true;
+        }
+        return configuration is IConfigurationRoot root
+            ? root.Providers.Any(provider => provider.TryGet(key, out _))
+            : configuration[key] is not null;
+    }
+
+    /// <summary>
+    /// Seeds the live Serilog switches. ReadFrom.Configuration installs the file's
+    /// <c>Serilog:MinimumLevel:Override</c> entries as FIXED levels; a switch
+    /// registered for the same category replaces it. The seed is therefore the UNION
+    /// of file overrides and persisted-document overrides (document wins), so a saved
+    /// document that covers only a subset cannot leave the remaining file categories
+    /// pinned at immutable levels invisible to the settings UI.
+    /// </summary>
+    private static OperationalSettings ResolveLoggingSeed(
+        ConfigurationManager configuration, OperationalSettings effective)
+    {
+        var seed = new OperationalSettings
+        {
+            SerilogMinimumLevel = effective.SerilogMinimumLevel,
+            SerilogCategoryOverrides = new Dictionary<string, string>(StringComparer.Ordinal),
+        };
+        foreach (var pair in configuration.GetSection("Serilog:MinimumLevel:Override").GetChildren())
+        {
+            if (pair.Key.Length > 0 && pair.Value is not null)
+            {
+                seed.SerilogCategoryOverrides[pair.Key] = pair.Value;
+            }
+        }
+        foreach (var (category, level) in effective.SerilogCategoryOverrides)
+        {
+            seed.SerilogCategoryOverrides[category] = level;
+        }
+        return seed;
+    }
+
+    private static void CopyEngineSettings(EngineSettings source, EngineOptions target)
+    {
+        target.MaxConcurrentTasks = source.MaxConcurrentTasks;
+        target.DefaultTargetWaveMaxParallelism = source.DefaultTargetWaveMaxParallelism;
+        target.MaxTargetWaveDuration = source.MaxTargetWaveDuration;
+        target.MaxTargetQueueWait = source.MaxTargetQueueWait;
+        target.AgentDisconnectWaveGrace = source.AgentDisconnectWaveGrace;
+        target.MaxDeployReleaseWaitDuration = source.MaxDeployReleaseWaitDuration;
+        target.DefaultInterventionTimeout = source.DefaultInterventionTimeout;
+        target.MaxDeployReleaseGatedWaitDuration = source.MaxDeployReleaseGatedWaitDuration;
     }
 }

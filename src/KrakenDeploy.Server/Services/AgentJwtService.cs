@@ -3,7 +3,9 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
 namespace KrakenDeploy.Server.Services;
@@ -32,10 +34,12 @@ public sealed class AgentJwtService
     // OFFLINE gap before a manual re-enroll — not an operator chore interval. A
     // KNOWN leak is revoked immediately via the token-version bump; expiry is the
     // backstop for tokens that stop refreshing (dead/decommissioned boxes age out).
-    private const int DefaultTokenLifetimeDays = 90;
     private readonly TimeSpan _tokenLifetime;
 
-    public AgentJwtService(IConfiguration configuration, TimeProvider timeProvider)
+    public AgentJwtService(
+        IConfiguration configuration,
+        IOptions<OperationalSettings> operationalSettings,
+        TimeProvider timeProvider)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(timeProvider);
@@ -52,12 +56,11 @@ public sealed class AgentJwtService
                 "Agent:JwtSigningKey must be at least 32 bytes (256 bits) for HS256.");
         }
 
-        var lifetimeDays = configuration.GetValue<int?>("Agent:TokenLifetimeDays")
-            ?? DefaultTokenLifetimeDays;
-        if (lifetimeDays < 1)
+        var lifetimeDays = operationalSettings.Value.AgentTokenLifetimeDays;
+        if (lifetimeDays is < 1 or > 3650)
         {
             throw new InvalidOperationException(
-                "Agent:TokenLifetimeDays must be at least 1 day.");
+                "Agent:TokenLifetimeDays must be between 1 and 3650 days.");
         }
 
         _tokenLifetime = TimeSpan.FromDays(lifetimeDays);

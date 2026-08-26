@@ -7,11 +7,11 @@ namespace KrakenDeploy.Server.Data.Tests;
 
 /// <summary>
 /// D3 RIDER — rolling-window visibility. When a rolling <c>Kraken.StepGroup</c>
-/// is present but the fan-out was NOT batched (malformed / non-positive
+/// is present but its explicit cap cannot be used (malformed / non-positive
 /// MaxParallelism from imported or legacy data, or a wave spanning multiple
 /// rolling groups), the orchestrator must surface it: a warning in the task log
 /// AND a <c>Deployment.RollingBatchingDisabled</c> audit event, rather than
-/// silently fanning out to every target. The typed int column kills the
+/// silently falling back to the default target-wave cap. The typed int column kills the
 /// malformed case at save time going forward; this covers the runtime path for
 /// imported/legacy data.
 /// </summary>
@@ -42,15 +42,15 @@ public sealed class OrchestratorRollingVisibilityTests(PostgresFixture postgres)
 
         await harness.RunDeploymentAsync(deploymentId);
 
-        // The deployment still completes (no-cap fallback beats serialising to
-        // one-target-at-a-time) but the disabled cap is now audible.
+        // The deployment still completes using the Engine default cap, but the
+        // unusable explicit rolling cap is audible.
         var dep = await harness.GetServerTaskAsync(deploymentId);
         dep.Status.Should().Be(DeploymentStatus.Succeeded);
 
         var events = await harness.GetAuditEventTypesAsync(deploymentId);
         events.Should().Contain(AuditEventType.DeploymentRollingBatchingDisabled,
             because: "a rolling group is present but its window is non-positive, " +
-                     "so batching was disabled and must be surfaced");
+                      "so its fallback to default batching must be surfaced");
     }
 
     [Fact]

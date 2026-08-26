@@ -10,7 +10,6 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Transport;
 
@@ -75,9 +74,11 @@ public sealed class DeployReleaseStepRunner(
     IServiceScopeFactory scopeFactory,
     IHubContext<UiHub, IUiHubClient> uiHub,
     TimeProvider timeProvider,
-    IOptions<EngineOptions> engineOptions,
     ILogger<DeployReleaseStepRunner> logger)
 {
+    // Explicit direct-construction seam; production requires the scoped service.
+    internal Func<CancellationToken, Task<TimeSpan>>? WorkingWaitBudgetOverride { get; set; }
+
     /// <summary>
     /// Step type the worker dispatches to this runner.
     /// </summary>
@@ -130,6 +131,10 @@ public sealed class DeployReleaseStepRunner(
         using var spaceScope = scope.ServiceProvider
             .GetRequiredService<ISpaceContext>().WithSpace(spaceId);
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
+        var workingWaitBudget = WorkingWaitBudgetOverride is { } budgetOverride
+            ? await budgetOverride(ct).ConfigureAwait(false)
+            : (await scope.ServiceProvider.GetRequiredService<EffectiveSettingsService>()
+                .GetEngineAsync(ct).ConfigureAwait(false)).MaxDeployReleaseWaitDuration.Value;
 
         // ── Resolve the parent task to find environment + target set ────────
         // The child cascade inherits the parent's FULL target set from the
@@ -289,7 +294,8 @@ public sealed class DeployReleaseStepRunner(
         // ── Mirror the child's log into the parent + wait for terminal state ──
         // child + parent both live in spaceId; thread it so the poll-loop's
         // own scopes resolve their reads against that Space.
-        return await WaitForChildAsync(child.Id, parentDeploymentId, step.Name, spaceId, ct)
+        return await WaitForChildAsync(
+                child.Id, parentDeploymentId, step.Name, spaceId, workingWaitBudget, ct)
             .ConfigureAwait(false);
     }
 
@@ -315,10 +321,10 @@ public sealed class DeployReleaseStepRunner(
     /// </para>
     /// </summary>
     private async Task<bool> WaitForChildAsync(
-        Guid childId, Guid parentId, string stepName, Guid spaceId, CancellationToken ct)
+        Guid childId, Guid parentId, string stepName, Guid spaceId,
+        TimeSpan workingBudget, CancellationToken ct)
     {
         var lastSequence = -1;
-        var workingBudget = engineOptions.Value.MaxDeployReleaseWaitDuration;
         var workingWaited = TimeSpan.Zero;
         var announcedPause = false;
         // The inner working budget is armed only ONCE A PAUSE HAS BEEN OBSERVED. For a

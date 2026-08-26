@@ -1,0 +1,88 @@
+@using KrakenDeploy.Server.Core.Domain.Settings
+
+@inject EffectiveSettingsService EffectiveSettings
+@inject IAuditLog Audit
+@inject NotificationService Notify
+@inject UiActionGuard Guard
+
+<RadzenStack Gap="1rem" class="rz-p-3">
+    <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2">Outbound request security (SSRF)</RadzenText>
+        <RadzenBadge Text="Restart" BadgeStyle="BadgeStyle.Warning" Variant="Variant.Flat" />
+    </RadzenStack>
+    <RadzenAlert AlertStyle="AlertStyle.Warning" Variant="Variant.Flat" Shade="Shade.Lighter" AllowClose="false" Icon="security">
+        <strong>Configuration FILE values override database values only for SSRF settings.</strong>
+        These operator safety pins are read-only here; a saved database value cannot override a pinned property.
+        Restart after saving because outbound handlers and OIDC backchannels are built at startup.
+    </RadzenAlert>
+    @if (_effective is null || _form is null)
+    {
+        <RadzenProgressBarCircular ShowValue="false" Mode="ProgressBarMode.Indeterminate" />
+    }
+    else
+    {
+        <SsrfPolicyEditor Title="Webhook" Model="_form.Webhook" Effective="_effective.Webhook" />
+        <SsrfPolicyEditor Title="Step catalog" Model="_form.StepCatalog" Effective="_effective.StepCatalog" />
+        <SsrfPolicyEditor Title="OIDC" Model="_form.Oidc" Effective="_effective.Oidc" />
+        <SsrfPolicyEditor Title="AI" Model="_form.Ai" Effective="_effective.Ai" />
+        <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End">
+            <RadzenButton Text="Save SSRF settings" Icon="save" IsBusy="_saving" Click="SaveAsync" />
+        </RadzenStack>
+    }
+</RadzenStack>
+
+@code {
+    private EffectiveSsrfSettings? _effective;
+    private SsrfSettings? _form;
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _effective = await EffectiveSettings.GetSsrfAsync();
+        _form = new SsrfSettings
+        {
+            Webhook = Copy(_effective.Webhook),
+            StepCatalog = Copy(_effective.StepCatalog),
+            Oidc = Copy(_effective.Oidc),
+            Ai = Copy(_effective.Ai),
+        };
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_form is null) return;
+        if (!await Guard.AllowAsync(Permission.AdministerSystem, new PermissionScope())) return;
+        _saving = true;
+        try
+        {
+            await EffectiveSettings.SaveSsrfAsync(_form);
+            await Audit.RecordAsync(
+                AuditEventType.SsrfSettingsUpdated,
+                subjectType: "SsrfSettings",
+                details: BuildAuditDetails(_form));
+            Notify.Notify(NotificationSeverity.Success, "SSRF settings saved", "Restart the server to rebuild outbound handlers.", 5000);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Failed to save SSRF settings", ex.Message, 6000);
+        }
+        finally { _saving = false; }
+    }
+
+    private static SsrfPolicySettings Copy(EffectiveSsrfPolicy source) => new()
+    {
+        AllowLoopback = source.AllowLoopback.Value,
+        AllowPrivate = source.AllowPrivate.Value,
+        AllowedHosts = [.. source.AllowedHosts.Value],
+    };
+
+    private static string BuildAuditDetails(SsrfSettings value) => string.Join("; ",
+        PolicyAudit("Webhook", value.Webhook), PolicyAudit("StepCatalog", value.StepCatalog),
+        PolicyAudit("Oidc", value.Oidc), PolicyAudit("Ai", value.Ai));
+
+    private static string PolicyAudit(string name, SsrfPolicySettings value) =>
+        $"{name}: AllowLoopback={value.AllowLoopback}, AllowPrivate={value.AllowPrivate}, AllowedHostCount={value.AllowedHosts.Length}";
+}

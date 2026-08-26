@@ -1,0 +1,22 @@
+@using KrakenDeploy.Server.Core.Domain.Settings
+
+<RadzenBadge Text="@Label" BadgeStyle="@Style" Variant="Variant.Flat" Shade="Shade.Lighter" />
+
+@code {
+    [Parameter, EditorRequired]
+    public SettingValueSource Source { get; set; }
+
+    private string Label => Source switch
+    {
+        SettingValueSource.ConfigurationFile => "Configuration file",
+        SettingValueSource.Database => "Database",
+        _ => "Default",
+    };
+
+    private BadgeStyle Style => Source switch
+    {
+        SettingValueSource.ConfigurationFile => BadgeStyle.Info,
+        SettingValueSource.Database => BadgeStyle.Success,
+        _ => BadgeStyle.Light,
+    };
+}

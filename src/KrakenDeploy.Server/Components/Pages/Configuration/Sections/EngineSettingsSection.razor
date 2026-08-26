@@ -1,0 +1,132 @@
+@using System.Globalization
+@using KrakenDeploy.Server.Core.Domain.Settings
+
+@inject EffectiveSettingsService EffectiveSettings
+@inject IAuditLog Audit
+@inject NotificationService Notify
+@inject UiActionGuard Guard
+
+<RadzenStack Gap="1rem" class="rz-p-3">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2">Deployment engine</RadzenText>
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+        Database values override configuration-file values. The default target fanout applies only when a wave has no valid explicit rolling-group parallelism.
+    </RadzenText>
+    @if (_effective is null)
+    {
+        <RadzenProgressBarCircular ShowValue="false" Mode="ProgressBarMode.Indeterminate" />
+    }
+    else
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Info" Variant="Variant.Flat" Shade="Shade.Lighter" AllowClose="false">
+            Durations use invariant <code>TimeSpan</code> text: <code>d.hh:mm:ss</code> (for example <code>0.02:30:00</code> is 2 hours 30 minutes). Invalid or out-of-range values are rejected when saved.
+        </RadzenAlert>
+        <RadzenCard>
+            <RadzenStack Gap="1rem">
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="Maximum concurrent tasks" Variant="Variant.Outlined" Style="flex:1">
+                        <RadzenNumeric TValue="int" @bind-Value="_form.MaxConcurrentTasks" Min="1" />
+                    </RadzenFormField>
+                    <SettingSourceBadge Source="_effective.MaxConcurrentTasks.Source" />
+                    <RadzenBadge Text="Restart" BadgeStyle="BadgeStyle.Warning" Variant="Variant.Flat" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="Default target wave maximum parallelism" Variant="Variant.Outlined" Style="flex:1">
+                        <RadzenNumeric TValue="int" @bind-Value="_form.DefaultTargetWaveMaxParallelism" Min="1" />
+                    </RadzenFormField>
+                    <SettingSourceBadge Source="_effective.DefaultTargetWaveMaxParallelism.Source" />
+                    <RadzenBadge Text="Live" BadgeStyle="BadgeStyle.Success" Variant="Variant.Flat" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="Maximum target wave duration" Variant="Variant.Outlined" Style="flex:1"><RadzenTextBox @bind-Value="_maxTargetWaveDuration" Style="width:100%" /></RadzenFormField>
+                    <SettingSourceBadge Source="_effective.MaxTargetWaveDuration.Source" /><RadzenBadge Text="Live" BadgeStyle="BadgeStyle.Success" Variant="Variant.Flat" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="Maximum target queue wait" Variant="Variant.Outlined" Style="flex:1"><RadzenTextBox @bind-Value="_maxTargetQueueWait" Style="width:100%" /></RadzenFormField>
+                    <SettingSourceBadge Source="_effective.MaxTargetQueueWait.Source" /><RadzenBadge Text="Live" BadgeStyle="BadgeStyle.Success" Variant="Variant.Flat" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="Agent disconnect wave grace" Variant="Variant.Outlined" Style="flex:1"><RadzenTextBox @bind-Value="_agentDisconnectWaveGrace" Style="width:100%" /></RadzenFormField>
+                    <SettingSourceBadge Source="_effective.AgentDisconnectWaveGrace.Source" /><RadzenBadge Text="Live" BadgeStyle="BadgeStyle.Success" Variant="Variant.Flat" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="Maximum deploy-release wait duration" Variant="Variant.Outlined" Style="flex:1"><RadzenTextBox @bind-Value="_maxDeployReleaseWaitDuration" Style="width:100%" /></RadzenFormField>
+                    <SettingSourceBadge Source="_effective.MaxDeployReleaseWaitDuration.Source" /><RadzenBadge Text="Live" BadgeStyle="BadgeStyle.Success" Variant="Variant.Flat" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="Default intervention timeout" Variant="Variant.Outlined" Style="flex:1"><RadzenTextBox @bind-Value="_defaultInterventionTimeout" Style="width:100%" /></RadzenFormField>
+                    <SettingSourceBadge Source="_effective.DefaultInterventionTimeout.Source" /><RadzenBadge Text="Live" BadgeStyle="BadgeStyle.Success" Variant="Variant.Flat" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="Maximum gated deploy-release wait duration" Variant="Variant.Outlined" Style="flex:1"><RadzenTextBox @bind-Value="_maxDeployReleaseGatedWaitDuration" Style="width:100%" /></RadzenFormField>
+                    <SettingSourceBadge Source="_effective.MaxDeployReleaseGatedWaitDuration.Source" /><RadzenBadge Text="Live" BadgeStyle="BadgeStyle.Success" Variant="Variant.Flat" />
+                </RadzenStack>
+            </RadzenStack>
+        </RadzenCard>
+        <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End">
+            <RadzenButton Text="Save engine settings" Icon="save" IsBusy="_saving" Click="SaveAsync" />
+        </RadzenStack>
+    }
+</RadzenStack>
+
+@code {
+    private EffectiveEngineSettings? _effective;
+    private EngineSettings _form = new();
+    private string _maxTargetWaveDuration = "";
+    private string _maxTargetQueueWait = "";
+    private string _agentDisconnectWaveGrace = "";
+    private string _maxDeployReleaseWaitDuration = "";
+    private string _defaultInterventionTimeout = "";
+    private string _maxDeployReleaseGatedWaitDuration = "";
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _effective = await EffectiveSettings.GetEngineAsync();
+        _form = new EngineSettings
+        {
+            MaxConcurrentTasks = _effective.MaxConcurrentTasks.Value,
+            DefaultTargetWaveMaxParallelism = _effective.DefaultTargetWaveMaxParallelism.Value,
+        };
+        _maxTargetWaveDuration = Format(_effective.MaxTargetWaveDuration.Value);
+        _maxTargetQueueWait = Format(_effective.MaxTargetQueueWait.Value);
+        _agentDisconnectWaveGrace = Format(_effective.AgentDisconnectWaveGrace.Value);
+        _maxDeployReleaseWaitDuration = Format(_effective.MaxDeployReleaseWaitDuration.Value);
+        _defaultInterventionTimeout = Format(_effective.DefaultInterventionTimeout.Value);
+        _maxDeployReleaseGatedWaitDuration = Format(_effective.MaxDeployReleaseGatedWaitDuration.Value);
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!await Guard.AllowAsync(Permission.ConfigureServer, new PermissionScope())) return;
+        _saving = true;
+        try
+        {
+            _form.MaxTargetWaveDuration = Parse(_maxTargetWaveDuration, "Maximum target wave duration");
+            _form.MaxTargetQueueWait = Parse(_maxTargetQueueWait, "Maximum target queue wait");
+            _form.AgentDisconnectWaveGrace = Parse(_agentDisconnectWaveGrace, "Agent disconnect wave grace");
+            _form.MaxDeployReleaseWaitDuration = Parse(_maxDeployReleaseWaitDuration, "Maximum deploy-release wait duration");
+            _form.DefaultInterventionTimeout = Parse(_defaultInterventionTimeout, "Default intervention timeout");
+            _form.MaxDeployReleaseGatedWaitDuration = Parse(_maxDeployReleaseGatedWaitDuration, "Maximum gated deploy-release wait duration");
+            await EffectiveSettings.SaveEngineAsync(_form);
+            await Audit.RecordAsync(
+                AuditEventType.EngineSettingsUpdated,
+                subjectType: "EngineSettings",
+                details: "Updated fields: MaxConcurrentTasks, DefaultTargetWaveMaxParallelism, MaxTargetWaveDuration, MaxTargetQueueWait, AgentDisconnectWaveGrace, MaxDeployReleaseWaitDuration, DefaultInterventionTimeout, MaxDeployReleaseGatedWaitDuration");
+            Notify.Notify(NotificationSeverity.Success, "Engine settings saved", "Live values apply immediately; maximum concurrent tasks requires restart.", 5000);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Failed to save engine settings", ex.Message, 6000);
+        }
+        finally { _saving = false; }
+    }
+
+    private static string Format(TimeSpan value) => value.ToString("c", CultureInfo.InvariantCulture);
+    private static TimeSpan Parse(string value, string label) =>
+        TimeSpan.TryParseExact(value, "c", CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : throw new ArgumentException($"{label} must use d.hh:mm:ss TimeSpan format.");
+}

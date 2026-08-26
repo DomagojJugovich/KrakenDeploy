@@ -76,7 +76,8 @@ public class EngineOptionsValidatorTests
 
         options.MaxTargetWaveDuration.Should().Be(TimeSpan.FromHours(1));
         options.MaxTargetQueueWait.Should().Be(EngineOptions.DefaultMaxTargetQueueWait);
-        options.MaxConcurrentTasks.Should().Be(5);
+        options.MaxConcurrentTasks.Should().Be(20);
+        options.DefaultTargetWaveMaxParallelism.Should().Be(10);
     }
 
     [Fact]
@@ -167,17 +168,22 @@ public class EngineOptionsValidatorTests
         act.Should().Throw<OptionsValidationException>().WithMessage($"*{key}*");
     }
 
-    /// <summary>Zero is the documented "disable the disconnect monitor" switch for
-    /// this one knob, so it must survive validation — a negative value is still a
-    /// typo, but B3 documents zero-or-negative as disabling, so only reject values
-    /// past the ceiling here.</summary>
-    [Fact]
-    public void Zero_disconnect_grace_stays_legal_because_it_disables_the_monitor()
-    {
-        var options = Resolve(("AgentDisconnectWaveGrace", "00:00:00"));
+    [Theory]
+    [InlineData("00:00:00")]
+    [InlineData("00:00:30")]
+    public void Disconnect_grace_must_be_strictly_greater_than_thirty_seconds(string value)
+        => FluentActions.Invoking(() => Resolve(("AgentDisconnectWaveGrace", value)))
+            .Should().Throw<OptionsValidationException>()
+            .WithMessage("*greater than 30 seconds*");
 
-        options.AgentDisconnectWaveGrace.Should().Be(TimeSpan.Zero);
-    }
+    [Fact]
+    public void Disconnect_grace_must_be_shorter_than_wave_plus_queue_wait()
+        => FluentActions.Invoking(() => Resolve(
+                ("MaxTargetWaveDuration", "00:01:00"),
+                ("MaxTargetQueueWait", "00:01:00"),
+                ("AgentDisconnectWaveGrace", "00:02:00")))
+            .Should().Throw<OptionsValidationException>()
+            .WithMessage("*less than*MaxTargetWaveDuration*MaxTargetQueueWait*");
 
     [Fact]
     public void Non_positive_task_cap_is_refused()
@@ -187,6 +193,20 @@ public class EngineOptionsValidatorTests
         act.Should().Throw<OptionsValidationException>()
             .WithMessage("*MaxConcurrentTasks*");
     }
+
+    [Fact]
+    public void Non_positive_default_target_fanout_is_refused()
+        => FluentActions.Invoking(() => Resolve(("DefaultTargetWaveMaxParallelism", "0")))
+            .Should().Throw<OptionsValidationException>()
+            .WithMessage("*DefaultTargetWaveMaxParallelism*");
+
+    [Fact]
+    public void Gated_wait_must_exceed_default_intervention_timeout()
+        => FluentActions.Invoking(() => Resolve(
+                ("DefaultInterventionTimeout", "02:00:00"),
+                ("MaxDeployReleaseGatedWaitDuration", "02:00:00")))
+            .Should().Throw<OptionsValidationException>()
+            .WithMessage("*MaxDeployReleaseGatedWaitDuration*exceed*DefaultInterventionTimeout*");
 
     [Fact]
     public void All_offending_keys_are_reported_together()

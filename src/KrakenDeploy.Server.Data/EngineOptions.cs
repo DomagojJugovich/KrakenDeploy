@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 
@@ -60,8 +61,8 @@ public sealed class EngineOptions
     /// BestEffort/Atomic failure mode). Deliberately longer than the hub's
     /// 30 s offline-marking grace: the B2 agent reconnects with unbounded
     /// retry and FLUSHES buffered wave results on reconnect — cancelling too
-    /// early discards work the flush would have delivered. Zero or negative
-    /// disables the disconnect monitor (the wave deadline still applies).
+    /// early discards work the flush would have delivered. It must be greater
+    /// than 30 seconds and shorter than the wave duration plus queue wait.
     /// </summary>
     public TimeSpan AgentDisconnectWaveGrace { get; set; } = TimeSpan.FromMinutes(2);
 
@@ -72,7 +73,7 @@ public sealed class EngineOptions
 
     /// <summary>
     /// B7 — how many deployment orchestrations this node runs concurrently
-    /// (Octopus's task cap; same default of 5). Excess deployments stay queued
+    /// (startup snapshot, default 20). Excess deployments stay queued
     /// on the dispatch channel until a slot frees. Each orchestration holds DB
     /// contexts, a log sequencer and per-target dispatch state for its whole
     /// duration — pre-B7 the worker fire-and-forgot every item unbounded.
@@ -87,7 +88,15 @@ public sealed class EngineOptions
     /// waiting on a gate-starved child would deadlock the node.
     /// </para>
     /// </summary>
-    public int MaxConcurrentTasks { get; set; } = 5;
+    public int MaxConcurrentTasks { get; set; } = 20;
+
+    /// <summary>
+    /// Default maximum number of targets dispatched concurrently in a target
+    /// wave. A valid explicit rolling-group <c>MaxParallelism</c> overrides this
+    /// value. Waves without a valid explicit rolling cap are split into
+    /// sequential batches of this size.
+    /// </summary>
+    public int DefaultTargetWaveMaxParallelism { get; set; } = 10;
 
     /// <summary>
     /// E3 — server-side ceiling for how long an <c>Octopus.DeployRelease</c> step
@@ -195,9 +204,7 @@ public sealed class EngineOptionsValidator(IConfiguration configuration)
 
         Check(nameof(EngineOptions.MaxTargetWaveDuration), options.MaxTargetWaveDuration);
         Check(nameof(EngineOptions.MaxTargetQueueWait), options.MaxTargetQueueWait);
-        Check(nameof(EngineOptions.AgentDisconnectWaveGrace), options.AgentDisconnectWaveGrace,
-            // Zero is the documented "disable the disconnect monitor" switch.
-            allowZero: true);
+        Check(nameof(EngineOptions.AgentDisconnectWaveGrace), options.AgentDisconnectWaveGrace);
         Check(nameof(EngineOptions.MaxDeployReleaseWaitDuration),
             options.MaxDeployReleaseWaitDuration);
         Check(nameof(EngineOptions.MaxDeployReleaseGatedWaitDuration),
@@ -216,14 +223,42 @@ public sealed class EngineOptionsValidator(IConfiguration configuration)
                 $"got {options.MaxConcurrentTasks}.");
         }
 
+        if (options.DefaultTargetWaveMaxParallelism <= 0)
+        {
+            failures.Add(
+                $"Engine:{nameof(EngineOptions.DefaultTargetWaveMaxParallelism)} must be positive, " +
+                $"got {options.DefaultTargetWaveMaxParallelism}.");
+        }
+
+        if (options.AgentDisconnectWaveGrace <= TimeSpan.FromSeconds(30))
+        {
+            failures.Add(
+                $"Engine:{nameof(EngineOptions.AgentDisconnectWaveGrace)} must be greater than 30 seconds.");
+        }
+        if (options.AgentDisconnectWaveGrace >= options.MaxTargetWaveDuration + options.MaxTargetQueueWait)
+        {
+            failures.Add(
+                $"Engine:{nameof(EngineOptions.AgentDisconnectWaveGrace)} must be less than " +
+                $"Engine:{nameof(EngineOptions.MaxTargetWaveDuration)} plus " +
+                $"Engine:{nameof(EngineOptions.MaxTargetQueueWait)}.");
+        }
+        if (options.MaxDeployReleaseGatedWaitDuration <= options.DefaultInterventionTimeout)
+        {
+            failures.Add(
+                $"Engine:{nameof(EngineOptions.MaxDeployReleaseGatedWaitDuration)} must exceed " +
+                $"Engine:{nameof(EngineOptions.DefaultInterventionTimeout)}.");
+        }
+
         return failures.Count == 0
             ? ValidateOptionsResult.Success
             : ValidateOptionsResult.Fail(failures);
 
-        void Check(string key, TimeSpan value, bool allowZero = false)
+        void Check(string key, TimeSpan value)
         {
             var raw = section[key];
-            if (raw is not null && IsBareNumber(raw))
+            if (raw is not null && IsBareNumber(raw)
+                && TimeSpan.TryParse(raw, CultureInfo.InvariantCulture, out var configuredValue)
+                && configuredValue == value)
             {
                 failures.Add(
                     $"Engine:{key} is '{raw}', which TimeSpan binding reads as " +
@@ -233,7 +268,7 @@ public sealed class EngineOptionsValidator(IConfiguration configuration)
                 return;
             }
 
-            if (value < TimeSpan.Zero || (!allowZero && value == TimeSpan.Zero))
+            if (value <= TimeSpan.Zero)
             {
                 failures.Add($"Engine:{key} must be a positive duration, got {value}.");
             }

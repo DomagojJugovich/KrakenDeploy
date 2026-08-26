@@ -1,0 +1,144 @@
+@using KrakenDeploy.Server.Core.Domain.Settings
+
+@inject EffectiveSettingsService EffectiveSettings
+@inject IAuditLog Audit
+@inject NotificationService Notify
+@inject UiActionGuard Guard
+
+<RadzenStack Gap="1rem" class="rz-p-3">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2">Catalog feeds</RadzenText>
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Package, template-feed, and token changes apply live.</RadzenText>
+    @if (_effective is null)
+    {
+        <RadzenProgressBarCircular ShowValue="false" Mode="ProgressBarMode.Indeterminate" />
+    }
+    else
+    {
+        <RadzenCard>
+            <RadzenStack Gap="1rem">
+                <RadzenText TextStyle="TextStyle.H6">Package catalog</RadzenText>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.75rem">
+                    <RadzenSwitch @bind-Value="_form.PackageCatalogEnabled" Name="PackageCatalogEnabled" />
+                    <RadzenLabel Component="PackageCatalogEnabled" Text="Enabled" />
+                    <SettingSourceBadge Source="_effective.PackageCatalogEnabled.Source" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="0.75rem">
+                    <RadzenFormField Text="Owner" Variant="Variant.Outlined" Style="flex:1">
+                        <RadzenTextBox @bind-Value="_form.PackageCatalogOwner" Style="width:100%" />
+                    </RadzenFormField>
+                    <SettingSourceBadge Source="_effective.PackageCatalogOwner.Source" />
+                    <RadzenFormField Text="Repository" Variant="Variant.Outlined" Style="flex:1">
+                        <RadzenTextBox @bind-Value="_form.PackageCatalogRepo" Style="width:100%" />
+                    </RadzenFormField>
+                    <SettingSourceBadge Source="_effective.PackageCatalogRepo.Source" />
+                </RadzenStack>
+            </RadzenStack>
+        </RadzenCard>
+
+        <RadzenCard>
+            <RadzenStack Gap="1rem">
+                <RadzenText TextStyle="TextStyle.H6">Template catalog</RadzenText>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.75rem">
+                    <RadzenSwitch @bind-Value="_form.TemplateCatalogEnabled" Name="TemplateCatalogEnabled" />
+                    <RadzenLabel Component="TemplateCatalogEnabled" Text="Enabled" />
+                    <SettingSourceBadge Source="_effective.TemplateCatalogEnabled.Source" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenText TextStyle="TextStyle.Body2"><strong>Feeds</strong></RadzenText>
+                    <SettingSourceBadge Source="_effective.TemplateCatalogFeeds.Source" />
+                </RadzenStack>
+                @foreach (var feed in _form.TemplateCatalogFeeds)
+                {
+                    <RadzenCard Variant="Variant.Outlined">
+                        <RadzenStack Gap="0.75rem">
+                            <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="0.75rem">
+                                <RadzenFormField Text="Owner" Variant="Variant.Outlined" Style="flex:1"><RadzenTextBox @bind-Value="feed.Owner" Style="width:100%" /></RadzenFormField>
+                                <RadzenFormField Text="Repository" Variant="Variant.Outlined" Style="flex:1"><RadzenTextBox @bind-Value="feed.Repo" Style="width:100%" /></RadzenFormField>
+                            </RadzenStack>
+                            <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="0.75rem">
+                                <RadzenFormField Text="Branch" Variant="Variant.Outlined" Style="flex:1"><RadzenTextBox @bind-Value="feed.Branch" Style="width:100%" /></RadzenFormField>
+                                <RadzenFormField Text="Subdirectory" Variant="Variant.Outlined" Style="flex:1"><RadzenTextBox @bind-Value="feed.SubDir" Style="width:100%" /></RadzenFormField>
+                                <RadzenButton Icon="delete" Text="Remove" ButtonStyle="ButtonStyle.Danger" Variant="Variant.Flat" Click="@(() => RemoveFeed(feed))" />
+                            </RadzenStack>
+                        </RadzenStack>
+                    </RadzenCard>
+                }
+                <RadzenButton Text="Add feed" Icon="add" ButtonStyle="ButtonStyle.Light" Click="AddFeed" Style="align-self:flex-start" />
+            </RadzenStack>
+        </RadzenCard>
+
+        <RadzenCard>
+            <RadzenStack Gap="0.75rem">
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenText TextStyle="TextStyle.H6">Encrypted GitHub token</RadzenText>
+                    <RadzenBadge Text="@(_effective.HasGitHubToken.Value ? "Configured" : "Not configured")"
+                                 BadgeStyle="@(_effective.HasGitHubToken.Value ? BadgeStyle.Success : BadgeStyle.Light)" Variant="Variant.Flat" />
+                    <SettingSourceBadge Source="_effective.HasGitHubToken.Source" />
+                </RadzenStack>
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">Leave blank to preserve the existing token. Stored token and ciphertext are never displayed.</RadzenText>
+                <RadzenFormField Text="New token" Variant="Variant.Outlined">
+                    <RadzenPassword @bind-Value="_form.GitHubToken" Style="width:100%" autocomplete="new-password" />
+                </RadzenFormField>
+                <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenCheckBox @bind-Value="_form.ClearGitHubToken" TValue="bool" Name="ClearGitHubToken" />
+                    <RadzenLabel Component="ClearGitHubToken" Text="Clear the effective GitHub token" />
+                </RadzenStack>
+            </RadzenStack>
+        </RadzenCard>
+        <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End">
+            <RadzenButton Text="Save catalog settings" Icon="save" IsBusy="_saving" Click="SaveAsync" />
+        </RadzenStack>
+    }
+</RadzenStack>
+
+@code {
+    private EffectiveCatalogSettings? _effective;
+    private CatalogSettingsUpdate _form = new();
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _effective = await EffectiveSettings.GetCatalogAsync();
+        _form = new CatalogSettingsUpdate
+        {
+            PackageCatalogEnabled = _effective.PackageCatalogEnabled.Value,
+            PackageCatalogOwner = _effective.PackageCatalogOwner.Value,
+            PackageCatalogRepo = _effective.PackageCatalogRepo.Value,
+            TemplateCatalogEnabled = _effective.TemplateCatalogEnabled.Value,
+            TemplateCatalogFeeds = _effective.TemplateCatalogFeeds.Value.Select(CloneFeed).ToList(),
+            GitHubToken = "",
+        };
+    }
+
+    private void AddFeed() => _form.TemplateCatalogFeeds.Add(new CatalogFeedSettings());
+    private void RemoveFeed(CatalogFeedSettings feed) => _form.TemplateCatalogFeeds.Remove(feed);
+
+    private async Task SaveAsync()
+    {
+        if (!await Guard.AllowAsync(Permission.ConfigureServer, new PermissionScope())) return;
+        _saving = true;
+        try
+        {
+            var tokenChanged = !string.IsNullOrWhiteSpace(_form.GitHubToken);
+            await EffectiveSettings.SaveCatalogAsync(_form);
+            await Audit.RecordAsync(
+                AuditEventType.CatalogSettingsUpdated,
+                subjectType: "CatalogSettings",
+                details: $"PackageEnabled={_form.PackageCatalogEnabled}, TemplateEnabled={_form.TemplateCatalogEnabled}, FeedCount={_form.TemplateCatalogFeeds.Count}, TokenChanged={tokenChanged}, TokenCleared={_form.ClearGitHubToken}");
+            Notify.Notify(NotificationSeverity.Success, "Catalog settings saved", "Catalog changes are now live.", 4000);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Failed to save catalog settings", ex.Message, 6000);
+        }
+        finally { _saving = false; }
+    }
+
+    private static CatalogFeedSettings CloneFeed(CatalogFeedSettings feed) => new()
+    {
+        Owner = feed.Owner, Repo = feed.Repo, Branch = feed.Branch, SubDir = feed.SubDir,
+    };
+}

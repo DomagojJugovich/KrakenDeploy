@@ -1,0 +1,144 @@
+@using KrakenDeploy.Server.Core.Domain.Settings
+@using KrakenDeploy.Server.Observability
+
+@inject EffectiveSettingsService EffectiveSettings
+@inject RuntimeLoggingSettings RuntimeLogging
+@inject IAuditLog Audit
+@inject NotificationService Notify
+@inject UiActionGuard Guard
+
+<RadzenStack Gap="1rem" class="rz-p-3">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2">Operations</RadzenText>
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Authentication, server identity, runtime logging, and telemetry. OpenTelemetry headers can contain credentials and remain configuration-file only.</RadzenText>
+    @if (_effective is null)
+    {
+        <RadzenProgressBarCircular ShowValue="false" Mode="ProgressBarMode.Indeterminate" />
+    }
+    else
+    {
+        <RadzenCard>
+            <RadzenStack Gap="1rem">
+                <RadzenText TextStyle="TextStyle.H6">Server and authentication</RadzenText>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="Session revalidation (minutes)" Variant="Variant.Outlined" Style="flex:1"><RadzenNumeric TValue="int" @bind-Value="_form.AuthSessionRevalidationMinutes" Min="1" /></RadzenFormField>
+                    <SettingSourceBadge Source="_effective.AuthSessionRevalidationMinutes.Source" /><RadzenBadge Text="Restart" BadgeStyle="BadgeStyle.Warning" Variant="Variant.Flat" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="Server base URL" Variant="Variant.Outlined" Style="flex:1"><RadzenTextBox @bind-Value="_form.ServerBaseUrl" Style="width:100%" /></RadzenFormField>
+                    <SettingSourceBadge Source="_effective.ServerBaseUrl.Source" /><RadzenBadge Text="Restart" BadgeStyle="BadgeStyle.Warning" Variant="Variant.Flat" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="Agent token lifetime (days)" Variant="Variant.Outlined" Style="flex:1"><RadzenNumeric TValue="int" @bind-Value="_form.AgentTokenLifetimeDays" Min="1" Max="3650" /></RadzenFormField>
+                    <SettingSourceBadge Source="_effective.AgentTokenLifetimeDays.Source" /><RadzenBadge Text="Restart" BadgeStyle="BadgeStyle.Warning" Variant="Variant.Flat" />
+                </RadzenStack>
+            </RadzenStack>
+        </RadzenCard>
+        <RadzenCard>
+            <RadzenStack Gap="1rem">
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenText TextStyle="TextStyle.H6">Serilog levels</RadzenText>
+                    <RadzenBadge Text="Live" BadgeStyle="BadgeStyle.Success" Variant="Variant.Flat" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="Global minimum level" Variant="Variant.Outlined" Style="flex:1">
+                        <RadzenDropDown TValue="string" Data="_levels" @bind-Value="_form.SerilogMinimumLevel" Style="width:100%" />
+                    </RadzenFormField>
+                    <SettingSourceBadge Source="_effective.SerilogMinimumLevel.Source" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenText TextStyle="TextStyle.Body2"><strong>Effective category overrides</strong></RadzenText>
+                    <SettingSourceBadge Source="_effective.SerilogCategoryOverrides.Source" />
+                </RadzenStack>
+                @foreach (var category in _categories)
+                {
+                    <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.75rem">
+                        <code style="flex:1">@category</code>
+                        <RadzenDropDown TValue="string" Data="_levels" Value="_form.SerilogCategoryOverrides[category]"
+                                        ValueChanged="@(v => _form.SerilogCategoryOverrides[category] = v)" Style="width:14rem" />
+                    </RadzenStack>
+                }
+            </RadzenStack>
+        </RadzenCard>
+        <RadzenCard>
+            <RadzenStack Gap="1rem">
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenText TextStyle="TextStyle.H6">OpenTelemetry and Seq</RadzenText>
+                    <RadzenBadge Text="Restart" BadgeStyle="BadgeStyle.Warning" Variant="Variant.Flat" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.75rem">
+                    <RadzenSwitch @bind-Value="_form.OtelEnabled" Name="OtelEnabled" />
+                    <RadzenLabel Component="OtelEnabled" Text="OpenTelemetry enabled" />
+                    <SettingSourceBadge Source="_effective.OtelEnabled.Source" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="OTLP endpoint" Variant="Variant.Outlined" Style="flex:1"><RadzenTextBox @bind-Value="_form.OtelEndpoint" Style="width:100%" /></RadzenFormField>
+                    <SettingSourceBadge Source="_effective.OtelEndpoint.Source" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="OTLP protocol" Variant="Variant.Outlined" Style="flex:1">
+                        <RadzenDropDown TValue="string" Data="_protocols" @bind-Value="_form.OtelProtocol" Style="width:100%" />
+                    </RadzenFormField>
+                    <SettingSourceBadge Source="_effective.OtelProtocol.Source" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenFormField Text="Seq server URL" Variant="Variant.Outlined" Style="flex:1"><RadzenTextBox @bind-Value="_form.SeqServerUrl" Style="width:100%" /></RadzenFormField>
+                    <SettingSourceBadge Source="_effective.SeqServerUrl.Source" />
+                </RadzenStack>
+            </RadzenStack>
+        </RadzenCard>
+        <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End">
+            <RadzenButton Text="Save operational settings" Icon="save" IsBusy="_saving" Click="SaveAsync" />
+        </RadzenStack>
+    }
+</RadzenStack>
+
+@code {
+    private static readonly string[] _levels = ["Verbose", "Debug", "Information", "Warning", "Error", "Fatal"];
+    private static readonly string[] _protocols = ["grpc", "http/protobuf"];
+    private EffectiveOperationalSettings? _effective;
+    private OperationalSettings _form = new();
+    private string[] _categories = [];
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _effective = await EffectiveSettings.GetOperationalAsync();
+        _form = new OperationalSettings
+        {
+            AuthSessionRevalidationMinutes = _effective.AuthSessionRevalidationMinutes.Value,
+            ServerBaseUrl = _effective.ServerBaseUrl.Value,
+            AgentTokenLifetimeDays = _effective.AgentTokenLifetimeDays.Value,
+            SerilogMinimumLevel = _effective.SerilogMinimumLevel.Value,
+            SerilogCategoryOverrides = new Dictionary<string, string>(_effective.SerilogCategoryOverrides.Value, StringComparer.Ordinal),
+            OtelEnabled = _effective.OtelEnabled.Value,
+            OtelEndpoint = _effective.OtelEndpoint.Value,
+            OtelProtocol = _effective.OtelProtocol.Value,
+            SeqServerUrl = _effective.SeqServerUrl.Value,
+        };
+        _categories = _form.SerilogCategoryOverrides.Keys.Order(StringComparer.Ordinal).ToArray();
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!await Guard.AllowAsync(Permission.ConfigureServer, new PermissionScope())) return;
+        _saving = true;
+        try
+        {
+            await EffectiveSettings.SaveOperationalAsync(_form);
+            RuntimeLogging.Apply(_form);
+            await Audit.RecordAsync(
+                AuditEventType.OperationalSettingsUpdated,
+                subjectType: "OperationalSettings",
+                details: $"Updated operational settings; LoggingOverrideCount={_form.SerilogCategoryOverrides.Count}, OtelEnabled={_form.OtelEnabled}");
+            Notify.Notify(NotificationSeverity.Success, "Operational settings saved", "Logging levels are live; restart-marked settings require a server restart.", 5000);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Failed to save operational settings", ex.Message, 6000);
+        }
+        finally { _saving = false; }
+    }
+}

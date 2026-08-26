@@ -742,7 +742,11 @@ internal sealed class RoundTripHost : IAsyncDisposable
             inFlightGauge:        new InFlightWorkGauge(),
             timeProvider:         TimeProvider.System,
             engineOptions:        Options.Create(engineOptions ?? new EngineOptions()),
-            logger:               NullLogger<DeploymentWorker>.Instance);
+            logger:               NullLogger<DeploymentWorker>.Instance)
+        {
+            EngineSettingsOverride = _ => Task.FromResult(
+                DeploymentWorker.EngineRuntimeSettings.From(engineOptions ?? new EngineOptions())),
+        };
 
         var agentDataPath = Path.Combine(
             Path.GetTempPath(), $"kraken-roundtrip-agent-{Guid.NewGuid():N}");

@@ -79,7 +79,7 @@ public static class OidcRegistrar
     /// not yet reachable (first-run / migration pending) so startup still
     /// succeeds.
     /// </summary>
-    public static void RegisterSchemes(WebApplicationBuilder builder)
+    public static void RegisterSchemes(WebApplicationBuilder builder, SsrfPolicy oidcSsrfPolicy)
     {
         // Multi-account: external IdPs are per-tenant (each account's own DB), so they
         // cannot be registered as process-wide startup schemes — a scheme is global,
@@ -176,9 +176,6 @@ public static class OidcRegistrar
         // its backchannel. Pin the validated IP per hop so an internal Authority
         // (or a redirect to one) can't be reached. Save-time validation in
         // IdentityProviderService is the first gate; this is the fetch-time backstop.
-        var oidcSsrfPolicy = builder.Configuration
-            .GetSection(SsrfOptions.SectionName).Get<SsrfOptions>()?.Oidc ?? new SsrfPolicy();
-
         foreach (var idp in providers)
         {
             string secret;

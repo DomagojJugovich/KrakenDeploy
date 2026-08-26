@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Subscriptions;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Data.Net;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -47,7 +48,7 @@ namespace KrakenDeploy.Server.Data.Services.Subscriptions;
 /// </summary>
 public sealed class WebhookTransport(
     HttpClient httpClient,
-    IConfiguration configuration,
+    IOptions<OperationalSettings> operationalSettings,
     IOptions<SsrfOptions> ssrfOptions,
     ILogger<WebhookTransport> logger,
     TimeProvider time) : IEventTransport
@@ -113,7 +114,7 @@ public sealed class WebhookTransport(
         }
 
         // Build payload.
-        var serverUri = configuration["Server:BaseUrl"];
+        var serverUri = operationalSettings.Value.ServerBaseUrl;
         var payload = new SubscriptionPayloadEnvelope(
             Timestamp: time.GetUtcNow(),
             EventType: "SubscriptionPayload",

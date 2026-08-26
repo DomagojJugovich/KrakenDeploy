@@ -173,6 +173,20 @@ public sealed class SettingsService(IServiceScopeFactory scopeFactory, TimeProvi
     }
 
     /// <summary>
+    /// Reads a document off a caller-provided context and preserves the distinction
+    /// between an absent row and a persisted document. Composition roots use this
+    /// before DI is available to apply DB-over-file startup precedence.
+    /// </summary>
+    public static async Task<T?> TryReadAsync<T>(
+        KrakenDbContext db, Guid? scopeId = null, CancellationToken ct = default)
+        where T : class, ISettingsDocument, new()
+    {
+        var key = ResolveKey<T>(scopeId);
+        var payload = await ReadPayloadAsync(db, key, ct).ConfigureAwait(false);
+        return payload is null ? null : Deserialize<T>(payload);
+    }
+
+    /// <summary>
     /// Re-encrypts every <c>*Encrypted</c> member of every settings document on
     /// the supplied tracked context, applying <paramref name="reEncrypt"/> to each
     /// non-empty ciphertext. Does NOT save — the DEK-rotation walk owns the

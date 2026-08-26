@@ -3,8 +3,10 @@ using System.Security.Claims;
 using System.Text;
 using FluentAssertions;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Services;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
 namespace KrakenDeploy.Server.Tests;
@@ -26,10 +28,12 @@ public sealed class AgentJwtServiceTests
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
                     ["Agent:JwtSigningKey"] = SigningKey,
-                    ["Agent:TokenLifetimeDays"] = lifetimeDays?.ToString(
-                        System.Globalization.CultureInfo.InvariantCulture),
                 })
                 .Build(),
+            Options.Create(new OperationalSettings
+            {
+                AgentTokenLifetimeDays = lifetimeDays ?? 90,
+            }),
             TimeProvider.System);
 
     // Mirrors Program.cs's TokenValidationParameters: enforce signature + iss +

@@ -1,0 +1,40 @@
+@using KrakenDeploy.Server.Core.Domain.Settings
+
+<RadzenCard>
+    <RadzenStack Gap="1rem">
+        <RadzenText TextStyle="TextStyle.H6">@Title</RadzenText>
+        <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.75rem">
+            <RadzenSwitch @bind-Value="Model.AllowLoopback" Disabled="@IsPinned(Effective.AllowLoopback.Source)" />
+            <RadzenText TextStyle="TextStyle.Body2">Allow loopback</RadzenText>
+            <SettingSourceBadge Source="Effective.AllowLoopback.Source" />
+            @if (IsPinned(Effective.AllowLoopback.Source)) { <RadzenBadge Text="File-pinned, read-only" BadgeStyle="BadgeStyle.Warning" Variant="Variant.Flat" /> }
+        </RadzenStack>
+        <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.75rem">
+            <RadzenSwitch @bind-Value="Model.AllowPrivate" Disabled="@IsPinned(Effective.AllowPrivate.Source)" />
+            <RadzenText TextStyle="TextStyle.Body2">Allow private networks</RadzenText>
+            <SettingSourceBadge Source="Effective.AllowPrivate.Source" />
+            @if (IsPinned(Effective.AllowPrivate.Source)) { <RadzenBadge Text="File-pinned, read-only" BadgeStyle="BadgeStyle.Warning" Variant="Variant.Flat" /> }
+        </RadzenStack>
+        <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" AlignItems="AlignItems.Center" Gap="0.5rem">
+            <RadzenText TextStyle="TextStyle.Body2"><strong>Allowed hosts or CIDRs</strong></RadzenText>
+            <SettingSourceBadge Source="Effective.AllowedHosts.Source" />
+            @if (IsPinned(Effective.AllowedHosts.Source)) { <RadzenBadge Text="File-pinned, read-only" BadgeStyle="BadgeStyle.Warning" Variant="Variant.Flat" /> }
+        </RadzenStack>
+        <RadzenTextArea @bind-Value="AllowedHostsText" Rows="4" Disabled="@IsPinned(Effective.AllowedHosts.Source)"
+                        Placeholder="One hostname or CIDR per line (commas also accepted)" Style="width:100%" />
+    </RadzenStack>
+</RadzenCard>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter, EditorRequired] public SsrfPolicySettings Model { get; set; } = default!;
+    [Parameter, EditorRequired] public EffectiveSsrfPolicy Effective { get; set; } = default!;
+
+    private string AllowedHostsText
+    {
+        get => string.Join(Environment.NewLine, Model.AllowedHosts);
+        set => Model.AllowedHosts = value.Split([',', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
+    private static bool IsPinned(SettingValueSource source) => source == SettingValueSource.ConfigurationFile;
+}

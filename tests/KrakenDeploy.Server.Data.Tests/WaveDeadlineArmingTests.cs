@@ -124,6 +124,40 @@ public sealed class WaveDeadlineArmingTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task Live_wave_duration_update_applies_to_the_subsequent_wave()
+    {
+        await using var harness = new OrchestratorTestHarness(postgres, new EngineOptions
+        {
+            MaxTargetWaveDuration = TimeSpan.FromHours(1),
+            MaxTargetQueueWait = TimeSpan.FromSeconds(2),
+            AgentDisconnectWaveGrace = TimeSpan.FromMinutes(2),
+        });
+        var (deploymentId, targets) = await SeedAsync(
+            harness,
+            [StepBuilder.Script("first"), StepBuilder.Script("second")],
+            ["t1"]);
+        var agent = harness.ConnectFakeAgent(targets[0]);
+        agent.AfterWaveAsync = wave =>
+        {
+            if (wave == 1)
+            {
+                harness.UpdateEngineOptions(o =>
+                    o.MaxTargetWaveDuration = TimeSpan.FromMilliseconds(200));
+                agent.NeverReport = true;
+            }
+            return Task.CompletedTask;
+        };
+
+        await harness.RunDeploymentAsync(deploymentId).WaitAsync(TimeSpan.FromSeconds(10));
+
+        (await harness.GetDeploymentAsync(deploymentId)).Status.Should().Be(DeploymentStatus.Failed);
+        agent.ReceivedPlans.Should().HaveCount(2,
+            "the refreshed duration must be used when dispatching the second wave");
+        var outcomes = await harness.GetOutcomesAsync(deploymentId);
+        outcomes.Single(o => o.StepName == "second").Outcome.Should().Be(StepOutcomeKind.TimedOut);
+    }
+
+    [Fact]
     public async Task Agent_that_never_acquires_its_machine_slot_hits_the_dispatch_backstop()
     {
         // B3's invariant survives F2: an agent that stays CONNECTED but never
