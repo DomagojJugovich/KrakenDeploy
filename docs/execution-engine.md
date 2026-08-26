@@ -94,7 +94,7 @@ live** at dispatch — there is no runbook variable snapshot.
 
 Dispatch is fire-and-forget per item (`_ = TrackedDispatchAsync(...)`
 inside an in-flight gauge used for blue-green drain), but execution is
-capped by the B7 `NodeTaskGate` (`Engine:MaxConcurrentTasks`, default 5,
+capped by the B7 `NodeTaskGate` (`Engine:MaxConcurrentTasks`, default 20,
 FIFO) acquired for the whole orchestration. Since the D1 engine merge (§8)
 **both kinds** run through this single gated worker — a runbook run acquires a
 `NodeTaskGate` slot and holds the blue-green drain gauge for its whole
@@ -155,14 +155,15 @@ Retry/timeout for a wave is the `Max` across the wave's steps.
 ## 4. Rolling deployments
 
 `RollingWindowResolver` reads `Octopus.Action.MaxParallelism` from the
-nearest `Kraken.StepGroup` ancestor (walking `ParentStepId`). The cap
-applies only when **every** step in the wave shares the same rolling
-ancestor with a parseable positive value; anything else yields no batching
-(a typo cannot accidentally serialize a farm to one-at-a-time). Enforcement
-chunks the wave's alive targets into contiguous batches: **batches
-sequential, targets within a batch parallel**. Audits
-(`DeploymentRollingBatchStarted/Completed`) fire only when batching
-actually splits.
+nearest `Kraken.StepGroup` ancestor (walking `ParentStepId`). An explicit cap
+applies only when **every** step in the wave shares the same rolling ancestor
+with a parseable positive value. It overrides
+`Engine:DefaultTargetWaveMaxParallelism` (default 10). With no valid explicit
+cap, including malformed or mixed rolling ancestry after its warning, the
+Engine default is used. Enforcement chunks the wave's alive targets into
+contiguous batches: **batches sequential, targets within a batch parallel**.
+`DeploymentRollingBatchStarted/Completed` audits remain explicit-rolling-only;
+default batches do not claim a rolling group.
 
 Two properties to be aware of:
 
@@ -220,6 +221,9 @@ Two properties to be aware of:
   multi-week ceiling overflows `CancelAfter` and would fail EVERY dispatch with a
   raw "Parameter 'delay'". `EngineOptionsValidator` (`ValidateOnStart`) rejects
   bare numbers, non-positive values, and anything above 7 days, naming the key.
+  Target fan-out must be positive; disconnect grace must be strictly greater
+  than 30 seconds and shorter than wave duration plus queue wait; the gated
+  DeployRelease wait must exceed the default intervention timeout.
 - **Agent-disconnect monitor**: a target continuously disconnected for
   `Engine:AgentDisconnectWaveGrace` (default 2 min) has its sub-plan slot
   cancelled; the wave resolves that target as a failure into the failure

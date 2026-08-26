@@ -290,14 +290,12 @@ public sealed class WebhookTransportTests
         HttpMessageHandler handler, Net.SsrfOptions? ssrf = null)
     {
         var client = new HttpClient(handler);
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Server:BaseUrl"] = "https://kraken.example.com",
-            })
-            .Build();
         return new WebhookTransport(
-            client, config,
+            client, Microsoft.Extensions.Options.Options.Create(
+                new KrakenDeploy.Server.Core.Domain.Settings.OperationalSettings
+                {
+                    ServerBaseUrl = "https://kraken.example.com",
+                }),
             Microsoft.Extensions.Options.Options.Create(ssrf ?? new Net.SsrfOptions()),
             NullLogger<WebhookTransport>.Instance, TimeProvider.System);
     }

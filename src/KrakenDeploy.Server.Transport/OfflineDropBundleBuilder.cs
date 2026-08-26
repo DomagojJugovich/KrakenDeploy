@@ -3,6 +3,7 @@ using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Security;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data;
@@ -11,6 +12,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Transport;
 
@@ -101,7 +103,8 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
         var config = sp.GetRequiredService<IConfiguration>();
         var dbFactory = sp.GetRequiredService<IDbContextFactory<KrakenDbContext>>();
         var dataPath = config["Server:DataPath"] ?? "data";
-        var serverBaseUrl = config["Server:BaseUrl"];
+        var serverBaseUrl = sp.GetRequiredService<IOptions<OperationalSettings>>()
+            .Value.ServerBaseUrl;
 
         // Offline drops use the frozen release snapshot, exactly like online —
         // refuse to ship a bundle from an un-snapshotted (pre-feature) release.

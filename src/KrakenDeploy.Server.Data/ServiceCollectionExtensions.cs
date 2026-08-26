@@ -300,6 +300,7 @@ public static class ServiceCollectionExtensions
         if (multiAccount)
         {
             services.AddScoped<SettingsService>();
+            services.AddScoped<EffectiveSettingsService>();
             services.AddScoped<FeatureFlagService>();
             services.AddScoped<DeploymentFreezeService>();
             services.AddScoped<MaintenanceModeService>();
@@ -308,6 +309,7 @@ public static class ServiceCollectionExtensions
         else
         {
             services.AddSingleton<SettingsService>();
+            services.AddSingleton<EffectiveSettingsService>();
             services.AddSingleton<FeatureFlagService>();
             services.AddSingleton<DeploymentFreezeService>();
             // Maintenance mode (M13.A.3) — the middleware hits GetStateAsync on

@@ -433,11 +433,12 @@ public sealed class SubscriptionPollerJobTests(PostgresFixture postgres)
     {
         var handler = new CapturingHandler();
         var httpClient = new HttpClient(handler);
-        var config = new ConfigurationBuilder().AddInMemoryCollection(
-            new Dictionary<string, string?> { ["Server:BaseUrl"] = "https://kraken.example.com" }).Build();
-
         var webhook = new WebhookTransport(
-            httpClient, config,
+            httpClient, Microsoft.Extensions.Options.Options.Create(
+                new KrakenDeploy.Server.Core.Domain.Settings.OperationalSettings
+                {
+                    ServerBaseUrl = "https://kraken.example.com",
+                }),
             Microsoft.Extensions.Options.Options.Create(new Net.SsrfOptions()),
             NullLogger<WebhookTransport>.Instance, TimeProvider.System);
         var auditLog = new TestAuditLog(postgres);

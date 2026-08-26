@@ -10,9 +10,23 @@
 
 <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Settings</RadzenText>
 
-<RequirePermission Permission="Permission.ConfigureServer">
+<RequirePermission Permission="Permission.ConfigureServer" Scope="@(new PermissionScope())">
     <RadzenTabs>
         <Tabs>
+            <RadzenTabsItem Text="Engine">
+                <EngineSettingsSection />
+            </RadzenTabsItem>
+            <RadzenTabsItem Text="Catalog feeds">
+                <CatalogSettingsSection />
+            </RadzenTabsItem>
+            <RadzenTabsItem Text="Operations">
+                <OperationalSettingsSection />
+            </RadzenTabsItem>
+            <RadzenTabsItem Text="SSRF">
+                <RequirePermission Permission="Permission.AdministerSystem" Scope="@(new PermissionScope())">
+                    <SsrfSettingsSection />
+                </RequirePermission>
+            </RadzenTabsItem>
             <RadzenTabsItem Text="SMTP">
                 <SmtpSection />
             </RadzenTabsItem>

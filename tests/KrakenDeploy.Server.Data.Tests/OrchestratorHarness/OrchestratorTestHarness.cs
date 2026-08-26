@@ -67,6 +67,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
     private readonly PendingSubPlanRegistry _subPlans = new();
     private readonly ConcurrentDictionary<Guid, FakeAgent> _agentsByTargetId = new();
     private readonly DeploymentWorker _worker;
+    private readonly EngineOptions _engineOptions;
     // E3: the DI-registered dispatch channel. The worker reads it (once the
     // background loop is started via StartWorkerAsync) and DeploymentService
     // (incl. the Octopus.DeployRelease child-create path) writes to it — so a
@@ -84,6 +85,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(postgres);
         _postgres = postgres;
+        _engineOptions = engineOptions ?? new EngineOptions();
 
         var services = new ServiceCollection();
 
@@ -141,13 +143,16 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         // DeployRelease child-create path) enqueue onto the SAME channel the
         // worker's background loop drains.
         _queue = _services.GetRequiredService<Channel<KrakenDeploy.Server.Data.TenantWorkItem>>();
+        var deployReleaseRunner = _services.GetRequiredService<DeployReleaseStepRunner>();
+        deployReleaseRunner.WorkingWaitBudgetOverride = _ =>
+            Task.FromResult(_engineOptions.MaxDeployReleaseWaitDuration);
 
         _worker = new DeploymentWorker(
             queue:                 _queue,
             registry:              _connectionRegistry,
             agentHub:              _services.GetRequiredService<IHubContext<AgentHub, IAgentHubClient>>(),
             serverRunner:          _services.GetRequiredService<ServerScriptStepRunner>(),
-            deployReleaseRunner:   _services.GetRequiredService<DeployReleaseStepRunner>(),
+            deployReleaseRunner:   deployReleaseRunner,
             // Stateless bar its logger — the harness plans are target-side only,
             // so the offline path isn't exercised here, but the worker ctor
             // requires it.
@@ -167,10 +172,12 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             // B3 — production defaults unless a test passes short ceilings
             // (wave deadline / disconnect grace scenarios).
             engineOptions:         Microsoft.Extensions.Options.Options.Create(
-                                       engineOptions ?? new EngineOptions()),
+                                       _engineOptions),
             logger:                NullLogger<DeploymentWorker>.Instance)
         {
             LeaseRenewIntervalOverride = leaseRenewInterval,
+            EngineSettingsOverride = _ => Task.FromResult(
+                DeploymentWorker.EngineRuntimeSettings.From(_engineOptions)),
         };
     }
 
@@ -602,6 +609,10 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
     /// child-bypass path must be exercised (E3 cascade).</summary>
     public Task RunDeploymentAsync(Guid deploymentId, CancellationToken ct = default)
         => _worker.DispatchForTestAsync(deploymentId, ct);
+
+    /// <summary>Updates the direct-construction Engine seam. The worker snapshots
+    /// it again at the next wave boundary.</summary>
+    public void UpdateEngineOptions(Action<EngineOptions> update) => update(_engineOptions);
 
     /// <summary>
     /// E3 — starts the worker's real background dispatch loop over the DI

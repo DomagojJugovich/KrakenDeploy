@@ -76,10 +76,10 @@ public sealed class DekRotationCompletenessTests
                 && p.Name.EndsWith("Encrypted", StringComparison.Ordinal)))
             .ToList();
 
-        // Sanity anchor: the two known secret-bearing documents are present, so a
+        // Sanity anchor: the known secret-bearing documents are present, so a
         // refactor that drops one from the domain doesn't quietly pass this test.
         secretDocuments.Select(t => t.Name).Should()
-            .Contain([nameof(SpaceAiSettings), "SmtpSettings"]);
+            .Contain([nameof(SpaceAiSettings), "SmtpSettings", nameof(CatalogSettings)]);
 
         var catalogTypes = SettingsDocumentCatalog.All.Select(d => d.ClrType).ToHashSet();
         foreach (var document in secretDocuments)

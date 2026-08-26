@@ -6,7 +6,6 @@ using KrakenDeploy.Contracts.StepPackages;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Data.Net;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -52,21 +51,13 @@ public class StepPackageCatalogService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     IHttpClientFactory httpClientFactory,
     StepPackageService stepPackageService,
-    IConfiguration config,
+    EffectiveSettingsService effectiveSettings,
     IOptions<SsrfOptions> ssrfOptions,
     ILogger<StepPackageCatalogService> logger,
     SettingsService? settings = null)
 {
     /// <summary>Named <see cref="HttpClient"/> shared with the step-template catalog.</summary>
     public const string HttpClientName = "kraken.github";
-
-    private string Owner => config["StepPackages:Catalog:Owner"] ?? "DomagojJugovich";
-    private string Repo  => config["StepPackages:Catalog:Repo"]  ?? "kraken-steps";
-
-    private string HealthKey => $"packages:{Owner}/{Repo}".ToLowerInvariant();
-    private bool Enabled =>
-        !string.Equals(config["StepPackages:Catalog:Enabled"], "false",
-            StringComparison.OrdinalIgnoreCase);
 
     // ── Queries ────────────────────────────────────────────────────────────
 
@@ -101,14 +92,22 @@ public class StepPackageCatalogService(
     /// </summary>
     public async Task<CatalogRefreshResult> RefreshAsync(CancellationToken ct = default)
     {
-        if (!Enabled)
+        var catalog = await effectiveSettings.GetCatalogAsync(ct).ConfigureAwait(false);
+        var owner = catalog.PackageCatalogOwner.Value;
+        var repo = catalog.PackageCatalogRepo.Value;
+        var healthKey = $"packages:{owner}/{repo}".ToLowerInvariant();
+
+        if (!catalog.PackageCatalogEnabled.Value)
         {
-            logger.LogDebug("Step-package catalog refresh skipped — disabled by config.");
+            logger.LogDebug("Step-package catalog refresh skipped — disabled by effective settings.");
             return new CatalogRefreshResult(0, 0, 0, 0, 0, 0);
         }
 
         var http = httpClientFactory.CreateClient(HttpClientName);
-        var releasesUrl = $"https://api.github.com/repos/{Owner}/{Repo}/releases?per_page=100";
+        var releasesUrl = $"https://api.github.com/repos/{owner}/{repo}/releases?per_page=100";
+        await GitHubHttpClientAuthentication.ApplyAsync(
+                http, effectiveSettings, new Uri(releasesUrl), ct)
+            .ConfigureAwait(false);
 
         JsonNode? releasesNode;
         try
@@ -118,11 +117,11 @@ public class StepPackageCatalogService(
         catch (HttpRequestException ex)
         {
             logger.LogWarning(ex,
-                "Failed to fetch step-package catalog from GitHub ({Owner}/{Repo}).", Owner, Repo);
-            await RecordFeedHealthAsync($"GitHub releases fetch failed: {ex.Message}", ct)
+                "Failed to fetch step-package catalog from GitHub ({Owner}/{Repo}).", owner, repo);
+            await RecordFeedHealthAsync(healthKey, $"GitHub releases fetch failed: {ex.Message}", ct)
                 .ConfigureAwait(false);
             throw new InvalidOperationException(
-                $"GitHub releases fetch failed for {Owner}/{Repo}: {ex.Message}", ex);
+                $"GitHub releases fetch failed for {owner}/{repo}: {ex.Message}", ex);
         }
 
         var releases = releasesNode?.AsArray()
@@ -223,10 +222,10 @@ public class StepPackageCatalogService(
         logger.LogInformation(
             "Step-package catalog refresh ({Owner}/{Repo}): upstream={Upstream} added={Added} " +
             "updated={Updated} unchanged={Unchanged} removed={Removed} failed={Failed}.",
-            Owner, Repo, result.UpstreamCount, result.Added, result.Updated,
+            owner, repo, result.UpstreamCount, result.Added, result.Updated,
             result.Unchanged, result.Removed, result.Failed);
 
-        await RecordFeedHealthAsync(error: null, ct).ConfigureAwait(false);
+        await RecordFeedHealthAsync(healthKey, error: null, ct).ConfigureAwait(false);
 
         return result;
     }
@@ -237,7 +236,7 @@ public class StepPackageCatalogService(
     /// feed-health strip and the catalog tab. Best-effort — never fails
     /// the refresh itself.
     /// </summary>
-    private async Task RecordFeedHealthAsync(string? error, CancellationToken ct)
+    private async Task RecordFeedHealthAsync(string healthKey, string? error, CancellationToken ct)
     {
         if (settings is null) { return; }
         try
@@ -245,8 +244,8 @@ public class StepPackageCatalogService(
             var now = DateTimeOffset.UtcNow;
             await settings.MutateAsync<StepFeedHealthDocument>(null, doc =>
             {
-                doc.Feeds.TryGetValue(HealthKey, out var prev);
-                doc.Feeds[HealthKey] = new StepFeedHealth
+                doc.Feeds.TryGetValue(healthKey, out var prev);
+                doc.Feeds[healthKey] = new StepFeedHealth
                 {
                     LastAttemptUtc = now,
                     LastSuccessUtc = error is null ? now : prev?.LastSuccessUtc,
@@ -257,7 +256,7 @@ public class StepPackageCatalogService(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogWarning(ex, "Failed to record feed health for {Feed}.", HealthKey);
+            logger.LogWarning(ex, "Failed to record feed health for {Feed}.", healthKey);
         }
     }
 
@@ -296,6 +295,9 @@ public class StepPackageCatalogService(
         }
 
         var http = httpClientFactory.CreateClient(HttpClientName);
+        await GitHubHttpClientAuthentication.ApplyAsync(
+                http, effectiveSettings, new Uri(entry.DownloadUrl), ct)
+            .ConfigureAwait(false);
 
         // GitHub release assets need a specific Accept header to return the
         // raw binary (without it we get the JSON metadata).

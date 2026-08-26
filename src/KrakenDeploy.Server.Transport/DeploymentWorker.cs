@@ -13,6 +13,7 @@ using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Core.Domain.Spaces;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data;
@@ -69,7 +70,7 @@ public sealed class DeploymentWorker(
     // FailAsync to tag the AI-diagnosis work item with the right account.
     private readonly AsyncLocal<Guid> _dispatchAccountId = new();
 
-    // B7 — the node task cap (Engine:MaxConcurrentTasks, default 5). Excess
+    // B7 — the startup node task cap (Engine:MaxConcurrentTasks, default 20). Excess
     // deployments wait FIFO inside their fire-and-forget task.
     private readonly NodeTaskGate _taskGate = new(engineOptions.Value.MaxConcurrentTasks);
 
@@ -78,6 +79,38 @@ public sealed class DeploymentWorker(
     // harness shortens it so a lease-loss teardown test runs in milliseconds
     // rather than a minute. Null → production default.
     internal TimeSpan? LeaseRenewIntervalOverride { get; init; }
+
+    // Direct-construction harness seam. Production always resolves the required
+    // EffectiveSettingsService from the dispatch scope.
+    internal Func<CancellationToken, Task<EngineRuntimeSettings>>? EngineSettingsOverride { get; init; }
+
+    internal sealed record EngineRuntimeSettings(
+        int DefaultTargetWaveMaxParallelism,
+        TimeSpan MaxTargetWaveDuration,
+        TimeSpan MaxTargetQueueWait,
+        TimeSpan AgentDisconnectWaveGrace,
+        TimeSpan DefaultInterventionTimeout,
+        TimeSpan MaxDeployReleaseWaitDuration,
+        TimeSpan MaxDeployReleaseGatedWaitDuration)
+    {
+        internal static EngineRuntimeSettings From(EffectiveEngineSettings value) => new(
+            value.DefaultTargetWaveMaxParallelism.Value,
+            value.MaxTargetWaveDuration.Value,
+            value.MaxTargetQueueWait.Value,
+            value.AgentDisconnectWaveGrace.Value,
+            value.DefaultInterventionTimeout.Value,
+            value.MaxDeployReleaseWaitDuration.Value,
+            value.MaxDeployReleaseGatedWaitDuration.Value);
+
+        internal static EngineRuntimeSettings From(EngineOptions value) => new(
+            value.DefaultTargetWaveMaxParallelism,
+            value.MaxTargetWaveDuration,
+            value.MaxTargetQueueWait,
+            value.AgentDisconnectWaveGrace,
+            value.DefaultInterventionTimeout,
+            value.MaxDeployReleaseWaitDuration,
+            value.MaxDeployReleaseGatedWaitDuration);
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -290,7 +323,10 @@ public sealed class DeploymentWorker(
         var encryption = scope.ServiceProvider
             .GetRequiredService<KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService>();
         var serverBaseUrl = scope.ServiceProvider
-            .GetRequiredService<IConfiguration>()["Server:BaseUrl"];
+            .GetRequiredService<IOptions<OperationalSettings>>().Value.ServerBaseUrl;
+        var effectiveSettings = EngineSettingsOverride is null
+            ? scope.ServiceProvider.GetRequiredService<EffectiveSettingsService>()
+            : null;
 
         // E2: assigned once the lease renewal is created (below). Declared out
         // here so the lease-loss teardown catch on this try can read it — a
@@ -1096,6 +1132,11 @@ public sealed class DeploymentWorker(
             for (var waveIndex = startWaveIndex; waveIndex < waves.Count; waveIndex++)
             {
                 var wave = waves[waveIndex];
+                // Refresh at every wave boundary so updates affect subsequent waves.
+                var engine = EngineSettingsOverride is { } settingsOverride
+                    ? await settingsOverride(orchestrationCt).ConfigureAwait(false)
+                    : EngineRuntimeSettings.From(
+                        await effectiveSettings!.GetEngineAsync(orchestrationCt).ConfigureAwait(false));
                 // ── Ownership boundary: stop unless still Running in the DB ──
                 // E2 — ONE ownership predicate evaluated at every wave boundary:
                 // the task must still be Running. This catches an operator cancel
@@ -1146,7 +1187,7 @@ public sealed class DeploymentWorker(
                         // step, so a role-filtered one must skip, not pause.
                         appliesToTask: step => StepAppliesToTarget(deployment, step),
                         redactor: serverRedactor,
-                        engineOptions.Value.DefaultInterventionTimeout,
+                        engine.DefaultInterventionTimeout,
                         timeProvider, orchestrationCt).ConfigureAwait(false);
 
                     // Gates their own run condition or role filter excluded, recorded on
@@ -1261,7 +1302,7 @@ public sealed class DeploymentWorker(
                         wave, canonicalCtx.SnapshotByPlanIndex, hasFailed,
                         outputAccumulator.ServerConditionVarDict, deployment, source.Audit, db, auditLog, logSeq,
                         outputAccumulator.AugmentServerVariables(canonicalCtx.FlatVars),
-                        serverRedactor, orchestrationCt).ConfigureAwait(false);
+                        serverRedactor, engine, orchestrationCt).ConfigureAwait(false);
 
                     // B4 (T1-6): fold server-step captures so later waves (agent
                     // AND server) see them, and persist through the same store —
@@ -1328,7 +1369,7 @@ public sealed class DeploymentWorker(
                     var targetWaveResult = await DispatchTargetWaveAcrossTargetsAsync(
                         wave, aliveTargets, contexts, canonicalCtx.SnapshotByPlanIndex,
                         snapshotById, failureMode, hasFailed, softFailedTargets, deployment, source.Audit,
-                        db, auditLog, logSeq, outputAccumulator, orchestrationCt).ConfigureAwait(false);
+                        db, auditLog, logSeq, outputAccumulator, engine, orchestrationCt).ConfigureAwait(false);
 
                     foreach (var dropped in targetWaveResult.DroppedTargets)
                     {
@@ -2261,6 +2302,7 @@ public sealed class DeploymentWorker(
             LogSequencer logSeq,
             IReadOnlyDictionary<string, string> flatVars,
             SecretRedactor redactor,
+            EngineRuntimeSettings engine,
             CancellationToken ct)
     {
         // M14.5 — capture start time at first attempt so the outcome row
@@ -2273,7 +2315,7 @@ public sealed class DeploymentWorker(
         // fires and classifies the step TimedOut, so no separate ceiling logic is
         // needed inside WaitForChildAsync.
         var effectiveTimeoutSeconds = await EffectiveServerStepTimeoutSecondsAsync(
-            step, snapshot.TimeoutSeconds, deployment.SpaceId, ct).ConfigureAwait(false);
+            step, snapshot.TimeoutSeconds, deployment.SpaceId, engine, ct).ConfigureAwait(false);
 
         // E3 — a DeployRelease step runs at most ONCE (see
         // EffectiveServerStepMaxRetries): a step-level retry would trigger a fresh
@@ -2350,6 +2392,7 @@ public sealed class DeploymentWorker(
         DeploymentStepPlan step,
         int configuredTimeoutSeconds,
         Guid spaceId,
+        EngineRuntimeSettings engine,
         CancellationToken ct)
     {
         if (configuredTimeoutSeconds > 0
@@ -2370,7 +2413,7 @@ public sealed class DeploymentWorker(
             .ConfigureAwait(false);
         if (!childHasGate)
         {
-            var working = engineOptions.Value.MaxDeployReleaseWaitDuration;
+            var working = engine.MaxDeployReleaseWaitDuration;
             var workingSeconds = working > TimeSpan.Zero
                 ? working.TotalSeconds
                 : TimeSpan.FromHours(1).TotalSeconds;
@@ -2397,7 +2440,7 @@ public sealed class DeploymentWorker(
         // milliseconds exceed ~Int32.MaxValue — an absurd (>24 day) configured value must
         // degrade to a long ceiling, not an ArgumentOutOfRangeException that fails every
         // DeployRelease step as a generic error.
-        var ceiling = engineOptions.Value.MaxDeployReleaseGatedWaitDuration;
+        var ceiling = engine.MaxDeployReleaseGatedWaitDuration;
         var seconds = ceiling > TimeSpan.Zero
             ? ceiling.TotalSeconds
             : TimeSpan.FromDays(7).TotalSeconds;
@@ -2972,6 +3015,7 @@ public sealed class DeploymentWorker(
         LogSequencer logSeq,
         IReadOnlyDictionary<string, string> flatVars,
         SecretRedactor redactor,
+        EngineRuntimeSettings engine,
         CancellationToken ct)
     {
         // Evaluate Conditions + Role filter sequentially first so skipped-
@@ -3045,7 +3089,7 @@ public sealed class DeploymentWorker(
             var (ok, timedOut, attemptCount, startedUtc, effectiveTimeoutSeconds, result) =
                 await RunServerStepWithRetriesAsync(
                     deployment.Id, s, snap, deployment, vocab, auditLog,
-                    logSeq, flatVars, redactor, ct).ConfigureAwait(false);
+                    logSeq, flatVars, redactor, engine, ct).ConfigureAwait(false);
             if (timedOut)
             {
                 await LogAndAuditStepTimedOutAsync(
@@ -3129,6 +3173,7 @@ public sealed class DeploymentWorker(
             string connectionId,
             IAuditLog auditLog,
             LogSequencer logSeq,
+            EngineRuntimeSettings engine,
             CancellationToken ct)
     {
         var waveTimeoutSeconds = stepsToRun
@@ -3158,7 +3203,7 @@ public sealed class DeploymentWorker(
         // reconciler away (the process IS alive), the in-flight gauge stayed
         // up, and one dead agent blocked blue-green retirement indefinitely.
         var stepTimeoutConfigured = waveTimeoutSeconds > 0;
-        var configuredCeiling = engineOptions.Value.MaxTargetWaveDuration;
+        var configuredCeiling = engine.MaxTargetWaveDuration;
         var executionBudget = stepTimeoutConfigured
             ? TimeSpan.FromSeconds(waveTimeoutSeconds)
             // Non-positive config would mean "immediately" — fall back to the
@@ -3173,7 +3218,7 @@ public sealed class DeploymentWorker(
         // becomes a BACKSTOP — execution budget plus the queue-wait ceiling — so
         // B3's "always armed" invariant still holds when that report never arrives
         // (a wedged agent that stays connected but never executes).
-        var configuredQueueWait = engineOptions.Value.MaxTargetQueueWait;
+        var configuredQueueWait = engine.MaxTargetQueueWait;
         var queueWaitCeiling = configuredQueueWait > TimeSpan.Zero
             ? configuredQueueWait
             : EngineOptions.DefaultMaxTargetQueueWait;
@@ -3249,7 +3294,7 @@ public sealed class DeploymentWorker(
             // wave resolves per the deployment's failure mode instead of
             // waiting out the whole deadline on an agent that is gone.
             var monitorTask = MonitorAgentConnectionDuringWaveAsync(
-                deployment.Id, targetId, linkedCts.Token);
+                deployment.Id, targetId, engine.AgentDisconnectWaveGrace, linkedCts.Token);
 
             try
             {
@@ -3493,14 +3538,8 @@ public sealed class DeploymentWorker(
     /// stale rather than corrupting a re-dispatched attempt.
     /// </summary>
     private async Task MonitorAgentConnectionDuringWaveAsync(
-        Guid deploymentId, Guid targetId, CancellationToken ct)
+        Guid deploymentId, Guid targetId, TimeSpan grace, CancellationToken ct)
     {
-        var grace = engineOptions.Value.AgentDisconnectWaveGrace;
-        if (grace <= TimeSpan.Zero)
-        {
-            return; // disconnect monitor disabled; the wave deadline still applies
-        }
-
         // Sample fast enough that short (test) graces work, slow enough to be
         // free in production — one registry lookup per poll per in-flight wave.
         var poll = TimeSpan.FromMilliseconds(
@@ -3992,6 +4031,12 @@ public sealed class DeploymentWorker(
     /// don't kill in-flight peers.
     /// </para>
     /// </summary>
+    internal static int ResolveTargetWaveMaxParallelism(
+        RollingWindow rolling, int defaultMaxParallelism)
+        => rolling.Reason == RollingCapReason.Resolved && rolling.Cap is > 0
+            ? rolling.Cap.Value
+            : defaultMaxParallelism;
+
     private async Task<TargetWaveAggregateResult> DispatchTargetWaveAcrossTargetsAsync(
         WavePartitioner.Wave wave,
         List<DeploymentTarget> targets,
@@ -4007,6 +4052,7 @@ public sealed class DeploymentWorker(
         IAuditLog auditLog,
         LogSequencer logSeq,
         DeploymentOutputAccumulator outputAccumulator,
+        EngineRuntimeSettings engine,
         CancellationToken ct)
     {
         // ── Per-target Condition + role filter ─────────────────────────
@@ -4138,11 +4184,12 @@ public sealed class DeploymentWorker(
         // The cap comes from a Kraken.StepGroup ancestor's typed MaxParallelism
         // column (D3). When every step in the wave shares a single rolling
         // ancestor with a positive cap, the resolver returns it (Resolved);
-        // otherwise no batching, WITH a reason. See RollingWindowResolver for the
-        // precise semantic + edge cases.
+        // otherwise the Engine default applies, with a warning for malformed or
+        // mixed ancestry. See RollingWindowResolver for the precise edge cases.
         var rolling = RollingWindowResolver.ResolveWaveRollingWindow(
             wave.Steps, canonicalSnapshotByPlanIndex, snapshotById);
-        var maxParallelism = rolling.Cap;
+        var maxParallelism = ResolveTargetWaveMaxParallelism(
+            rolling, engine.DefaultTargetWaveMaxParallelism);
         var rollingGroupName = rolling.RollingGroupName;
 
         // D3 RIDER — rolling visibility. A rolling group is present but the
@@ -4157,9 +4204,9 @@ public sealed class DeploymentWorker(
                 ? $"the rolling window on group '{rollingGroupName}' is not a positive integer"
                 : "the wave's steps do not all belong to the same rolling group";
             await logSeq.AppendAsync(-1, null, "warning",
-                $"--- Rolling batching disabled: {reasonDetail}; all " +
-                $"{dispatchPlan.Count.ToString(CultureInfo.InvariantCulture)} target(s) run in " +
-                "one batch (no concurrency cap). ---", ct).ConfigureAwait(false);
+                $"--- Explicit rolling batching unavailable: {reasonDetail}; using the " +
+                $"default target-wave cap of {maxParallelism.ToString(CultureInfo.InvariantCulture)}. ---",
+                ct).ConfigureAwait(false);
             await auditLog.RecordAsync(
                 vocab.RollingBatchingDisabled,
                 subjectType: vocab.SubjectType,
@@ -4170,20 +4217,17 @@ public sealed class DeploymentWorker(
                 ct: ct).ConfigureAwait(false);
         }
 
-        var batches = maxParallelism is null
-            ? [dispatchPlan]
-            : RollingWindowResolver.Chunk(dispatchPlan, maxParallelism.Value);
+        var batches = RollingWindowResolver.Chunk(dispatchPlan, maxParallelism);
 
         // D3 RIDER — informational nudge: a Resolved cap that meets or exceeds
         // the wave's target count never fires (Chunk returns a single batch).
         // Surface it so an operator who set a too-large window understands why
         // there's no batching — distinct from the silent no-rolling-group case.
         if (rolling.Reason == RollingCapReason.Resolved
-            && maxParallelism is not null
             && batches.Count == 1)
         {
             await logSeq.AppendAsync(-1, null, "info",
-                $"--- Rolling window {maxParallelism.Value.ToString(CultureInfo.InvariantCulture)} on " +
+                $"--- Rolling window {maxParallelism.ToString(CultureInfo.InvariantCulture)} on " +
                 $"'{rollingGroupName}' is >= the {dispatchPlan.Count.ToString(CultureInfo.InvariantCulture)} " +
                 "target(s) in this wave; the cap has no effect (all targets run at once). ---",
                 ct).ConfigureAwait(false);
@@ -4191,7 +4235,7 @@ public sealed class DeploymentWorker(
 
         // Batching is only operator-visible when we ACTUALLY split — a cap
         // that meets or exceeds the dispatch count degrades to a single batch.
-        var batchingActive = batches.Count > 1 && rollingGroupName is not null;
+        var batchingActive = batches.Count > 1 && rolling.Reason == RollingCapReason.Resolved;
 
         var softFailedTargetIds = new List<Guid>();
 
@@ -4230,7 +4274,7 @@ public sealed class DeploymentWorker(
                                  $"Batch={(batchIdx + 1).ToString(CultureInfo.InvariantCulture)}/" +
                                  $"{batches.Count.ToString(CultureInfo.InvariantCulture)}, " +
                                  $"BatchSize={batch.Count.ToString(CultureInfo.InvariantCulture)}, " +
-                                 $"MaxParallelism={maxParallelism!.Value.ToString(CultureInfo.InvariantCulture)}, " +
+                                 $"MaxParallelism={maxParallelism.ToString(CultureInfo.InvariantCulture)}, " +
                                  $"Targets=[{batchTargets}], " +
                                  $"Wave=[{waveNames}]",
                     ct: ct).ConfigureAwait(false);
@@ -4238,12 +4282,12 @@ public sealed class DeploymentWorker(
                     $"--- Rolling batch " +
                     $"{(batchIdx + 1).ToString(CultureInfo.InvariantCulture)} of " +
                     $"{batches.Count.ToString(CultureInfo.InvariantCulture)} for " +
-                    $"'{rollingGroupName}' (window={maxParallelism!.Value}): " +
+                    $"'{rollingGroupName}' (window={maxParallelism}): " +
                     $"[{batchTargets}] ---", ct).ConfigureAwait(false);
             }
 
             var batchOutcome = await DispatchOneBatchAsync(
-                batch, deployment, vocab, db, auditLog, logSeq, outputAccumulator, ct).ConfigureAwait(false);
+                batch, deployment, vocab, db, auditLog, logSeq, outputAccumulator, engine, ct).ConfigureAwait(false);
 
             // Phase 3 — accumulate drop-outs from this batch into the
             // wave's aggregate; subsequent batches still run (a failed
@@ -4301,6 +4345,7 @@ public sealed class DeploymentWorker(
         IAuditLog auditLog,
         LogSequencer logSeq,
         DeploymentOutputAccumulator outputAccumulator,
+        EngineRuntimeSettings engine,
         CancellationToken ct)
     {
         var waveStartedUtc = DateTimeOffset.UtcNow;
@@ -4315,7 +4360,7 @@ public sealed class DeploymentWorker(
             var augmentedPlan = outputAccumulator.AugmentPlanForTarget(ctx.Target.Id, ctx.Plan);
             var (waveResult, waveTimedOut, perStepResults) = await DispatchTargetWaveAsync(
                 augmentedPlan, stepsToRun, ctx.SnapshotByPlanIndex, deployment, vocab,
-                ctx.Target.Id, connectionId, auditLog, logSeq, ct)
+                ctx.Target.Id, connectionId, auditLog, logSeq, engine, ct)
                 .ConfigureAwait(false);
             return (ctx, stepsToRun, waveResult, waveTimedOut, perStepResults);
         }).ToArray();

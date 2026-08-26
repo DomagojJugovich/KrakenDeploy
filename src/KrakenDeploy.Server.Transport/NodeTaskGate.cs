@@ -3,7 +3,7 @@ namespace KrakenDeploy.Server.Transport;
 /// <summary>
 /// B7 — the node task cap: bounds how many deployment orchestrations run
 /// concurrently on this node (<c>Engine:MaxConcurrentTasks</c>, Octopus-parity
-/// default 5). Pre-B7 the worker fire-and-forgot every dequeued item, so an
+/// default 20). Pre-B7 the worker fire-and-forgot every dequeued item, so an
 /// enqueue burst ran unbounded concurrent orchestrations — each holding DB
 /// contexts, a log sequencer and per-target dispatch state for its whole
 /// duration.

@@ -1,11 +1,11 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Data.Net;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -48,7 +48,7 @@ public class StepTemplateCatalogService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     IHttpClientFactory httpClientFactory,
     StepTemplateService stepTemplateService,
-    IConfiguration config,
+    EffectiveSettingsService effectiveSettings,
     IOptions<SsrfOptions> ssrfOptions,
     ILogger<StepTemplateCatalogService> logger,
     SettingsService? settings = null)
@@ -66,33 +66,34 @@ public class StepTemplateCatalogService(
         public string HealthKey => $"templates:{Key}";
     }
 
-    private bool Enabled =>
-        !string.Equals(config["StepTemplates:Catalog:Enabled"], "false",
-            StringComparison.OrdinalIgnoreCase);
-
     /// <summary>
     /// The configured feeds, or the defaults when none are configured:
     /// the Octopus community library (600+ templates) and the Kraken
     /// community repo's <c>step-templates/</c> lane (SD-12/SD-13).
     /// </summary>
-    public IReadOnlyList<Feed> ResolveFeeds()
+    public async Task<IReadOnlyList<Feed>> ResolveFeedsAsync(CancellationToken ct = default)
+    {
+        var catalog = await effectiveSettings.GetCatalogAsync(ct).ConfigureAwait(false);
+        return ResolveFeeds(catalog.TemplateCatalogFeeds.Value);
+    }
+
+    private List<Feed> ResolveFeeds(IEnumerable<CatalogFeedSettings> configuredFeeds)
     {
         var feeds = new List<Feed>();
-        foreach (var child in config.GetSection("StepTemplates:Catalog:Feeds").GetChildren())
+        foreach (var configured in configuredFeeds)
         {
-            var owner = child["Owner"];
-            var repo  = child["Repo"];
+            var owner = configured.Owner;
+            var repo  = configured.Repo;
             if (string.IsNullOrWhiteSpace(owner) || string.IsNullOrWhiteSpace(repo))
             {
                 logger.LogWarning(
-                    "StepTemplates:Catalog:Feeds entry '{Key}' is missing Owner/Repo — skipped.",
-                    child.Key);
+                    "StepTemplates:Catalog:Feeds entry is missing Owner/Repo — skipped.");
                 continue;
             }
             feeds.Add(new Feed(
                 owner.Trim(), repo.Trim(),
-                child["Branch"]?.Trim() is { Length: > 0 } b ? b : "main",
-                child["SubDir"]?.Trim() is { Length: > 0 } s ? s : "step-templates"));
+                configured.Branch?.Trim() is { Length: > 0 } b ? b : "main",
+                configured.SubDir?.Trim() is { Length: > 0 } s ? s : "step-templates"));
         }
 
         if (feeds.Count == 0)
@@ -163,6 +164,9 @@ public class StepTemplateCatalogService(
         }
 
         var http = httpClientFactory.CreateClient(HttpClientName);
+        await GitHubHttpClientAuthentication.ApplyAsync(
+                http, effectiveSettings, new Uri(entry.DownloadUrl), ct)
+            .ConfigureAwait(false);
         var json = await http.GetStringAsync(entry.DownloadUrl, ct).ConfigureAwait(false);
 
         return await stepTemplateService.ImportFromJsonAsync(
@@ -182,13 +186,14 @@ public class StepTemplateCatalogService(
     /// </summary>
     public async Task<CatalogRefreshResult> RefreshAsync(CancellationToken ct = default)
     {
-        if (!Enabled)
+        var catalog = await effectiveSettings.GetCatalogAsync(ct).ConfigureAwait(false);
+        if (!catalog.TemplateCatalogEnabled.Value)
         {
-            logger.LogDebug("Step-template catalog refresh skipped — disabled by config.");
+            logger.LogDebug("Step-template catalog refresh skipped — disabled by effective settings.");
             return new CatalogRefreshResult(0, 0, 0, 0, 0, 0);
         }
 
-        var feeds = ResolveFeeds();
+        var feeds = ResolveFeeds(catalog.TemplateCatalogFeeds.Value);
         var totals = new CatalogRefreshResult(0, 0, 0, 0, 0, 0);
         var errors = new List<string>();
 
@@ -238,10 +243,14 @@ public class StepTemplateCatalogService(
         // 1. Tree listing — single API call.
         var treeUrl =
             $"https://api.github.com/repos/{feed.Owner}/{feed.Repo}/git/trees/{feed.Branch}?recursive=1";
+        await GitHubHttpClientAuthentication.ApplyAsync(
+                http, effectiveSettings, new Uri(treeUrl), ct)
+            .ConfigureAwait(false);
         JsonNode? treeNode;
         try
         {
             treeNode = await http.GetFromJsonAsync<JsonNode>(treeUrl, ct).ConfigureAwait(false);
+            http.DefaultRequestHeaders.Authorization = null;
         }
         catch (HttpRequestException ex)
         {

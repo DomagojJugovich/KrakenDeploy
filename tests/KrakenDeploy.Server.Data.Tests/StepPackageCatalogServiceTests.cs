@@ -1,6 +1,8 @@
 using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Data.Services;
+using KrakenDeploy.Server.Data.Settings;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,8 +21,13 @@ namespace KrakenDeploy.Server.Data.Tests;
 [Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class StepPackageCatalogServiceTests(PostgresFixture postgres)
-    : IClassFixture<PostgresFixture>
+    : IClassFixture<PostgresFixture>, IAsyncLifetime
 {
+    private const string MasterKey = "S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE=";
+
+    public Task InitializeAsync() => DeleteCatalogSettingsAsync();
+    public Task DisposeAsync() => DeleteCatalogSettingsAsync();
+
     [Fact]
     public async Task RefreshAsync_persists_a_release_with_an_embedded_manifest_block()
     {
@@ -145,11 +152,43 @@ public sealed class StepPackageCatalogServiceTests(PostgresFixture postgres)
         result.Added.Should().Be(0);
     }
 
+    [Fact]
+    public async Task RefreshAsync_uses_database_owner_repo_and_health_key()
+    {
+        var handler = StubGitHubReleases([]);
+        var harness = NewSvcWithSettings(handler, new Dictionary<string, string?>
+        {
+            ["StepPackages:Catalog:Owner"] = "config-owner",
+            ["StepPackages:Catalog:Repo"] = "config-repo",
+            ["StepPackages:Catalog:Enabled"] = "false",
+        });
+        await harness.Effective.SaveCatalogAsync(new CatalogSettingsUpdate
+        {
+            PackageCatalogEnabled = true,
+            PackageCatalogOwner = "database-owner",
+            PackageCatalogRepo = "database-repo",
+            TemplateCatalogEnabled = true,
+            TemplateCatalogFeeds = [new() { Owner = "owner", Repo = "repo" }],
+        });
+
+        await harness.Service.RefreshAsync();
+
+        handler.LastRequestUri.Should().Contain("/repos/database-owner/database-repo/releases");
+        var health = await harness.Settings.GetAsync<StepFeedHealthDocument>();
+        health.Feeds.Should().ContainKey("packages:database-owner/database-repo");
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private StepPackageCatalogService NewSvc(
         HttpMessageHandler handler,
         Dictionary<string, string?>? extraConfig = null)
+        => NewSvcWithSettings(handler, extraConfig).Service;
+
+    private (StepPackageCatalogService Service, EffectiveSettingsService Effective, SettingsService Settings)
+        NewSvcWithSettings(
+            HttpMessageHandler handler,
+            Dictionary<string, string?>? extraConfig = null)
     {
         var configValues = new Dictionary<string, string?>
         {
@@ -174,14 +213,24 @@ public sealed class StepPackageCatalogServiceTests(PostgresFixture postgres)
 
         var stepPkgSvc = new StepPackageService(
             postgres, config, NullLogger<StepPackageService>.Instance);
+        var settings = new SettingsService(postgres.ScopeFactory, TimeProvider.System);
+        var effective = new EffectiveSettingsService(settings, config, TestCrypto.Service(MasterKey));
 
-        return new StepPackageCatalogService(
+        var service = new StepPackageCatalogService(
             postgres,
             sp.GetRequiredService<IHttpClientFactory>(),
             stepPkgSvc,
-            config,
+            effective,
             Microsoft.Extensions.Options.Options.Create(new Net.SsrfOptions()),
-            NullLogger<StepPackageCatalogService>.Instance);
+            NullLogger<StepPackageCatalogService>.Instance,
+            settings);
+        return (service, effective, settings);
+    }
+
+    private async Task DeleteCatalogSettingsAsync()
+    {
+        await using var db = postgres.CreateContext();
+        await db.Set<Setting>().Where(s => s.Key == CatalogSettings.Key).ExecuteDeleteAsync();
     }
 
     private static StubReleasesHandler StubGitHubReleases(string[] releaseJsonObjects)
@@ -241,9 +290,12 @@ public sealed class StepPackageCatalogServiceTests(PostgresFixture postgres)
     /// </summary>
     private sealed class StubReleasesHandler(string releasesJson) : HttpMessageHandler
     {
+        public string? LastRequestUri { get; private set; }
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            LastRequestUri = request.RequestUri?.AbsoluteUri;
             if (request.RequestUri?.AbsolutePath.Contains("/releases") == true)
             {
                 return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)

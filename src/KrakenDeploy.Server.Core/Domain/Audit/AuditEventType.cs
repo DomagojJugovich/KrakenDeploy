@@ -212,6 +212,12 @@ public static class AuditEventType
     /// audit log can see a clear chronology of "who tuned what when".</summary>
     public const string PerformanceSettingsUpdated = "Performance.SettingsUpdated";
 
+    // ── Effective system settings (F3) ───────────────────────────────────────
+    public const string EngineSettingsUpdated      = "Engine.SettingsUpdated";
+    public const string CatalogSettingsUpdated     = "Catalog.SettingsUpdated";
+    public const string OperationalSettingsUpdated = "Operational.SettingsUpdated";
+    public const string SsrfSettingsUpdated        = "Security.SsrfSettingsUpdated";
+
     /// <summary>The scheduled retention sweep (WP9) completed a pass. Emitted
     /// once per run with a per-category count summary in Details (deployments,
     /// releases, packages, runbook runs, step-log blobs, orphaned live-log

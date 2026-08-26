@@ -1,8 +1,10 @@
 using System.Net;
 using System.Text;
 using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Data.Net;
 using KrakenDeploy.Server.Data.Services;
+using KrakenDeploy.Server.Data.Settings;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -18,14 +20,19 @@ namespace KrakenDeploy.Server.Data.Tests;
 [Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class StepTemplateCatalogMultiFeedTests(PostgresFixture postgres)
-    : IClassFixture<PostgresFixture>
+    : IClassFixture<PostgresFixture>, IAsyncLifetime
 {
+    private const string MasterKey = "S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE=";
+
+    public Task InitializeAsync() => DeleteCatalogSettingsAsync();
+    public Task DisposeAsync() => DeleteCatalogSettingsAsync();
+
     [Fact]
-    public void ResolveFeeds_defaults_to_octopus_library_and_kraken_community()
+    public async Task ResolveFeeds_defaults_to_octopus_library_and_kraken_community()
     {
         var svc = NewSvc(new RoutingHandler(), feedsConfig: null);
 
-        var feeds = svc.ResolveFeeds();
+        var feeds = await svc.ResolveFeedsAsync();
 
         feeds.Should().HaveCount(2);
         feeds[0].Key.Should().Be("octopusdeploy/library");
@@ -36,7 +43,7 @@ public sealed class StepTemplateCatalogMultiFeedTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public void ResolveFeeds_reads_configured_feeds_and_skips_incomplete_entries()
+    public async Task ResolveFeeds_reads_configured_feeds_and_skips_incomplete_entries()
     {
         var svc = NewSvc(new RoutingHandler(), feedsConfig: new Dictionary<string, string?>
         {
@@ -46,7 +53,7 @@ public sealed class StepTemplateCatalogMultiFeedTests(PostgresFixture postgres)
             ["StepTemplates:Catalog:Feeds:1:Owner"]  = "broken-no-repo",
         });
 
-        var feeds = svc.ResolveFeeds();
+        var feeds = await svc.ResolveFeedsAsync();
 
         feeds.Should().ContainSingle();
         feeds[0].Key.Should().Be("acme/steps");
@@ -130,6 +137,45 @@ public sealed class StepTemplateCatalogMultiFeedTests(PostgresFixture postgres)
         result.UpstreamCount.Should().Be(0);
     }
 
+    [Fact]
+    public async Task ResolveFeeds_and_refresh_use_database_feeds_over_config()
+    {
+        var handler = new RoutingHandler();
+        handler.SetTree("database-owner", []);
+        var harness = NewSvcWithSettings(handler, new Dictionary<string, string?>
+        {
+            ["StepTemplates:Catalog:Feeds:0:Owner"] = "config-owner",
+            ["StepTemplates:Catalog:Feeds:0:Repo"] = "config-repo",
+            ["StepTemplates:Catalog:Enabled"] = "false",
+        });
+        await harness.Effective.SaveCatalogAsync(new CatalogSettingsUpdate
+        {
+            PackageCatalogEnabled = true,
+            PackageCatalogOwner = "owner",
+            PackageCatalogRepo = "repo",
+            TemplateCatalogEnabled = true,
+            TemplateCatalogFeeds =
+            [
+                new()
+                {
+                    Owner = "database-owner",
+                    Repo = "database-repo",
+                    Branch = "database-branch",
+                    SubDir = "database-subdir",
+                },
+            ],
+        });
+
+        var feeds = await harness.Service.ResolveFeedsAsync();
+        var result = await harness.Service.RefreshAsync();
+
+        feeds.Should().ContainSingle();
+        feeds[0].Should().Be(new StepTemplateCatalogService.Feed(
+            "database-owner", "database-repo", "database-branch", "database-subdir"));
+        result.UpstreamCount.Should().Be(0);
+        handler.RequestedOwners.Should().Equal("database-owner");
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private static string UniqueOwner() => "owner-" + Guid.NewGuid().ToString("N")[..8];
@@ -144,18 +190,32 @@ public sealed class StepTemplateCatalogMultiFeedTests(PostgresFixture postgres)
 
     private StepTemplateCatalogService NewSvc(
         HttpMessageHandler handler, Dictionary<string, string?>? feedsConfig)
+        => NewSvcWithSettings(handler, feedsConfig).Service;
+
+    private (StepTemplateCatalogService Service, EffectiveSettingsService Effective)
+        NewSvcWithSettings(HttpMessageHandler handler, Dictionary<string, string?>? feedsConfig)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(feedsConfig ?? [])
             .Build();
 
-        return new StepTemplateCatalogService(
+        var settings = new SettingsService(postgres.ScopeFactory, TimeProvider.System);
+        var effective = new EffectiveSettingsService(settings, config, TestCrypto.Service(MasterKey));
+        var service = new StepTemplateCatalogService(
             postgres,
             new StubHttpClientFactory(new HttpClient(handler)),
             new StepTemplateService(postgres, new AllowAllPermissionEvaluator()),
-            config,
+            effective,
             Microsoft.Extensions.Options.Options.Create(new SsrfOptions()),
-            NullLogger<StepTemplateCatalogService>.Instance);
+            NullLogger<StepTemplateCatalogService>.Instance,
+            settings);
+        return (service, effective);
+    }
+
+    private async Task DeleteCatalogSettingsAsync()
+    {
+        await using var db = postgres.CreateContext();
+        await db.Set<Setting>().Where(s => s.Key == CatalogSettings.Key).ExecuteDeleteAsync();
     }
 
     private sealed class StubHttpClientFactory(HttpClient client) : IHttpClientFactory
@@ -173,6 +233,8 @@ public sealed class StepTemplateCatalogMultiFeedTests(PostgresFixture postgres)
         private readonly Dictionary<string, string[]> _trees = new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _failing = new(StringComparer.OrdinalIgnoreCase);
 
+        public List<string> RequestedOwners { get; } = [];
+
         public void SetTree(string owner, string[] paths) => _trees[owner] = paths;
         public void Fail(string owner) => _failing.Add(owner);
 
@@ -185,6 +247,7 @@ public sealed class StepTemplateCatalogMultiFeedTests(PostgresFixture postgres)
             {
                 // /repos/{owner}/{repo}/git/trees/{branch}
                 var owner = uri.AbsolutePath.Split('/')[2];
+                RequestedOwners.Add(owner);
                 if (_failing.Contains(owner))
                 {
                     return Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError));
