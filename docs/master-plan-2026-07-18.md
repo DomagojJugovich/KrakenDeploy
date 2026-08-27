@@ -194,7 +194,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 5 | WP5 | Missing CRUD end-to-end (target/release/group delete + user profile edit) | ✅ 5c23420·5d0d1b6 | M | — |
 | 5 | WP6 | Finish project tabs (variables trio + runbooks tab) | ✅ 1f61a67 | L | — |
 | 5 | WP9 | Retention expansion (rescoped: releases, packages, files, log age-cap) | ✅ b182bd5 (merged 12512a5) | L | D1 |
-| 5 | WP8 | Prompted variables | ⬜ | L | WP1 (done) |
+| 5 | WP8 | Prompted variables | ✅ b61ecb6·c8c4a97 | L | WP1 (done) |
 | 5 | WP7 | Triggers — all three kinds | ⬜ | XL | D1 |
 | 5 | WP15 | Certificates library — full v1 | ⬜ | XL | — |
 | 5 | WP10 | OpenTelemetry export (Server-only, rescoped) | ✅ 73c640f | M | — |

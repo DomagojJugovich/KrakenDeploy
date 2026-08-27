@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using KrakenDeploy.Server.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace KrakenDeploy.Server.Data.Migrations
 {
     [DbContext(typeof(KrakenDbContext))]
-    partial class KrakenDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260827093320_CompletePromptedVariables")]
+    partial class CompletePromptedVariables
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -416,8 +419,7 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnName("before_json");
 
                     b.Property<string>("Details")
-                        .HasMaxLength(4096)
-                        .HasColumnType("character varying(4096)")
+                        .HasColumnType("text")
                         .HasColumnName("details");
 
                     b.Property<string>("EventType")
@@ -1668,10 +1670,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<bool>("AllowParallelTaskExecution")
-                        .HasColumnType("boolean")
-                        .HasColumnName("allow_parallel_task_execution");
-
                     b.Property<DateTimeOffset>("CreatedUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_utc");
@@ -1945,10 +1943,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    b.Property<bool>("AllowParallelTaskExecution")
-                        .HasColumnType("boolean")
-                        .HasColumnName("allow_parallel_task_execution");
 
                     b.Property<DateTimeOffset>("CreatedUtc")
                         .HasColumnType("timestamp with time zone")

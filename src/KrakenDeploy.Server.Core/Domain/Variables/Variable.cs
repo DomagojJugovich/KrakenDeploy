@@ -34,20 +34,12 @@ public class Variable : AuditableEntity, ISpaceScoped
 
     public VariableType Type { get; set; }
 
-    /// <summary>
-    /// When non-null, the operator is prompted for this variable's value at
-    /// deployment time. The string is the prompt label/description shown in
-    /// the deploy dialog. <c>null</c> = not prompted (the stored <see cref="Value"/>
-    /// is used as-is). Octopus import maps <c>Prompt.Label</c> / <c>Prompt.Description</c>
-    /// into this field.
-    /// </summary>
-    public string? PromptText { get; set; }
-
-    /// <summary>
-    /// When <c>true</c> and <see cref="PromptText"/> is set, the deployment
-    /// cannot proceed until the operator supplies a non-empty value.
-    /// </summary>
+    public bool IsPrompted { get; set; }
+    public string? PromptLabel { get; set; }
+    public string? PromptDescription { get; set; }
     public bool PromptRequired { get; set; }
+    public PromptControlType PromptControl { get; set; }
+    public List<string> PromptOptions { get; set; } = [];
 
     /// <summary>Scope constraints stored as <c>jsonb</c>.</summary>
     public VariableScope Scope { get; set; } = new();

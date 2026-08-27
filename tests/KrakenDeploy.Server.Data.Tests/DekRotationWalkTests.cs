@@ -62,7 +62,8 @@ public sealed class DekRotationWalkTests(PostgresFixture postgres)
         var (project, env, _) = await SeedProjectWithEnvAsync();
         var vars = new VariableService(postgres, TestCrypto.Service(OldDekB64), new AllowAllPermissionEvaluator());
         await vars.CreateVariableAsync(project.Id, "ApiKey", "super-secret",
-            VariableType.Sensitive, scope: new VariableScope(), caller: CallerAuthorization.System);
+            VariableType.Sensitive, scope: new VariableScope(), caller: CallerAuthorization.System,
+            prompt: new VariablePromptSettings(true, "API key", "Deployment credential", true));
         await SeedSimpleProcessAsync(project.Id);
         var release = await new ReleaseService(postgres, new AllowAllPermissionEvaluator()).CreateAsync(project.Id, "1.0.0", CallerAuthorization.System);
         // Sanity: snapshot froze the ciphertext (not plaintext) under DEK_old.
@@ -118,6 +119,10 @@ public sealed class DekRotationWalkTests(PostgresFixture postgres)
                 Status           = DeploymentStatus.Succeeded,
                 Cause            = ServerTaskCause.Manual,
                 CreatedByDisplay = "dek-rotation-test",
+                FormValues = PromptedVariableFormValuesCodec.Serialize(
+                    new Dictionary<string, string> { ["ApiKey"] = "prompt-secret" },
+                    new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "ApiKey" },
+                    TestCrypto.Service(OldDekB64)),
             };
             db.Set<Deployment>().Add(deployment);
             db.TaskOutputVariables.Add(new TaskOutputVariable
@@ -152,6 +157,7 @@ public sealed class DekRotationWalkTests(PostgresFixture postgres)
         counts.IdentityProviders.Should().Be(1);
         counts.OfflineDropFields.Should().Be(1);
         counts.OutputVariables.Should().Be(1, "the sensitive task output variable is re-encrypted");
+        counts.PromptedVariablePayloads.Should().Be(1);
 
         // ── Assert: everything now decrypts under DEK_new, not DEK_old ────────
         await using (var db = postgres.CreateContext())
@@ -168,6 +174,19 @@ public sealed class DekRotationWalkTests(PostgresFixture postgres)
                 .VariableSnapshot.Single(s => s.Name == "ApiKey");
             AesGcmCipher.Decrypt(NewDek, snap.Value).Should().Be("super-secret",
                 "the JSONB snapshot list was rebuilt + reassigned so the UPDATE persisted");
+            snap.IsPrompted.Should().BeTrue();
+            snap.PromptLabel.Should().Be("API key");
+            snap.PromptDescription.Should().Be("Deployment credential");
+            snap.PromptRequired.Should().BeTrue();
+
+            var formValues = (await db.ServerTasks.IgnoreQueryFilters()
+                .SingleAsync(t => t.FormValues != null)).FormValues!;
+            PromptedVariableFormValuesCodec.Deserialize(
+                    formValues, TestCrypto.Service(Convert.ToBase64String(NewDek)))["ApiKey"]
+                .Should().Be("prompt-secret");
+            var decryptPromptUnderOld = () => PromptedVariableFormValuesCodec.Deserialize(
+                formValues, TestCrypto.Service(OldDekB64));
+            decryptPromptUnderOld.Should().Throw<CryptographicException>();
 
             // Settings-document secrets read back through a fresh SettingsService
             // (its own cache is empty, so it reads the re-encrypted payload).

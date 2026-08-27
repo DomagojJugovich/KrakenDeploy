@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.CommandLine.Invocation;
 
 namespace KrakenDeploy.Cli.Commands;
 
@@ -130,6 +131,12 @@ public static class ReleaseCommands
         var targetOpt      = new Option<string>("--target", "Target name.") { IsRequired = true };
         var waitOpt        = new Option<bool>("--wait", "Block until the deployment finishes and stream log output.");
         var timeoutOpt     = new Option<int>("--timeout", () => 600, "Timeout in seconds when --wait is set.");
+        var variableOpt = new Option<string[]>(
+            "--var", "Set a prompted variable: <Name>=<Value>. Repeatable.")
+        {
+            AllowMultipleArgumentsPerToken = false,
+        };
+        variableOpt.Arity = ArgumentArity.ZeroOrMore;
 
         var cmd = new Command("deploy", "Trigger a deployment for a release.");
         cmd.AddOption(projectOpt);
@@ -138,9 +145,19 @@ public static class ReleaseCommands
         cmd.AddOption(targetOpt);
         cmd.AddOption(waitOpt);
         cmd.AddOption(timeoutOpt);
+        cmd.AddOption(variableOpt);
 
-        cmd.SetHandler(async (project, release, environment, target, wait, timeout, server, apiKey) =>
+        cmd.SetHandler(async (InvocationContext context) =>
         {
+            var project = context.ParseResult.GetValueForOption(projectOpt)!;
+            var release = context.ParseResult.GetValueForOption(releaseOpt)!;
+            var environment = context.ParseResult.GetValueForOption(environmentOpt)!;
+            var target = context.ParseResult.GetValueForOption(targetOpt)!;
+            var wait = context.ParseResult.GetValueForOption(waitOpt);
+            var timeout = context.ParseResult.GetValueForOption(timeoutOpt);
+            var variables = context.ParseResult.GetValueForOption(variableOpt) ?? [];
+            var server = context.ParseResult.GetValueForOption(serverOption)!;
+            var apiKey = context.ParseResult.GetValueForOption(apiKeyOption)!;
             using var client = new KrakenApiClient(server, apiKey);
             try
             {
@@ -172,7 +189,8 @@ public static class ReleaseCommands
                     return;
                 }
 
-                var deployment = await client.CreateDeploymentAsync(rel.Id, env.Id, tgt.Id)
+                var promptedValues = ParsePromptedValues(variables);
+                var deployment = await client.CreateDeploymentAsync(rel.Id, env.Id, tgt.Id, promptedValues)
                     .ConfigureAwait(false);
 
                 Console.WriteLine($"✓  Deployment queued (id: {deployment.Id})");
@@ -192,8 +210,12 @@ public static class ReleaseCommands
                 Console.Error.WriteLine($"Failed: {ex.Message}");
                 Environment.ExitCode = 1;
             }
-        }, projectOpt, releaseOpt, environmentOpt, targetOpt, waitOpt, timeoutOpt,
-           serverOption, apiKeyOption);
+            catch (ArgumentException ex)
+            {
+                Console.Error.WriteLine($"Failed: {ex.Message}");
+                Environment.ExitCode = 1;
+            }
+        });
 
         return cmd;
     }
@@ -287,5 +309,25 @@ public static class ReleaseCommands
             dict[entry[..eq]] = entry[(eq + 1)..];
         }
         return dict.Count > 0 ? dict : null;
+    }
+
+    internal static Dictionary<string, string>? ParsePromptedValues(string[] raw)
+    {
+        if (raw is null || raw.Length == 0)
+        {
+            return null;
+        }
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in raw)
+        {
+            var separator = entry.IndexOf('=', StringComparison.Ordinal);
+            if (separator < 1)
+            {
+                throw new ArgumentException(
+                    $"Malformed --var value '{entry}' (expected Name=Value).", nameof(raw));
+            }
+            values[entry[..separator]] = entry[(separator + 1)..];
+        }
+        return values;
     }
 }

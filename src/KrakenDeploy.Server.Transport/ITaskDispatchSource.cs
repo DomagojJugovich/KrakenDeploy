@@ -28,6 +28,9 @@ internal interface ITaskDispatchSource
     /// <c>RunbookRun.ProcessSnapshot</c> frozen at trigger time for a run.</summary>
     IReadOnlyList<StepSnapshot> ProcessSnapshot { get; }
 
+    /// <summary>The frozen definitions used for deployment prompts; null for runbooks.</summary>
+    IReadOnlyList<VariableSnapshot>? PromptVariableSnapshot { get; }
+
     /// <summary>Deployments consult the deployment-freeze gate before dispatch;
     /// runbook runs skip it (Octopus parity — runbooks run during freeze
     /// windows). Locked decision 5.</summary>
@@ -87,6 +90,7 @@ internal sealed class DeploymentDispatchSource(Deployment deployment) : ITaskDis
 {
     public ServerTaskKind Kind => ServerTaskKind.Deployment;
     public IReadOnlyList<StepSnapshot> ProcessSnapshot => deployment.Release.ProcessSnapshot;
+    public IReadOnlyList<VariableSnapshot>? PromptVariableSnapshot => deployment.Release.VariableSnapshot;
     public bool AppliesFreezeGate => true;
     public bool SupportsOfflineDrop => true;
     public TaskAuditVocabulary Audit => TaskAuditVocabulary.Deployment;
@@ -141,6 +145,7 @@ internal sealed class RunbookRunDispatchSource(RunbookRun run) : ITaskDispatchSo
 {
     public ServerTaskKind Kind => ServerTaskKind.RunbookRun;
     public IReadOnlyList<StepSnapshot> ProcessSnapshot => run.ProcessSnapshot;
+    public IReadOnlyList<VariableSnapshot>? PromptVariableSnapshot => null;
     public bool AppliesFreezeGate => false;
     public bool SupportsOfflineDrop => false;
     public TaskAuditVocabulary Audit => TaskAuditVocabulary.RunbookRun;

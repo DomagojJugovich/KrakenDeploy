@@ -85,6 +85,49 @@
                 </div>
             }
 
+            <RadzenFieldset Text="Prompt on deploy" class="rz-mt-2">
+                <RadzenStack Gap="0.85rem">
+                    <div>
+                        <RadzenCheckBox @bind-Value="_model.IsPrompted" Name="prompt-on-deploy" />
+                        <RadzenLabel Text="Ask the operator for a value when deploying a release"
+                                     Component="prompt-on-deploy"
+                                     Style="margin-left: 0.4rem; cursor: pointer;" />
+                    </div>
+                    @if (_model.IsPrompted)
+                    {
+                        <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem">
+                            <div style="flex: 1;">
+                                <RadzenLabel Text="Label" />
+                                <RadzenTextBox @bind-Value="_model.PromptLabel" Style="width:100%"
+                                               Placeholder="Defaults to the variable name" />
+                            </div>
+                            <div style="flex: 1;">
+                                <RadzenLabel Text="Control" />
+                                <RadzenDropDown TValue="PromptControlType" @bind-Value="_model.PromptControl"
+                                                Data="@_promptControls" Style="width:100%" />
+                            </div>
+                        </RadzenStack>
+                        <div>
+                            <RadzenLabel Text="Description" />
+                            <RadzenTextArea @bind-Value="_model.PromptDescription" Rows="2" Style="width:100%" />
+                        </div>
+                        @if (_model.PromptControl == PromptControlType.Select)
+                        {
+                            <div>
+                                <RadzenLabel Text="Options *" />
+                                <RadzenTextArea @bind-Value="_model.PromptOptions" Rows="3" Style="width:100%"
+                                                Placeholder="One option per line" />
+                            </div>
+                        }
+                        <div>
+                            <RadzenCheckBox @bind-Value="_model.PromptRequired" Name="prompt-required" />
+                            <RadzenLabel Text="A value is required" Component="prompt-required"
+                                         Style="margin-left: 0.4rem; cursor: pointer;" />
+                        </div>
+                    }
+                </RadzenStack>
+            </RadzenFieldset>
+
             @* ── Scope ───────────────────────────────────────────────────── *@
             <RadzenFieldset Text="Scope" class="rz-mt-2">
                 <RadzenStack Gap="0.85rem">
@@ -180,6 +223,7 @@
         new(VariableType.Sensitive,   "Sensitive (encrypted)"),
         new(VariableType.StringArray, "String array"),
     ];
+    private readonly PromptControlType[] _promptControls = Enum.GetValues<PromptControlType>();
 
     protected override async Task OnInitializedAsync()
     {
@@ -243,6 +287,14 @@
             _model.ChannelId = Variable.Scope.ChannelId;
             _model.ProcessStepId = Variable.Scope.ProcessStepId;
             _model.Roles = Variable.Scope.Roles?.ToList() ?? [];
+            _model.IsPrompted = Variable.IsPrompted;
+            _model.PromptLabel = Variable.PromptLabel;
+            _model.PromptDescription = Variable.PromptDescription;
+            _model.PromptRequired = Variable.PromptRequired;
+            _model.PromptControl = Variable.PromptControl;
+            _model.PromptOptions = Variable.PromptOptions is { Count: > 0 }
+                ? string.Join(Environment.NewLine, Variable.PromptOptions)
+                : null;
         }
     }
 
@@ -286,6 +338,14 @@
             TargetId = Variable?.Scope.TargetId,
             TenantTagIds = Variable?.Scope.TenantTagIds is { Count: > 0 } tt ? [.. tt] : null,
         };
+        var prompt = new VariablePromptSettings(
+            _model.IsPrompted,
+            _model.PromptLabel,
+            _model.PromptDescription,
+            _model.PromptRequired,
+            _model.PromptControl,
+            _model.PromptOptions?
+                .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
         try
         {
@@ -299,17 +359,20 @@
                     : _model.Value ?? "";
 
                 await VariableSvc.UpdateVariableAsync(
-                    Variable!.Id, _model.Name, valueToSend, _model.Type, scope, await Guard.CurrentCallerAsync());
+                    Variable!.Id, _model.Name, valueToSend, _model.Type, scope,
+                    await Guard.CurrentCallerAsync(), prompt: prompt);
             }
             else if (SetId is { } setId)
             {
                 await VariableSvc.CreateVariableInSetAsync(
-                    setId, _model.Name, _model.Value ?? "", _model.Type, scope, await Guard.CurrentCallerAsync());
+                    setId, _model.Name, _model.Value ?? "", _model.Type, scope,
+                    await Guard.CurrentCallerAsync(), prompt: prompt);
             }
             else if (ProjectId is { } projectId)
             {
                 await VariableSvc.CreateVariableAsync(
-                    projectId, _model.Name, _model.Value ?? "", _model.Type, scope, await Guard.CurrentCallerAsync());
+                    projectId, _model.Name, _model.Value ?? "", _model.Type, scope,
+                    await Guard.CurrentCallerAsync(), prompt: prompt);
             }
             else
             {
@@ -335,6 +398,12 @@
         public VariableType Type { get; set; } = VariableType.Text;
         public string? Value { get; set; }
         public bool KeepSensitiveValue { get; set; }
+        public bool IsPrompted { get; set; }
+        public string? PromptLabel { get; set; }
+        public string? PromptDescription { get; set; }
+        public bool PromptRequired { get; set; }
+        public PromptControlType PromptControl { get; set; }
+        public string? PromptOptions { get; set; }
         public Guid? EnvironmentId { get; set; }
         public Guid? TenantId { get; set; }
         public Guid? ChannelId { get; set; }

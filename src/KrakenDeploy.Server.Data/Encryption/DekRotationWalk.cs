@@ -65,6 +65,12 @@ public static class DekRotationWalk
                     {
                         Name = s.Name, Value = Re(oldDek, newDek, s.Value),
                         Type = s.Type, Scope = s.Scope, Layer = s.Layer,
+                        IsPrompted = s.IsPrompted,
+                        PromptLabel = s.PromptLabel,
+                        PromptDescription = s.PromptDescription,
+                        PromptRequired = s.PromptRequired,
+                        PromptControl = s.PromptControl,
+                        PromptOptions = s.PromptOptions is null ? null : [.. s.PromptOptions],
                     });
                     touched = true;
                     c.SnapshotEntries++;
@@ -139,6 +145,22 @@ public static class DekRotationWalk
             c.PauseCheckpoints++;
         }
 
+        // 8. Prompted-variable form payloads. Only the nested
+        // SensitiveValuesEncrypted member is rewritten; non-sensitive values stay as-is.
+        var promptedTasks = await db.ServerTasks.IgnoreQueryFilters()
+            .Where(t => t.FormValues != null)
+            .ToListAsync(ct).ConfigureAwait(false);
+        foreach (var task in promptedTasks)
+        {
+            var rewritten = PromptedVariableFormValuesCodec.ReEncrypt(
+                task.FormValues!, cipher => Re(oldDek, newDek, cipher));
+            if (!string.Equals(rewritten, task.FormValues, StringComparison.Ordinal))
+            {
+                task.FormValues = rewritten;
+                c.PromptedVariablePayloads++;
+            }
+        }
+
         return c;
     }
 }
@@ -165,13 +187,15 @@ public sealed class DekReEncryptCounts
     /// gate. Normally 0; non-zero only when a rotation runs while approvals are
     /// outstanding.</summary>
     public int PauseCheckpoints { get; set; }
+    public int PromptedVariablePayloads { get; set; }
 
     public int Total => Variables + SnapshotEntries + Settings + IdentityProviders
-                        + OfflineDropFields + OutputVariables + PauseCheckpoints;
+                        + OfflineDropFields + OutputVariables + PauseCheckpoints
+                        + PromptedVariablePayloads;
 
     public string Summary =>
         $"{Variables} variables, {SnapshotEntries} snapshot entries across {Releases} releases, " +
         $"{Settings} settings secrets, {IdentityProviders} OIDC secrets, " +
         $"{OfflineDropFields} offline-drop targets, {OutputVariables} output variables, " +
-        $"{PauseCheckpoints} pause checkpoints";
+        $"{PauseCheckpoints} pause checkpoints, {PromptedVariablePayloads} prompted-variable payloads";
 }

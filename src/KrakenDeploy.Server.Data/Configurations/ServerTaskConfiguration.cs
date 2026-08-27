@@ -91,7 +91,7 @@ public sealed class ServerTaskConfiguration : IEntityTypeConfiguration<ServerTas
             .HasDatabaseName("ix_server_tasks_running_deployment_peer")
             .HasFilter("status IN (1, 5, 7) AND kind = 0");
 
-        // Inert future prompted-variable values.
+        // Prompt payload. Sensitive members are encrypted before this JSON is stored.
         builder.Property(x => x.FormValues).HasColumnType("jsonb");
 
         // WP3 — encrypted resume checkpoint, non-null only while Paused. jsonb-free

@@ -743,7 +743,14 @@ runbook block, behavior-identical).
   `Permission.TaskCancel`.
 - Rolling `MaxParallelism` never short-circuits (§4) — not a canary.
 - Wave retries re-run whole sub-plans — step idempotency is on the author.
-- `ServerTask.FormValues` is inert (reserved for prompted variables).
+- `ServerTask.FormValues` carries validated deployment-time prompted-variable
+  overrides. Non-sensitive values remain JSONB members; sensitive values live only
+  in the nested `SensitiveValuesEncrypted` AES-GCM payload and participate in DEK
+  rotation. The worker applies each override only where that prompted definition
+  wins release-snapshot scope resolution, at higher precedence than stored values.
+  Offline drops use the same context builder and therefore require prompt answers
+  when the deployment is created. Runbook-run prompt surfaces are intentionally
+  out of scope for v1 and runbook tasks reject form values.
 - Naming collision: a second, unrelated `ServerTaskKind` enum
   (Deployment/RunbookRun/SystemJob) exists in
   `KrakenDeploy.Server/Services/ServerTasksService.cs` as a UI projection.

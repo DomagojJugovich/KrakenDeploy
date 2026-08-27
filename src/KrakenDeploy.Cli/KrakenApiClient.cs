@@ -147,9 +147,19 @@ public sealed class KrakenApiClient : IDisposable
     // ── Deployments ───────────────────────────────────────────────────────────
 
     public async Task<DeploymentDto> CreateDeploymentAsync(
-        Guid releaseId, Guid environmentId, Guid targetId, CancellationToken ct = default)
+        Guid releaseId,
+        Guid environmentId,
+        Guid targetId,
+        IReadOnlyDictionary<string, string>? promptedValues = null,
+        CancellationToken ct = default)
     {
-        var body = new { ReleaseId = releaseId, EnvironmentId = environmentId, TargetId = targetId };
+        var body = new
+        {
+            ReleaseId = releaseId,
+            EnvironmentId = environmentId,
+            TargetId = targetId,
+            PromptedValues = promptedValues,
+        };
         var response = await _http.PostAsJsonAsync("api/deployments", body, JsonOpts, ct)
             .ConfigureAwait(false);
         response.EnsureSuccessStatusCode();

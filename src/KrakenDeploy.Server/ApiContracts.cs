@@ -72,6 +72,7 @@ public sealed record TriggerDeploymentRequest(
     Guid TargetId,
     Guid? TenantId = null,
     DateTimeOffset? ScheduledFor = null,
+    IReadOnlyDictionary<string, string>? PromptedValues = null,
     Core.Domain.Deployments.DeploymentFailureMode FailureMode
         = Core.Domain.Deployments.DeploymentFailureMode.BestEffort);
 
@@ -226,4 +227,10 @@ public sealed record UpsertVariableRequest(
     List<string>? ScopeRoles,
     Guid? ScopeTenantId = null,
     Guid? ScopeChannelId = null,
-    Guid? ScopeProcessStepId = null);
+    Guid? ScopeProcessStepId = null,
+    bool IsPrompted = false,
+    string? PromptLabel = null,
+    string? PromptDescription = null,
+    bool PromptRequired = false,
+    Core.Domain.Variables.PromptControlType PromptControl = Core.Domain.Variables.PromptControlType.Text,
+    List<string>? PromptOptions = null);

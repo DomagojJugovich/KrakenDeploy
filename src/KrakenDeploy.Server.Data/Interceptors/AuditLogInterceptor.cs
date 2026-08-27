@@ -34,6 +34,7 @@ public sealed class AuditLogInterceptor(
         "HmacKeyEncrypted",
         "KeyHash",
         "WrappedDek",
+        "FormValues",
     ];
 
     // Audit-bookkeeping columns. Excluded from snapshots so they don't

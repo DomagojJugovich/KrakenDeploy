@@ -38,16 +38,12 @@ public sealed class VariableSnapshot
     public VariableType Type { get; init; }
     public VariableScope Scope { get; init; } = new();
 
-    /// <summary>
-    /// Non-null when the operator must be prompted for this variable's value
-    /// at deployment time. Carried into the snapshot so the deploy dialog
-    /// knows which variables to prompt for, even if the live variable is
-    /// later edited to remove the prompt.
-    /// </summary>
-    public string? PromptText { get; init; }
-
-    /// <summary>Whether the prompt must be answered before deployment proceeds.</summary>
+    public bool IsPrompted { get; init; }
+    public string? PromptLabel { get; init; }
+    public string? PromptDescription { get; init; }
     public bool PromptRequired { get; init; }
+    public PromptControlType PromptControl { get; init; }
+    public List<string>? PromptOptions { get; init; }
 
     /// <summary>
     /// Origin rank of this snapshot entry — the resolver's tie-breaker used
