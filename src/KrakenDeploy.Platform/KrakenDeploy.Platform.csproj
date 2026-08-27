@@ -7,7 +7,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- IMemoryCache / DI / logging abstractions used by the resolver + provisioner. -->
+    <!-- IHttpClientFactory / IConfiguration / DI / logging abstractions used by the
+         drain watcher and the registration extension. -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
@@ -20,20 +21,6 @@
     </PackageReference>
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
     <PackageReference Include="EFCore.NamingConventions" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!-- Server.Data is referenced for the tenant KrakenDbContext + seeders the
-         provisioner and fleet migrator drive; Server.Core for IAccountContext. -->
-    <ProjectReference Include="..\KrakenDeploy.Server.Core\KrakenDeploy.Server.Core.csproj" />
-    <ProjectReference Include="..\KrakenDeploy.Server.Data\KrakenDeploy.Server.Data.csproj" />
-    <!-- Blue-green release registry (PlatformReleaseDbContext + ReleaseRegistry);
-         under Saas it points at the catalog connection (BG1/T3). -->
-    <ProjectReference Include="..\KrakenDeploy.Platform\KrakenDeploy.Platform.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <InternalsVisibleTo Include="KrakenDeploy.ControlPlane.Tests" />
   </ItemGroup>
 
 </Project>

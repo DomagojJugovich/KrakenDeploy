@@ -2,6 +2,7 @@ using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Maintenance;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Tenants;
 using Microsoft.EntityFrameworkCore;
@@ -122,6 +123,31 @@ public class DeploymentService(
                 EnvironmentId: environmentId,
                 TenantId:      tenantId),
             ct).ConfigureAwait(false);
+
+        // BG1/T13 — maintenance CREATION refusal, the authoritative gate for every
+        // surface in one place (UI rides the /_blazor middleware exemption; REST/MCP
+        // callers holding BypassMaintenance pass the middleware). UNCONDITIONAL —
+        // deliberately ignores Permission.BypassMaintenance: an admin-created task
+        // would only sit Queued-stuck behind the claim gate (e27c89a), so a refusal
+        // naming the switch beats a dead bypass. A child creation (ParentTaskId set,
+        // DeployRelease step) is exempt so an in-flight parent can never strand.
+        // Cache-free read on this call's own context, mirroring the claim gate.
+        if (parentTaskId is null)
+        {
+            var maintenance = await SettingsService
+                .ReadOrDefaultAsync<MaintenanceSettings>(db, ct: ct)
+                .ConfigureAwait(false);
+            if (maintenance.Enabled)
+            {
+                throw new InvalidOperationException(
+                    "Maintenance mode is enabled — new deployments are refused until it is turned " +
+                    "off (Configuration → Settings → Maintenance). In-flight work runs to " +
+                    "completion; scheduled and queued work fires after maintenance ends."
+                    + (string.IsNullOrWhiteSpace(maintenance.Reason)
+                        ? ""
+                        : $" Reason: {maintenance.Reason}"));
+            }
+        }
 
         var envExists = await db.Environments.AnyAsync(e => e.Id == environmentId, ct)
             .ConfigureAwait(false);

@@ -1,6 +1,7 @@
 using Hangfire.AspNetCore;
 using Hangfire.Dashboard;
 using KrakenDeploy.Server.Core.Domain.Accounts;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.Server.Core.Domain.Security;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -35,15 +36,19 @@ public sealed class HangfireDashboardAuthFilter : IDashboardAuthorizationFilter
             return false;
         }
 
-        // Multi-account: the dashboard reflects the shared control-plane store, so deny it
+        // Saas: the dashboard reflects the shared control-plane store, so deny it
         // on tenant subdomains regardless of the caller's (per-account) permissions — a
         // tenant admin must not see platform-wide / cross-account job state. Only the
-        // control-plane host may reach it. No-op in single-instance (Enabled == false).
-        var options = http.RequestServices.GetService<IOptions<MultiAccountOptions>>();
-        if (options?.Value.Enabled == true
-            && HostParser.ExtractSubdomain(http.Request.Host.Host, options.Value.BaseDomain) is not null)
+        // control-plane host may reach it. No-op under the on-prem topologies.
+        var deployment = http.RequestServices.GetService<DeploymentOptions>();
+        if (deployment?.Topology == DeploymentTopology.Saas)
         {
-            return false;
+            var options = http.RequestServices.GetService<IOptions<MultiAccountOptions>>();
+            if (options is not null
+                && HostParser.ExtractSubdomain(http.Request.Host.Host, options.Value.BaseDomain) is not null)
+            {
+                return false;
+            }
         }
 
         if (http.User.Identity?.IsAuthenticated != true)

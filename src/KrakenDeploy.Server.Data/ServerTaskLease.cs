@@ -127,6 +127,19 @@ public static class ServerTaskLease
     /// <c>DeploymentWorker.GateThenDispatchCoreAsync</c>.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// THE continuation predicate (BG1 item 10 extracted it from six inline
+    /// copies): a task with a parent is the continuation of an ALREADY-CLAIMED
+    /// parent — an <c>Octopus.DeployRelease</c> child — not new work. Every gate
+    /// that refuses NEW work (maintenance claim/resume gates, the F6 target
+    /// exclusion, the E3 NodeTaskGate bypass, the worker's drain gate) must
+    /// exempt it: blocking a child strands the parent's <c>WaitForChildAsync</c>
+    /// behind a child that can never run, while the parent keeps renewing its
+    /// lease so the reconciler never reaps it either.
+    /// </summary>
+    public static bool IsContinuationOfClaimedParent(Guid? parentTaskId)
+        => parentTaskId is not null;
+
     public static async Task<ServerTaskClaimResult> TryClaimAsync(
         KrakenDbContext db, ServerTask task, TimeProvider time, CancellationToken ct = default)
     {
@@ -138,7 +151,7 @@ public static class ServerTaskLease
         // window is one in-flight claim racing the enable commit, which no gate can
         // close and which the operator already tolerates for tasks claimed a
         // millisecond earlier.
-        if (task.ParentTaskId is null)
+        if (!IsContinuationOfClaimedParent(task.ParentTaskId))
         {
             var maintenance = await SettingsService
                 .ReadOrDefaultAsync<MaintenanceSettings>(db, ct: ct)
@@ -156,7 +169,7 @@ public static class ServerTaskLease
         // documents for the blocker side). Hoisting it keeps the global lock's
         // critical section to the reads that MUST be fresh-after-lock. Computed only
         // for a top-level task — a child skips F6 entirely, so its consent is unused.
-        var sourceConsent = task.ParentTaskId is null
+        var sourceConsent = !IsContinuationOfClaimedParent(task.ParentTaskId)
             && await ServerTaskTargetExclusion
                 .SourceConsentAsync(db, task.Id, ct)
                 .ConfigureAwait(false);
@@ -249,7 +262,7 @@ public static class ServerTaskLease
                 // the E3 NodeTaskGate make, for the same reason). See the class
                 // remarks on ServerTaskTargetExclusion for why a partial exemption is
                 // not enough. sourceConsent was resolved above (unused for a child).
-                if (task.ParentTaskId is null)
+                if (!IsContinuationOfClaimedParent(task.ParentTaskId))
                 {
                     var targetConflict = await ServerTaskTargetExclusion
                         .ConflictingTasksQuery(db, task.Id, sourceConsent, task.CreatedUtc, now)
@@ -369,7 +382,7 @@ public static class ServerTaskLease
         // resume, while the parent keeps renewing its lease so the reconciler never reaps
         // it either: the parent burns its whole child-wait ceiling holding the F1 key
         // while a human's approval sits recorded and unusable.
-        if (meta.ParentTaskId is null)
+        if (!IsContinuationOfClaimedParent(meta.ParentTaskId))
         {
             var maintenance = await SettingsService
                 .ReadOrDefaultAsync<MaintenanceSettings>(db, ct: ct)
@@ -637,4 +650,15 @@ public enum ServerTaskClaimResult
     /// re-signal retries it once the wedge clears. Logged distinctly so the wedge is
     /// visible to operators rather than hiding as a generic bail-out.</summary>
     ClaimContended,
+
+    /// <summary>BG1 item 10 — this instance's blue-green release is Draining (or
+    /// Retired), so it must stop CLAIMING new work: a draining slot that keeps
+    /// claiming refills its own drain gauge forever, and post-flip work would
+    /// execute on OLD code. Synthesized by the WORKER's pre-check (never returned
+    /// by <see cref="ServerTaskLease.TryClaimAsync"/> itself — drain is
+    /// per-process identity read via <c>ISlotDrainGuard</c>, not instance-wide DB
+    /// state like maintenance). Bail; the task stays <c>Queued</c> and the ACTIVE
+    /// release's minutely re-signal picks it up (its Hangfire server is alive
+    /// while the draining slot's is stopped). Child tasks never see this.</summary>
+    DrainBlocked,
 }

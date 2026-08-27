@@ -131,6 +131,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Steps.PackageR
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Steps.PackageRunner.Tests", "tests\KrakenDeploy.Steps.PackageRunner.Tests\KrakenDeploy.Steps.PackageRunner.Tests.csproj", "{7736E946-ED58-40BF-A182-C7E0EB9CB2A4}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Platform", "src\KrakenDeploy.Platform\KrakenDeploy.Platform.csproj", "{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -849,6 +851,18 @@ Global
 		{7736E946-ED58-40BF-A182-C7E0EB9CB2A4}.Release|x64.Build.0 = Release|Any CPU
 		{7736E946-ED58-40BF-A182-C7E0EB9CB2A4}.Release|x86.ActiveCfg = Release|Any CPU
 		{7736E946-ED58-40BF-A182-C7E0EB9CB2A4}.Release|x86.Build.0 = Release|Any CPU
+		{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C}.Debug|x64.Build.0 = Debug|Any CPU
+		{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C}.Debug|x86.Build.0 = Debug|Any CPU
+		{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C}.Release|x64.ActiveCfg = Release|Any CPU
+		{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C}.Release|x64.Build.0 = Release|Any CPU
+		{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C}.Release|x86.ActiveCfg = Release|Any CPU
+		{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -913,5 +927,6 @@ Global
 		{F891FF7D-FC01-41A1-8CDC-50F9E6A22FA4} = {70566D49-9AF4-40FA-A1B1-6AF8A81B21E1}
 		{221F46CE-0EE6-4CC8-A299-4C9ABBEBA2AC} = {8AC72884-D6CE-9C06-F2FC-60C61972EEB5}
 		{7736E946-ED58-40BF-A182-C7E0EB9CB2A4} = {70566D49-9AF4-40FA-A1B1-6AF8A81B21E1}
+		{65C0C7DB-3143-4708-B5E4-0E3F5B9CC65C} = {D0C490EE-0ACE-45C9-B592-342BB7F79A7C}
 	EndGlobalSection
 EndGlobal

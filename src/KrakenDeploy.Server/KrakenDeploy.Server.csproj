@@ -68,6 +68,7 @@
     <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Terraform\KrakenDeploy.Steps.Terraform.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
     <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.TransferPackage\KrakenDeploy.Steps.TransferPackage.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
     <ProjectReference Include="..\KrakenDeploy.ControlPlane\KrakenDeploy.ControlPlane.csproj" />
+    <ProjectReference Include="..\KrakenDeploy.Platform\KrakenDeploy.Platform.csproj" />
   </ItemGroup>
 
   <!-- SC0: shared, explicit archive collection for the Build and Publish

@@ -15,11 +15,12 @@ public class CatalogDbContext(DbContextOptions<CatalogDbContext> options)
 
     public DbSet<Shard> Shards => Set<Shard>();
 
-    /// <summary>Blue-green release registry (docs/blue-green-slot-deployment.md §4).</summary>
-    public DbSet<AppRelease> AppReleases => Set<AppRelease>();
-
-    /// <summary>Platform-global settings, e.g. the current default release pointer.</summary>
-    public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
+    // NOTE (BG1/T3): app_releases + platform_settings were created by this
+    // context's AddReleaseRegistry migration and PHYSICALLY stay in the catalog
+    // under Saas, but their model/ownership moved to PlatformReleaseDbContext
+    // (KrakenDeploy.Platform) so the registry also works on-prem. The
+    // TransferReleaseRegistryToPlatform migration is deliberately empty — no
+    // data move, the tables just left this model.
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

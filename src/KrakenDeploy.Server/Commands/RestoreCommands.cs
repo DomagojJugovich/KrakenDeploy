@@ -1,7 +1,8 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text.Json;
 using KrakenDeploy.ControlPlane;
 using KrakenDeploy.Server.Core.Domain.Accounts;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -83,7 +84,13 @@ internal static class RestoreCommands
 
         // ── Resolve the target database + data root ─────────────────────────────
         var builder = CliHost.CreateBuilder(contentRoot);
-        var multiAccount = builder.Configuration.GetValue("MultiAccount:Enabled", false);
+        var topology = CliHost.ResolveTopologyOrError(builder.Configuration);
+        if (topology is null)
+        {
+            return 1;
+        }
+
+        var multiAccount = topology == DeploymentTopology.Saas;
 
         string connectionString;
         string dataTargetRoot;
@@ -93,7 +100,7 @@ internal static class RestoreCommands
             if (account is null)
             {
                 Console.Error.WriteLine(
-                    "Multi-account mode: --account <subdomain> is required so the bundle is " +
+                    "Deployment:Topology is Saas: --account <subdomain> is required so the bundle is " +
                     "restored into the correct tenant database.");
                 return 1;
             }

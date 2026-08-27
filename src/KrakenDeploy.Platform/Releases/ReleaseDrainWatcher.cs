@@ -1,15 +1,15 @@
 using System.Net.Http.Json;
-using KrakenDeploy.ControlPlane.Catalog;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
-namespace KrakenDeploy.ControlPlane.Releases;
+namespace KrakenDeploy.Platform.Releases;
 
 /// <summary>
-/// Recurring platform job (<c>kraken.release-drain-watch</c>, multi-account only):
-/// polls every Draining release's slot instances for their live-circuit and
-/// in-flight-deployment counts (<c>/slot-metrics</c>) and retires the release once
-/// <see cref="ReleaseDrainDecision"/> says it is empty (§5/§9 of the design).
+/// Recurring platform job (<c>kraken.release-drain-watch</c>, blue-green
+/// topologies only): polls every Draining release's slot instances for their
+/// live-circuit and in-flight-deployment counts (<c>/slot-metrics</c>) and retires
+/// the release once <see cref="ReleaseDrainDecision"/> says it is empty (§5/§9 of
+/// the design).
 /// <para>
 /// Node inventory comes from configuration —
 /// <c>Releases:DrainWatch:SlotUrls:&lt;slotNo&gt;</c> is the list of that slot's

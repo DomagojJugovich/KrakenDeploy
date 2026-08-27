@@ -1,7 +1,8 @@
 using System.Globalization;
 using KrakenDeploy.ControlPlane;
-using KrakenDeploy.ControlPlane.Catalog;
-using KrakenDeploy.ControlPlane.Releases;
+using KrakenDeploy.Platform;
+using KrakenDeploy.Platform.Releases;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,10 +18,13 @@ namespace KrakenDeploy.Server.Commands;
 /// releases retire   --id 2026.06.20-9f8e7d
 /// releases status
 /// </code>
-/// Multi-account (SaaS/multi-node) only — single-node installs need neither slots
-/// nor the router (D-bg-5). After a flip/retire the routers converge within their
-/// cache TTL; configured <c>Releases:RouterInvalidateUrls</c> are POSTed
-/// best-effort to converge immediately.
+/// Available under the blue-green topologies (BG1/T1 — supersedes D-bg-5):
+/// <c>OnPremBlueGreen</c> keeps the registry in KrakenDb (<c>platform</c> schema);
+/// <c>Saas</c> keeps it in the control-plane catalog. Refused under <c>OnPrem</c>
+/// (no slots, no router — upgrades are stop → migrate → start). After a
+/// flip/retire the routers converge within their cache TTL; configured
+/// <c>Releases:RouterInvalidateUrls</c> are POSTed best-effort to converge
+/// immediately.
 /// </summary>
 internal static class ReleaseCommands
 {
@@ -55,36 +59,71 @@ internal static class ReleaseCommands
 
         var builder = CliHost.CreateBuilder(contentRoot);
 
-        if (!builder.Configuration.GetValue("MultiAccount:Enabled", false))
+        var topology = CliHost.ResolveTopologyOrError(builder.Configuration);
+        if (topology is null)
+        {
+            return 1;
+        }
+
+        if (topology == DeploymentTopology.OnPrem)
         {
             Console.Error.WriteLine(
-                "The blue-green release registry applies to the multi-account / multi-node " +
-                "topology only (D-bg-5). Single-node installs upgrade via stop → migrate → start.");
+                "The blue-green release registry needs Deployment:Topology=OnPremBlueGreen or Saas " +
+                "(BG1/T1). Topology=OnPrem installs upgrade via stop → migrate → start.");
             return 1;
         }
 
-        var catalogConn = builder.Configuration.GetConnectionString("Catalog");
-        if (string.IsNullOrWhiteSpace(catalogConn))
+        if (topology == DeploymentTopology.Saas)
         {
-            Console.Error.WriteLine("ConnectionStrings:Catalog is not configured.");
-            return 1;
-        }
+            // Saas: registry lives in the control-plane catalog (public schema).
+            var catalogConn = builder.Configuration.GetConnectionString("Catalog");
+            if (string.IsNullOrWhiteSpace(catalogConn))
+            {
+                Console.Error.WriteLine("ConnectionStrings:Catalog is not configured.");
+                return 1;
+            }
 
-        var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
-        builder.Services.AddKrakenControlPlane(builder.Configuration, catalogConn, dataPath);
+            var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
+            builder.Services.AddKrakenControlPlane(builder.Configuration, catalogConn, dataPath);
+        }
+        else
+        {
+            // OnPremBlueGreen: registry lives in KrakenDb under the `platform` schema.
+            var krakenConn = builder.Configuration.GetConnectionString("KrakenDb");
+            if (string.IsNullOrWhiteSpace(krakenConn))
+            {
+                Console.Error.WriteLine("ConnectionStrings:KrakenDb is not configured.");
+                return 1;
+            }
+
+            builder.Services.AddPlatformReleaseRegistry(krakenConn, ownSchema: true);
+        }
 
         using var app = builder.Build();
-        await using var scope = app.Services.CreateAsyncScope();
-
-        // The registry tables are additive catalog schema; make sure they exist so
-        // the first `releases` command on a fresh control plane just works.
-        var catalogFactory = scope.ServiceProvider
-            .GetRequiredService<IDbContextFactory<CatalogDbContext>>();
-        await using (var catalog = await catalogFactory.CreateDbContextAsync().ConfigureAwait(false))
+        await using (var scope0 = app.Services.CreateAsyncScope())
         {
-            await catalog.Database.MigrateAsync().ConfigureAwait(false);
+            // Make sure the registry tables exist so the first `releases` command on
+            // a fresh install just works. Saas: the catalog migration chain owns them
+            // and stays additive. OnPremBlueGreen: the platform chain (own history
+            // table) is infrastructure that never changes with app releases, so
+            // applying it here is always safe.
+            if (topology == DeploymentTopology.Saas)
+            {
+                var catalogFactory = scope0.ServiceProvider
+                    .GetRequiredService<IDbContextFactory<KrakenDeploy.ControlPlane.Catalog.CatalogDbContext>>();
+                await using var catalog = await catalogFactory.CreateDbContextAsync().ConfigureAwait(false);
+                await catalog.Database.MigrateAsync().ConfigureAwait(false);
+            }
+            else
+            {
+                var platformFactory = scope0.ServiceProvider
+                    .GetRequiredService<IDbContextFactory<PlatformReleaseDbContext>>();
+                await using var platform = await platformFactory.CreateDbContextAsync().ConfigureAwait(false);
+                await platform.Database.MigrateAsync().ConfigureAwait(false);
+            }
         }
 
+        await using var scope = app.Services.CreateAsyncScope();
         var registry = scope.ServiceProvider.GetRequiredService<ReleaseRegistry>();
 
         try

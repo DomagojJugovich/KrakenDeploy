@@ -1,4 +1,5 @@
-using KrakenDeploy.Server.Core.Domain.Common;
+﻿using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Targets;
@@ -59,14 +60,20 @@ internal static class SeedDemoCommands
         var builder = CliHost.CreateBuilder(contentRoot);
 
         // seed-demo writes fake demo data (Grad Dubrovnik, Argosy Web, demo targets, …)
-        // into the Default Space. It is a dev-only single-instance tool; in multi-account
-        // mode (production SaaS) resolving a real tenant and filling it with demo garbage
-        // is a footgun, so refuse outright rather than offer --account.
-        if (builder.Configuration.GetValue("MultiAccount:Enabled", false))
+        // into the Default Space. It is a dev-only single-tenant tool; under the Saas
+        // topology (production SaaS) resolving a real tenant and filling it with demo
+        // garbage is a footgun, so refuse outright rather than offer --account.
+        var topology = CliHost.ResolveTopologyOrError(builder.Configuration);
+        if (topology is null)
+        {
+            return 1;
+        }
+
+        if (topology == DeploymentTopology.Saas)
         {
             Console.Error.WriteLine(
-                "seed-demo is a dev-only single-instance tool and is not supported in " +
-                "multi-account mode (it would write demo data into a real tenant database).");
+                "seed-demo is a dev-only single-tenant tool and is not supported under " +
+                "Deployment:Topology=Saas (it would write demo data into a real tenant database).");
             return 1;
         }
 

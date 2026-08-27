@@ -1,0 +1,50 @@
+@using KrakenDeploy.Server.Data.Services
+@inject MaintenanceModeService MaintenanceSvc
+
+@* BG1/T13 — layout-level maintenance banner. The Blazor UI rides the /_blazor
+   middleware exemption, so without this the interactive surface (ad-hoc pages
+   included) gives no hint that task creation is refused. Sits in MainLayout, so
+   it renders on every page and every navigation; MaintenanceModeService's 10 s
+   cache keeps the DB load negligible. Mirrors LicenseWarningBanner: it must
+   never break the layout. *@
+@if (_enabled)
+{
+    <div class="kraken-license-banner kraken-maintenance-banner" role="alert">
+        <RadzenStack Orientation="Orientation.Horizontal"
+                     AlignItems="AlignItems.Center"
+                     Gap="0.75rem"
+                     JustifyContent="JustifyContent.Center">
+            <RadzenIcon Icon="engineering" />
+            <span>
+                Maintenance mode is on — new deployments and runbook runs are refused;
+                in-flight work finishes; queued and scheduled work fires after maintenance ends.
+                @if (!string.IsNullOrWhiteSpace(_reason))
+                {
+                    <text>Reason: @_reason</text>
+                }
+            </span>
+        </RadzenStack>
+    </div>
+}
+
+@code {
+    private bool _enabled;
+    private string? _reason;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var state = await MaintenanceSvc.GetStateAsync();
+            _enabled = state.Enabled;
+            _reason = state.Reason;
+        }
+        catch
+        {
+            // Banner must never break the layout (e.g. DB unreachable during
+            // startup) — fail closed to "no banner"; the create-time gate still
+            // refuses authoritatively.
+            _enabled = false;
+        }
+    }
+}

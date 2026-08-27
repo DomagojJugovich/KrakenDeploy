@@ -1,9 +1,9 @@
-namespace KrakenDeploy.ControlPlane.Catalog;
+namespace KrakenDeploy.Platform.Releases;
 
 /// <summary>
-/// Typed key/value row for platform-global control-plane settings (one row per
-/// key). First consumer: <see cref="PlatformSettingKeys.CurrentDefaultRelease"/> —
-/// the single pointer for "where new sessions/agents go"
+/// Typed key/value row for platform-global settings (one row per key). First
+/// consumer: <see cref="PlatformSettingKeys.CurrentDefaultRelease"/> — the single
+/// pointer for "where new sessions/agents go"
 /// (docs/blue-green-slot-deployment.md §4).
 /// </summary>
 public class PlatformSetting

@@ -34,7 +34,9 @@ using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Spaces;
 using KrakenDeploy.Server.Accounts;
 using KrakenDeploy.Server.Core.Domain.Accounts;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.ControlPlane;
+using KrakenDeploy.Platform;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -206,11 +208,14 @@ public static class Program
 
         var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
 
-        // SaaS multi-account layer is opt-in (MultiAccount:Enabled). When off, the
-        // platform runs single-instance exactly as before: one fixed tenant DB, no
-        // subdomain resolution, no control plane.
-        var multiAccountEnabled = builder.Configuration.GetValue(
-            $"{MultiAccountOptions.SectionName}:{nameof(MultiAccountOptions.Enabled)}", false);
+        // Installation topology (BG1/T2): OnPrem (default) | OnPremBlueGreen | Saas.
+        // Replaces MultiAccount:Enabled's triple duty — the SaaS account layer keys
+        // on Topology == Saas; the blue-green release registry + drain machinery key
+        // on Topology != OnPrem. Fails fast on a config still carrying the old key.
+        var topology = DeploymentTopologyResolver.Resolve(builder.Configuration);
+        var isSaas = topology == DeploymentTopology.Saas;
+        var blueGreen = topology != DeploymentTopology.OnPrem;
+        builder.Services.AddSingleton(new DeploymentOptions { Topology = topology });
 
         // C3/T1-19 — DB connection resiliency for the web host (retry + pool cap).
         // MaxPoolSize defaults to 50 (a value <= 0 disables the cap, falling back to
@@ -227,13 +232,15 @@ public static class Program
             MaxPoolSize = configuredMaxPool > 0 ? configuredMaxPool : (int?)null,
         };
 
-        if (multiAccountEnabled)
+        if (isSaas)
         {
             // Tenant connection is resolved per request from the active account
             // (subdomain → catalog → secret); the catalog is its own database.
+            // AddKrakenControlPlane also registers the release registry against
+            // the catalog connection.
             var catalogConnectionString = builder.Configuration.GetConnectionString("Catalog")
                 ?? throw new InvalidOperationException(
-                    "MultiAccount is enabled but connection string 'Catalog' is not configured. " +
+                    "Deployment:Topology is Saas but connection string 'Catalog' is not configured. " +
                     "Set ConnectionStrings:Catalog.");
             builder.Services.AddKrakenControlPlane(builder.Configuration, catalogConnectionString, dataPath);
             builder.Services.AddKrakenDeployData(connectionString, dataPath, multiAccount: true, dataOptions);
@@ -241,6 +248,13 @@ public static class Program
         else
         {
             builder.Services.AddKrakenDeployData(connectionString, dataPath, dataOptions: dataOptions);
+            if (topology == DeploymentTopology.OnPremBlueGreen)
+            {
+                // BG1/T3: on-prem blue-green keeps the release registry in KrakenDb,
+                // under the dedicated `platform` schema (own migrations-history
+                // table; applied by `database setup`/`upgrade`, never at slot boot).
+                builder.Services.AddPlatformReleaseRegistry(connectionString, ownSchema: true);
+            }
         }
         // Bind the SSRF policy over the deny-by-default options registered by
         // AddKrakenDeployData. No `Ssrf` section => secure defaults stand.
@@ -283,7 +297,7 @@ public static class Program
         // resolves it and pins it here (fail closed); the account-aware tenant
         // DbContextFactory reads the connection string from it. Mirrors the Space
         // context one level up.
-        if (multiAccountEnabled)
+        if (isSaas)
         {
             builder.Services.AddScoped<HttpAccountContext>();
             builder.Services.AddScoped<IAccountContext>(
@@ -292,8 +306,13 @@ public static class Program
             // needed in multi-account; injects singleton-safe deps so it carries no
             // captive dependency.
             builder.Services.AddTransient<AccountBackupRunner>();
-            // Blue-green §8-6: when this instance's release turns Draining, stop its
-            // Hangfire server so new background work runs on the Active release.
+        }
+
+        if (blueGreen)
+        {
+            // Blue-green §8-6 (both Saas and OnPremBlueGreen — BG1 item 4): when this
+            // instance's release turns Draining, stop its Hangfire server so new
+            // background work runs on the Active release.
             builder.Services.AddHostedService<KrakenDeploy.Server.Hangfire.DrainModeHangfireStopper>();
         }
 
@@ -356,13 +375,13 @@ public static class Program
         // tenant — cross-customer decrypt failures + silent write corruption —
         // and tenant DBs are never provisioned a DEK anyway. Per-account,
         // account-keyed DEK is deferred; refuse rather than corrupt.
-        if (multiAccountEnabled)
+        if (isSaas)
         {
             throw new InvalidOperationException(
-                "Envelope encryption (M13.D.2) does not yet support MultiAccount:Enabled. The DEK is a " +
+                "Envelope encryption (M13.D.2) does not yet support Deployment:Topology=Saas. The DEK is a " +
                 "single process-wide instance, not per-tenant: a shared DekProvider would cache one " +
                 "tenant's DEK and serve it to all (cross-customer boundary breach), and provisioned " +
-                "tenant DBs have no DEK row. Run single-instance until per-account DEK lands.");
+                "tenant DBs have no DEK row. Run an on-prem topology until per-account DEK lands (WP12).");
         }
         builder.Services.AddKrakenDeployEncryption(masterKey);
 
@@ -520,7 +539,7 @@ public static class Program
         // IdentityProvider, registered at startup. Multi-account (SaaS): per-tenant
         // schemes synthesized per request from the resolved account's own DB (see
         // docs/saas-per-account-sso.md). Both no-op gracefully when no providers exist.
-        if (multiAccountEnabled)
+        if (isSaas)
         {
             OidcRegistrar.RegisterMultiAccountSchemes(builder);
         }
@@ -629,7 +648,7 @@ public static class Program
         // resolves the account from the connection's host (host-derived) and pins it
         // for every AgentHub event/invocation, fail-closed. Single-instance installs
         // never add it and run unchanged.
-        if (multiAccountEnabled)
+        if (isSaas)
         {
             builder.Services.AddSingleton<AgentAccountHubFilter>();
             signalR.AddHubOptions<AgentHub>(options => options.AddFilter<AgentAccountHubFilter>());
@@ -670,7 +689,7 @@ public static class Program
         // serves one tenant's counts to another (cross-account leak). Single-instance
         // keeps the shared Singleton cache. Mirrors the cache services scoped in
         // AddKrakenDeployData; a per-account-keyed cache is the deferred P3-5 step.
-        if (multiAccountEnabled)
+        if (isSaas)
         {
             builder.Services.AddScoped<LicenseUsageCounter>();
         }
@@ -838,16 +857,29 @@ public static class Program
         // lives in the CATALOG / control-plane DB — never a per-tenant DB and never the
         // shared base KrakenDb (which holds nothing tenant-specific under DB-per-account).
         // Single-instance keeps it in KrakenDb (the one app DB). Catalog is validated
-        // non-null in the multi-account branch above.
-        var hangfireConnectionString = multiAccountEnabled
+        // non-null in the Saas branch above.
+        //
+        // BG1/T4: in the blue-green topologies a slot must NEVER auto-migrate the
+        // SHARED Hangfire schema at boot — a new release booting beside a live one
+        // would upgrade storage under the old release's feet (Hangfire storage
+        // upgrades are non-additive events). PrepareSchemaIfNecessary is therefore
+        // false there; the schema is created/migrated only inside
+        // `database setup`/`database upgrade` (version-checked, treated as
+        // [StopTheWorld]). OnPrem keeps Hangfire's auto-migration (single process,
+        // stop → migrate → start upgrades).
+        var hangfireConnectionString = isSaas
             ? builder.Configuration.GetConnectionString("Catalog")!
             : connectionString;
         builder.Services.AddHangfire(config => config
             .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
             .UseSimpleAssemblyNameTypeSerializer()
             .UseRecommendedSerializerSettings()
-            .UsePostgreSqlStorage(opt =>
-                opt.UseNpgsqlConnection(hangfireConnectionString)));
+            .UsePostgreSqlStorage(
+                opt => opt.UseNpgsqlConnection(hangfireConnectionString),
+                new global::Hangfire.PostgreSql.PostgreSqlStorageOptions
+                {
+                    PrepareSchemaIfNecessary = !blueGreen,
+                }));
 
         // Hangfire worker count — read from PerformanceSettings (M13.F.3).
         // Hangfire's WorkerCount is a builder-time setting; changes from the
@@ -924,7 +956,7 @@ public static class Program
         // sees the real scheme + client IP (per ASP.NET Core proxy guidance).
         app.UseForwardedHeaders();
 
-        if (app.Environment.IsDevelopment() && multiAccountEnabled)
+        if (app.Environment.IsDevelopment() && isSaas)
         {
             // Multi-account dev seed: migrate the catalog, ensure a dev shard, and
             // provision demo accounts (each provisions + migrates + seeds its own
@@ -1026,7 +1058,7 @@ public static class Program
         // authentication — Identity loads the user from the per-account tenant DB
         // (users are isolated per account, D4/D9), so the account (and thus the
         // tenant connection) must be resolved first. Fails closed on unknown subdomains.
-        if (multiAccountEnabled)
+        if (isSaas)
         {
             app.UseMiddleware<AccountResolutionMiddleware>();
         }
@@ -3868,7 +3900,7 @@ public static class Program
         // Register Hangfire recurring jobs after the app is built so the storage
         // is fully initialised.  Safe to call multiple times (AddOrUpdate is
         // idempotent) — on each restart the schedule is refreshed.
-        if (multiAccountEnabled)
+        if (isSaas)
         {
             // Per-account fan-out: each per-tenant recurring job runs once per active
             // account (inside a WithAccount scope). Re-uses the single-tenant job ids,
@@ -3882,6 +3914,13 @@ public static class Program
             HangfireJobRegistrar.RegisterRecurringJobs();
         }
 
+        if (blueGreen)
+        {
+            // Platform-global drain watcher (kraken.release-drain-watch) — both
+            // blue-green topologies (BG1 item 4); not a per-account fan-out.
+            HangfireJobRegistrar.RegisterReleaseDrainWatch();
+        }
+
         // Apply the operator-controlled backup schedule (M13.G). The cron lives in
         // BackupSettings, not in the Registrar above, so this needs its own Apply pass at
         // startup. The settings page calls Apply again after every save.
@@ -3892,7 +3931,7 @@ public static class Program
         {
             try
             {
-                if (multiAccountEnabled)
+                if (isSaas)
                 {
                     await scope.ServiceProvider
                         .GetRequiredService<AccountBackupRunner>()
@@ -3926,7 +3965,7 @@ public static class Program
         {
             try
             {
-                if (multiAccountEnabled)
+                if (isSaas)
                 {
                     await scope.ServiceProvider
                         .GetRequiredService<KrakenDeploy.ControlPlane.Provisioning.PerAccountRecurringJobRunner>()
@@ -4023,15 +4062,15 @@ public static class Program
     /// </summary>
     private static int ResolveHangfireWorkerCount(WebApplicationBuilder builder)
     {
-        // The Hangfire worker count is a single-process/platform knob. Multi-account has
+        // The Hangfire worker count is a single-process/platform knob. Saas has
         // no single tenant DB to read it from — reading an arbitrary tenant's
-        // PerformanceSettings would be wrong — so use the default. Single-instance reads
-        // PerformanceSettings from the app DB. (This previously read the never-configured
-        // "Default" connection name, so the knob never took effect — the real key is
-        // "KrakenDb".)
-        var multiAccount = builder.Configuration.GetValue(
-            $"{MultiAccountOptions.SectionName}:{nameof(MultiAccountOptions.Enabled)}", false);
-        var connectionString = multiAccount
+        // PerformanceSettings would be wrong — so use the default. Single-tenant
+        // topologies read PerformanceSettings from the app DB. (This previously read
+        // the never-configured "Default" connection name, so the knob never took
+        // effect — the real key is "KrakenDb".)
+        var isSaas = DeploymentTopologyResolver.Resolve(builder.Configuration)
+            == DeploymentTopology.Saas;
+        var connectionString = isSaas
             ? null
             : builder.Configuration.GetConnectionString("KrakenDb");
         if (string.IsNullOrWhiteSpace(connectionString))

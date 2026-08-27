@@ -403,7 +403,8 @@ html, body {
 /* The license banner is a direct child of .rz-layout without a
    grid-area, which auto-places it into an implicit cell that can
    distort column tracks. Force it to span the full row. */
-.rz-layout > .kraken-license-banner {
+.rz-layout > .kraken-license-banner,
+.rz-layout > .kraken-maintenance-banner {
     grid-column: 1 / -1;
 }
 
@@ -989,6 +990,13 @@ table.dg tbody tr.row-accent td:first-child { box-shadow: inset 3px 0 0 var(--c,
     background: #f8d7da;
     color: #721c24;
     border-bottom: 1px solid #dc3545;
+}
+
+/* Maintenance-mode banner (BG1/T13) — reuses .kraken-license-banner geometry. */
+.kraken-maintenance-banner {
+    background: #cfe2ff;
+    color: #084298;
+    border-bottom: 1px solid #0d6efd;
 }
 
 /* ── Project shell (per-project sub-page layout) ─────────────────────────── */

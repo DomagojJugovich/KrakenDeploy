@@ -1,6 +1,7 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using KrakenDeploy.Contracts.Crypto;
 using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Variables;
@@ -329,15 +330,22 @@ internal static class EncryptionCommands
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /// <summary>Refuse the encryption verbs under a multi-account build — they
+    /// <summary>Refuse the encryption verbs under the Saas topology — they
     /// bind to the shared KrakenDb, not a tenant DB, and per-account DEK is
-    /// deferred. Mirrors the web host's boot fail-fast.</summary>
+    /// deferred. Mirrors the web host's boot fail-fast. Also fails on a stale
+    /// MultiAccount:Enabled config (named migration message).</summary>
     private static bool RefuseIfMultiAccount(ConfigurationManager config)
     {
-        if (config.GetValue("MultiAccount:Enabled", false))
+        var topology = CliHost.ResolveTopologyOrError(config);
+        if (topology is null)
+        {
+            return true;
+        }
+
+        if (topology == DeploymentTopology.Saas)
         {
             Console.Error.WriteLine(
-                "encryption commands are single-instance only. MultiAccount:Enabled uses a DB per " +
+                "encryption commands are single-tenant only. Deployment:Topology=Saas uses a DB per " +
                 "account; these verbs operate on the shared KrakenDb and per-account DEK rotation is " +
                 "not yet implemented (M13.D.2). Refusing to avoid touching the wrong database.");
             return true;

@@ -1,5 +1,7 @@
 using KrakenDeploy.ControlPlane;
 using KrakenDeploy.Server.Core.Domain.Accounts;
+using KrakenDeploy.Server.Core.Domain.Platform;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -51,14 +53,33 @@ internal static class CliHost
     }
 
     /// <summary>
+    /// CLI-friendly wrapper around <see cref="DeploymentTopologyResolver.Resolve"/>:
+    /// prints the named migration/validation message to stderr instead of throwing,
+    /// so a stale <c>MultiAccount:Enabled</c> config fails a CLI verb with exit
+    /// code 1 rather than a stack trace. Callers treat <c>null</c> as exit 1.
+    /// </summary>
+    public static DeploymentTopology? ResolveTopologyOrError(IConfiguration configuration)
+    {
+        try
+        {
+            return DeploymentTopologyResolver.Resolve(configuration);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Resolves the database connection string a state-changing CLI command
     /// (<c>apikeys</c>, <c>users create-admin</c>, …) should operate against.
     /// <list type="bullet">
-    /// <item>Single-instance: the configured <c>ConnectionStrings:KrakenDb</c>.</item>
-    /// <item>Multi-account: requires <paramref name="account"/> (a tenant subdomain)
+    /// <item>On-prem topologies: the configured <c>ConnectionStrings:KrakenDb</c>.</item>
+    /// <item>Saas: requires <paramref name="account"/> (a tenant subdomain)
     /// and resolves that tenant's connection string via the control-plane catalog
     /// (mirrors <c>restore --account</c>). It <b>refuses</b> when no account is
-    /// supplied — there is no single tenant DB in multi-account mode, and writing to
+    /// supplied — there is no single tenant DB under Saas, and writing to
     /// the fallback <c>KrakenDb</c> would silently land in the wrong database
     /// (the row would never be read by the account-routed request path).</item>
     /// </list>
@@ -70,7 +91,13 @@ internal static class CliHost
     public static async Task<string?> ResolveTenantConnectionStringAsync(
         HostApplicationBuilder builder, string contentRoot, string? account)
     {
-        if (!builder.Configuration.GetValue("MultiAccount:Enabled", false))
+        var topology = ResolveTopologyOrError(builder.Configuration);
+        if (topology is null)
+        {
+            return null;
+        }
+
+        if (topology != DeploymentTopology.Saas)
         {
             var cs = builder.Configuration.GetConnectionString("KrakenDb");
             if (string.IsNullOrWhiteSpace(cs))
@@ -84,7 +111,7 @@ internal static class CliHost
             return cs;
         }
 
-        // Multi-account: bind to the tenant resolved from --account.
+        // Saas: bind to the tenant resolved from --account.
         var resolved = await ResolveTenantAccountAsync(contentRoot, account).ConfigureAwait(false);
         return resolved?.ConnectionString;
     }
@@ -99,7 +126,7 @@ internal static class CliHost
     /// common connection-string-only case. Returns <c>null</c> after printing an
     /// actionable error when the account is missing, the catalog is unconfigured, or
     /// the subdomain does not resolve to an active account. Call only when
-    /// <c>MultiAccount:Enabled</c> is set.
+    /// <c>Deployment:Topology</c> is <c>Saas</c>.
     /// </summary>
     public static async Task<ResolvedAccount?> ResolveTenantAccountAsync(
         string contentRoot, string? account)
@@ -107,9 +134,9 @@ internal static class CliHost
         if (string.IsNullOrWhiteSpace(account))
         {
             Console.Error.WriteLine(
-                "Multi-account mode is enabled: --account <subdomain> is required so the " +
+                "Deployment:Topology is Saas: --account <subdomain> is required so the " +
                 "operation targets the correct tenant database. There is no single KrakenDb " +
-                "in multi-account mode, and a write to the fallback connection would silently " +
+                "under the Saas topology, and a write to the fallback connection would silently " +
                 "land in the wrong database.");
             return null;
         }

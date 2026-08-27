@@ -62,7 +62,10 @@ public sealed class DeploymentWorker(
     InFlightWorkGauge inFlightGauge,
     TimeProvider timeProvider,
     IOptions<EngineOptions> engineOptions,
-    ILogger<DeploymentWorker> logger)
+    ILogger<DeploymentWorker> logger,
+    // BG1 item 10 — the worker's drain claim gate. Registered only under the
+    // blue-green topologies; null (OnPrem, tests) disables the gate.
+    KrakenDeploy.Platform.Releases.ISlotDrainGuard? slotDrainGuard = null)
     : BackgroundService
 {
     // Account id of the dispatch currently on this async flow. AsyncLocal so
@@ -167,7 +170,7 @@ public sealed class DeploymentWorker(
     {
         var probe = await ProbeGateAsync(deploymentId, ct).ConfigureAwait(false);
 
-        if (probe is { ParentTaskId: not null })
+        if (probe is not null && ServerTaskLease.IsContinuationOfClaimedParent(probe.ParentTaskId))
         {
             // No gate slot — covered by the parent's. Still tracked for
             // blue-green drain: a child is real in-flight orchestration work.
@@ -277,7 +280,7 @@ public sealed class DeploymentWorker(
         // arm 3 then re-signalled it every minute forever. TryResumeAsync skips the F1
         // re-check for exactly this reason; this is the other half of that decision.
         var now = timeProvider.GetUtcNow();
-        var blocked = row.ParentTaskId is null
+        var blocked = !ServerTaskLease.IsContinuationOfClaimedParent(row.ParentTaskId)
             && row.Kind == ServerTaskKind.Deployment
             && row.Status != DeploymentStatus.Paused
             && await db.ServerTasks
@@ -297,7 +300,7 @@ public sealed class DeploymentWorker(
         // too. Skipped when F1 already decided — one reason is enough to leave
         // the row Queued.
         var targetBlocked = !blocked
-            && row.ParentTaskId is null
+            && !ServerTaskLease.IsContinuationOfClaimedParent(row.ParentTaskId)
             && row.Status != DeploymentStatus.Paused
             && await ServerTaskTargetExclusion.ConflictingTasksQuery(
                     db, deploymentId,
@@ -319,6 +322,51 @@ public sealed class DeploymentWorker(
         Guid EnvironmentId,
         bool IsSerializationBlocked,
         bool IsTargetBlocked);
+
+    /// <summary>
+    /// BG1 item 10 — the drain claim gate, checked immediately before every
+    /// <see cref="ServerTaskLease.TryClaimAsync"/>/<see cref="ServerTaskLease.TryResumeAsync"/>
+    /// call: a Draining release must stop CLAIMING, not just stop taking Hangfire
+    /// jobs (<c>DrainModeHangfireStopper</c>) — otherwise a cookie-pinned user
+    /// creating work here wakes THIS process via the create-time enqueue, the
+    /// drain gauge refills, a busy instance never retires, and post-flip work
+    /// executes on OLD code. Refused tasks stay <c>Queued</c>; the ACTIVE
+    /// release's minutely re-signal picks them up (its Hangfire server is alive
+    /// while the draining slot's is stopped).
+    /// <para>
+    /// Deliberately a WORKER-level pre-check rather than a
+    /// <c>ServerTaskLease</c> gate: drain is per-process identity (this
+    /// process's <c>Release:Id</c> against the registry, via
+    /// <c>ISlotDrainGuard</c>), while maintenance is instance-wide DB state — so
+    /// their gates live at different layers on purpose. The guard's 15 s cache
+    /// TTL is acceptable here (drain, unlike maintenance, is not a correctness
+    /// switch — worst case a couple more tasks start here and simply extend the
+    /// drain). A continuation of a claimed parent is EXEMPT
+    /// (<see cref="ServerTaskLease.IsContinuationOfClaimedParent"/>): children
+    /// of a parent already running on this draining slot MUST still claim here.
+    /// Null guard (OnPrem topology, tests) → gate off.
+    /// </para>
+    /// </summary>
+    private async Task<bool> DrainRefusesClaimAsync(
+        Guid? parentTaskId, Guid taskId, CancellationToken ct)
+    {
+        if (slotDrainGuard is null
+            || ServerTaskLease.IsContinuationOfClaimedParent(parentTaskId))
+        {
+            return false;
+        }
+
+        if (!await slotDrainGuard.IsOwnReleaseDrainingAsync(ct).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        logger.LogInformation(
+            "DeploymentWorker: task {Id} not claimed ({Outcome}) — this instance's release is " +
+            "Draining; staying Queued for the Active release's re-signal to pick it up.",
+            taskId, ServerTaskClaimResult.DrainBlocked);
+        return true;
+    }
 
     /// <summary>
     /// F6 reason surface — resolves the current target-wait blocker and appends
@@ -606,6 +654,12 @@ public sealed class DeploymentWorker(
                 // PendingOfflineResult (lease released in the transition).
                 // Pass the loaded entity (not just the id) so the claim reads the
                 // serialization key off it — no redundant meta re-read.
+                if (await DrainRefusesClaimAsync(deployment.ParentTaskId, deployment.Id, ct)
+                    .ConfigureAwait(false))
+                {
+                    return;
+                }
+
                 var offlineClaim = await ServerTaskLease.TryClaimAsync(db, deployment, timeProvider, ct)
                     .ConfigureAwait(false);
                 if (offlineClaim != ServerTaskClaimResult.Claimed)
@@ -1015,6 +1069,16 @@ public sealed class DeploymentWorker(
             var resumeCheckpoint = (TaskPauseCheckpoint?)null;
             if (deployment.Status == DeploymentStatus.Paused)
             {
+                // Drain gate applies to resumes too: a Paused task carries its full
+                // checkpoint in the DB and resumes correctly on the Active release —
+                // letting the draining slot pick it up would extend the drain and
+                // run the remaining waves on old code.
+                if (await DrainRefusesClaimAsync(deployment.ParentTaskId, deployment.Id, ct)
+                    .ConfigureAwait(false))
+                {
+                    return;
+                }
+
                 var resume = await ServerTaskLease
                     .TryResumeAsync(db, deployment.Id, timeProvider, ct).ConfigureAwait(false);
                 if (resume != ServerTaskClaimResult.Claimed)
@@ -1157,6 +1221,13 @@ public sealed class DeploymentWorker(
             // clears ScheduledFor so the scheduled job never re-matches it.
             // Pass the loaded entity (not just the id) so the claim reads the
             // serialization key off it — no redundant meta re-read.
+            if (resumeCheckpoint is null
+                && await DrainRefusesClaimAsync(deployment.ParentTaskId, deployment.Id, ct)
+                    .ConfigureAwait(false))
+            {
+                return;
+            }
+
             var claim = resumeCheckpoint is not null
                 ? ServerTaskClaimResult.Claimed // already transitioned by TryResumeAsync
                 : await ServerTaskLease.TryClaimAsync(db, deployment, timeProvider, ct)
