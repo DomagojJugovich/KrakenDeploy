@@ -902,11 +902,9 @@
                 try
                 {
                     var additional = targetIds.Skip(1).ToList();
-                    var formVals = _promptedVars.Count > 0
-                        ? _promptedValues
-                            .Where(kv => !string.IsNullOrEmpty(kv.Value))
-                            .ToDictionary(kv => kv.Key, kv => kv.Value)
-                        : null;
+                    var planPrompts = await GetPromptDefinitionsAsync(envId, tenantId, targetIds);
+                    var formVals = PromptedVariableResolver.FilterApplicableValues(
+                        planPrompts, _promptedValues);
                     created.Add(await DeploymentSvc.CreateAsync(
                         releaseId:           ReleaseId,
                         environmentId:       envId,
@@ -917,7 +915,7 @@
                         scheduledFor:        scheduled,
                         additionalTargetIds: additional.Count > 0 ? additional : null,
                         failureMode:         _failureMode,
-                        promptedValues:      formVals is { Count: > 0 } ? formVals : null));
+                        promptedValues:      formVals.Count > 0 ? formVals : null));
                 }
                 catch (InvalidOperationException ex)
                 {

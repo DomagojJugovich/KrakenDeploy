@@ -78,6 +78,18 @@ public static class PromptedVariableResolver
             .ToList();
     }
 
+    public static Dictionary<string, string> FilterApplicableValues(
+        IReadOnlyList<PromptedVariableDefinition> definitions,
+        IReadOnlyDictionary<string, string> values)
+    {
+        var names = definitions
+            .Select(d => d.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return values
+            .Where(kv => names.Contains(kv.Key) && !string.IsNullOrEmpty(kv.Value))
+            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
+    }
+
     private static void AddWinners(
         IReadOnlyList<VariableSnapshot> snapshot,
         PromptedVariableContext context,

@@ -53,7 +53,7 @@ namespace KrakenDeploy.Server.Data.Migrations
                 SET variable_snapshot = COALESCE((
                     SELECT jsonb_agg(
                         CASE
-                            WHEN item->'promptText' IS NOT NULL
+                            WHEN item->>'promptText' IS NOT NULL
                             THEN (item - 'promptText') || jsonb_build_object(
                                 'isPrompted', TRUE,
                                 'promptDescription', item->'promptText')
@@ -61,7 +61,11 @@ namespace KrakenDeploy.Server.Data.Migrations
                         END)
                     FROM jsonb_array_elements(variable_snapshot) AS item
                 ), '[]'::jsonb)
-                WHERE jsonb_path_exists(variable_snapshot, '$[*].promptText')
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(variable_snapshot) AS item
+                    WHERE item->>'promptText' IS NOT NULL
+                )
                 """);
         }
 

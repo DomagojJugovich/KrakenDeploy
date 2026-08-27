@@ -53,6 +53,30 @@ public sealed class PromptedVariableResolverTests
         PromptedVariableResolver.GetApplicable(snapshot, [context], []).Should().BeEmpty();
     }
 
+    [Fact]
+    public void FilterApplicableValues_keeps_only_answers_for_the_current_plan()
+    {
+        var definitions = new[]
+        {
+            new PromptedVariableDefinition(
+                "TenantAOnly", "Tenant A only", null, false,
+                PromptControlType.Text, [], false),
+        };
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["TenantAOnly"] = "applicable",
+            ["TenantBOnly"] = "must-not-be-sent",
+            ["EmptyOptional"] = "",
+        };
+
+        var result = PromptedVariableResolver.FilterApplicableValues(definitions, values);
+
+        result.Should().BeEquivalentTo(new Dictionary<string, string>
+        {
+            ["TenantAOnly"] = "applicable",
+        });
+    }
+
     private static VariableSnapshot Prompt(
         string name, string label, bool required, VariableScope scope) => new()
     {
