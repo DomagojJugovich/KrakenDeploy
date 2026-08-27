@@ -1,5 +1,7 @@
 ﻿using System.Security.Cryptography;
 using KrakenDeploy.Contracts.Crypto;
+using KrakenDeploy.Platform;
+using KrakenDeploy.Platform.Releases;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.Server.Core.Domain.Releases;
@@ -11,6 +13,7 @@ using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 
 namespace KrakenDeploy.Server.Commands;
 
@@ -49,7 +52,9 @@ internal static class EncryptionCommands
 
     private static async Task<int> RotateKekAsync(string[] args, string contentRoot)
     {
-        if (!TryParseCommon(args, out var newKey, out var noBackup, out var assumeYes, out var error))
+        if (!TryParseCommon(
+                args, out var newKey, out var noBackup, out var assumeYes, out var slotsStopped,
+                out var error))
         {
             Console.Error.WriteLine(error);
             return 1;
@@ -73,6 +78,11 @@ internal static class EncryptionCommands
         if (!TryReadKek(builder.Configuration, out var oldKek, out var kekError))
         {
             Console.Error.WriteLine(kekError);
+            return 1;
+        }
+        if (await RefuseIfLiveBlueGreenReleasesAsync(builder.Configuration, slotsStopped)
+            .ConfigureAwait(false))
+        {
             return 1;
         }
         if (await IsServerRunningAsync(builder.Configuration).ConfigureAwait(false))
@@ -143,7 +153,9 @@ internal static class EncryptionCommands
 
     private static async Task<int> RotateDekAsync(string[] args, string contentRoot)
     {
-        if (!TryParseCommon(args, out _, out var noBackup, out var assumeYes, out var error, allowNewKey: false))
+        if (!TryParseCommon(
+                args, out _, out var noBackup, out var assumeYes, out var slotsStopped,
+                out var error, allowNewKey: false))
         {
             Console.Error.WriteLine(error);
             return 1;
@@ -165,6 +177,11 @@ internal static class EncryptionCommands
         if (!TryReadKek(builder.Configuration, out var kek, out var kekError))
         {
             Console.Error.WriteLine(kekError);
+            return 1;
+        }
+        if (await RefuseIfLiveBlueGreenReleasesAsync(builder.Configuration, slotsStopped)
+            .ConfigureAwait(false))
+        {
             return 1;
         }
         if (await IsServerRunningAsync(builder.Configuration).ConfigureAwait(false))
@@ -381,12 +398,13 @@ internal static class EncryptionCommands
     }
 
     private static bool TryParseCommon(
-        string[] args, out byte[]? newKey, out bool noBackup, out bool assumeYes, out string error,
-        bool allowNewKey = true)
+        string[] args, out byte[]? newKey, out bool noBackup, out bool assumeYes,
+        out bool slotsStopped, out string error, bool allowNewKey = true)
     {
         newKey = null;
         noBackup = false;
         assumeYes = false;
+        slotsStopped = false;
         error = "";
         for (var i = 0; i < args.Length; i++)
         {
@@ -413,19 +431,99 @@ internal static class EncryptionCommands
             }
             else if (flag is "--no-backup") { noBackup = true; }
             else if (flag is "--yes" or "-y") { assumeYes = true; }
+            else if (flag is "--slots-stopped") { slotsStopped = true; }
             else { error = $"Unknown option '{flag}'."; return false; }
         }
+        return true;
+    }
+
+    /// <summary>
+    /// BG1 — the blue-green rotation gate, checked BEFORE the URL probe. Under
+    /// OnPremBlueGreen multiple slots share ONE database, and every live slot
+    /// caches the unwrapped DEK process-wide for its whole lifetime
+    /// (<c>DekProvider</c> is a singleton): rotating beside ANY live slot
+    /// silently corrupts secrets — the slots keep WRITING under the orphaned old
+    /// DEK. The URL probe below cannot see this (it probes one URL, and the
+    /// shipped compose binds slots via <c>Kestrel__Endpoints__*</c> on container
+    /// hostnames), so the release REGISTRY is the authority: refuse while it
+    /// shows any non-Retired release. Registry status does not track container
+    /// state (a stopped slot's row stays Active), so an operator who has
+    /// genuinely stopped every slot asserts it with <c>--slots-stopped</c> —
+    /// mirroring <c>database upgrade --stop-the-world</c>. A missing platform
+    /// schema (fresh install) counts as no live releases.
+    /// </summary>
+    private static async Task<bool> RefuseIfLiveBlueGreenReleasesAsync(
+        ConfigurationManager config, bool slotsStopped)
+    {
+        // Topology validity was already enforced by RefuseIfMultiAccount.
+        if (CliHost.ResolveTopologyOrError(config) != DeploymentTopology.OnPremBlueGreen)
+        {
+            return false;
+        }
+
+        var connectionString = config.GetConnectionString("KrakenDb");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            return false; // the verb body refuses on this with its own message.
+        }
+
+        List<AppRelease> live;
+        try
+        {
+            await using var db = new PlatformReleaseDbContext(
+                PlatformReleaseDbContext.CreateOnPremOptions(connectionString),
+                new PlatformReleaseSchema(PlatformReleaseSchema.OnPremSchemaName));
+            // ownReleaseId null — no exemption: the OWN slot's cached DEK goes
+            // just as stale as a sibling's.
+            live = await ReleaseRegistry
+                .GetLiveReleasesExceptOwnDeployingAsync(db, ownReleaseId: null)
+                .ConfigureAwait(false);
+        }
+        catch (PostgresException ex) when (
+            ex.SqlState is PostgresErrorCodes.UndefinedTable or PostgresErrorCodes.InvalidSchemaName)
+        {
+            return false; // registry never created — nothing can be live.
+        }
+
+        if (live.Count == 0)
+        {
+            return false;
+        }
+
+        var releaseList = string.Join(
+            ", ", live.Select(r => $"{r.Id} (slot {r.SlotNo}, {r.Status})"));
+        if (slotsStopped)
+        {
+            Console.WriteLine(
+                $"--slots-stopped: proceeding although the registry shows live release(s) " +
+                $"[{releaseList}]. You are asserting every slot container is STOPPED.");
+            return false;
+        }
+
+        Console.Error.WriteLine(
+            "REFUSED: Deployment:Topology=OnPremBlueGreen and the release registry shows live " +
+            $"release(s) [{releaseList}]. Stop ALL slots first — every live slot caches the DEK " +
+            "process-wide, so rotating beside one silently corrupts secrets (it keeps writing " +
+            "under the old key). Then re-run with --slots-stopped to assert the slots are " +
+            "stopped (registry rows stay Active for stopped containers, so this cannot be " +
+            "detected automatically).");
         return true;
     }
 
     /// <summary>Heuristic offline guard: a positive HTTP response from the
     /// anonymous <c>/healthz</c> means a server is live on that port; refuse.
     /// Connection-refused/timeout ⇒ not running. Unknown URL ⇒ don't block
-    /// (the double-confirm still gates).</summary>
+    /// (the double-confirm still gates). Reads, in order: ASPNETCORE_URLS,
+    /// <c>Urls</c>, then <c>Kestrel:Endpoints:Http:Url</c> — the shipped compose
+    /// configures Kestrel endpoints, not URLS, so without the last one the probe
+    /// was inert in exactly the deployment it matters for. Blue-green installs
+    /// must not rely on this probe at all (slots live on other hostnames) —
+    /// that is <see cref="RefuseIfLiveBlueGreenReleasesAsync"/>'s job.</summary>
     private static async Task<bool> IsServerRunningAsync(ConfigurationManager config)
     {
         var raw = Environment.GetEnvironmentVariable("ASPNETCORE_URLS")?.Split(';')[0]
-                  ?? config["Urls"]?.Split(';')[0];
+                  ?? config["Urls"]?.Split(';')[0]
+                  ?? config["Kestrel:Endpoints:Http:Url"]?.Split(';')[0];
         if (string.IsNullOrWhiteSpace(raw) || !Uri.TryCreate(raw.Trim(), UriKind.Absolute, out var uri))
         {
             return false; // unknown bind URL — the double-confirm still gates.
@@ -507,16 +605,18 @@ internal static class EncryptionCommands
     {
         Console.WriteLine("Usage: encryption <rotate-kek|rotate-dek|status> [options]");
         Console.WriteLine();
-        Console.WriteLine("  rotate-kek [--new-key <base64-32>] [--no-backup] [--yes]");
+        Console.WriteLine("  rotate-kek [--new-key <base64-32>] [--no-backup] [--yes] [--slots-stopped]");
         Console.WriteLine("      Re-wrap the DEK under a new KEK (no data walk). Refuses unless the");
         Console.WriteLine("      current Encryption:MasterKey unwraps the DEK. Prints the new KEK.");
-        Console.WriteLine("  rotate-dek [--no-backup] [--yes]");
+        Console.WriteLine("  rotate-dek [--no-backup] [--yes] [--slots-stopped]");
         Console.WriteLine("      Generate a new DEK and re-encrypt every secret in one transaction.");
         Console.WriteLine("  status");
         Console.WriteLine("      Report DEK presence + whether the configured KEK unwraps it.");
         Console.WriteLine();
         Console.WriteLine("  Both rotations are OFFLINE — stop the server first. A safety backup runs");
-        Console.WriteLine("  before mutating unless --no-backup is given.");
+        Console.WriteLine("  before mutating unless --no-backup is given. Under OnPremBlueGreen they");
+        Console.WriteLine("  refuse while the release registry shows any live release; stop every slot,");
+        Console.WriteLine("  then assert it with --slots-stopped.");
         return success ? 0 : 1;
     }
 

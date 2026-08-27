@@ -54,4 +54,17 @@ public static class QueueWaitMessage
     public static string TargetWaitShort()
         => "Waiting: a machine this deployment needs is busy with another task. "
            + "Open the deployment for the machine and queue position.";
+
+    /// <summary>BG1 — the reason shown for a Queued task while THIS instance's
+    /// release is Draining (the worker's drain claim gate refuses every new
+    /// claim here). Deliberately the LOWEST-precedence reason, unlike
+    /// <see cref="MaintenanceHold"/>: drain does not park the task — the Active
+    /// release's minutely re-signal picks it up — so an F1/F6 block, which
+    /// persists across releases, is the truthful reason whenever one exists;
+    /// this only explains the otherwise-bare "Waiting to start." gap between
+    /// creation on a draining slot and that pickup.</summary>
+    public static string DrainHold()
+        => "Waiting: this instance is draining ahead of an upgrade and no longer "
+           + "starts new work. The active instance picks this task up automatically, "
+           + "typically within a couple of minutes.";
 }

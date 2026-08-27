@@ -227,6 +227,16 @@ public sealed class DeploymentTools
                 $"deploymentId={deploymentId}", "forbidden", ct).ConfigureAwait(false);
             throw new McpException(ex.Message);
         }
+        catch (InvalidOperationException ex)
+        {
+            // BG1/T13 — CreateAsync's named refusals (the maintenance creation
+            // gate foremost) must reach the MCP caller as their message, not as
+            // an opaque generic error — and the audit outcome row must be
+            // written either way (mirrors the forbidden arm).
+            await McpAudit.ToolInvokedAsync(audit, "retry_deployment",
+                $"deploymentId={deploymentId}", "refused", ct).ConfigureAwait(false);
+            throw new McpException(ex.Message);
+        }
 
         await McpAudit.ToolInvokedAsync(audit, "retry_deployment",
             $"sourceId={deploymentId}, newId={child.Id}", "ok", ct).ConfigureAwait(false);

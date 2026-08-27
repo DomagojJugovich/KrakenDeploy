@@ -1,4 +1,3 @@
-using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 
 namespace KrakenDeploy.Platform;
@@ -24,14 +23,8 @@ public class PlatformReleaseDbContextDesignTimeFactory
             Environment.GetEnvironmentVariable("KRAKEN_PLATFORM_DESIGN_TIME_CONNECTION_STRING")
             ?? DefaultConnectionString;
 
-        var options = new DbContextOptionsBuilder<PlatformReleaseDbContext>()
-            .UseNpgsql(connectionString, npgsql => npgsql.MigrationsHistoryTable(
-                PlatformReleaseSchema.MigrationsHistoryTableName,
-                PlatformReleaseSchema.OnPremSchemaName))
-            .UseSnakeCaseNamingConvention()
-            .Options;
-
         return new PlatformReleaseDbContext(
-            options, new PlatformReleaseSchema(PlatformReleaseSchema.OnPremSchemaName));
+            PlatformReleaseDbContext.CreateOnPremOptions(connectionString),
+            new PlatformReleaseSchema(PlatformReleaseSchema.OnPremSchemaName));
     }
 }

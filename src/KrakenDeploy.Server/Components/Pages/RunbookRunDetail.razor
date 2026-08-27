@@ -146,6 +146,10 @@ else
     // outranks the target-wait reason (mirrors DeploymentDetail).
     private MaintenanceState? _maintenanceHold;
 
+    // BG1 — true while THIS instance's release is Draining; the lowest-precedence
+    // queue-wait reason (see QueueWaitMessage.DrainHold; mirrors DeploymentDetail).
+    private bool _drainHold;
+
     // Why this Queued run has not started, from the resolver both detail pages
     // share; for a runbook run only F6's target exclusion can apply (runs are
     // F1-exempt). Refreshed with each reload (the page polls every 5 s while
@@ -296,6 +300,8 @@ else
             {
                 var maintenance = await MaintenanceSvc.GetStateAsync();
                 _maintenanceHold = maintenance.Enabled ? maintenance : null;
+                _drainHold = _maintenanceHold is null
+                    && await TasksSvc.IsLocalSlotDrainingAsync();
                 _queueWait = _maintenanceHold is null
                     ? await TasksSvc.ResolveQueueWaitAsync(new ServerTasksService.QueueWaitCandidate(
                         Id,
@@ -306,6 +312,7 @@ else
             else
             {
                 _maintenanceHold = null;
+                _drainHold = false;
                 _queueWait = null;
             }
         }
@@ -402,9 +409,13 @@ else
         {
             return scheduled;
         }
-        return _queueWait is { Block: QueueWaitBlock.TargetBlocked, Conflict: { } conflict }
-            ? QueueWaitMessage.TargetWait(conflict)
-            : null;
+        if (_queueWait is { Block: QueueWaitBlock.TargetBlocked, Conflict: { } conflict })
+        {
+            return QueueWaitMessage.TargetWait(conflict);
+        }
+        // BG1 — drain is the fallback, never the override (a target block persists
+        // on the Active release too, so it stays the truthful reason).
+        return _drainHold ? QueueWaitMessage.DrainHold() : null;
     }
 
     private string FormatDuration()

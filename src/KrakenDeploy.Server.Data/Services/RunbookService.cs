@@ -2,7 +2,6 @@ using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
-using KrakenDeploy.Server.Core.Domain.Maintenance;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
@@ -654,26 +653,16 @@ public class RunbookService(
                 TenantId:      tenantId),
             ct).ConfigureAwait(false);
 
-        // BG1/T13 — maintenance CREATION refusal (mirrors DeploymentService.CreateAsync).
-        // UNCONDITIONAL — ignores Permission.BypassMaintenance, and runbook runs have
-        // no parent-task exemption (they are never children). Zero escape hatch (T-B2);
-        // run preparation runbooks BEFORE enabling maintenance. Cache-free read on this
-        // call's own context, mirroring the claim gate.
-        {
-            var maintenance = await SettingsService
-                .ReadOrDefaultAsync<MaintenanceSettings>(db, ct: ct)
-                .ConfigureAwait(false);
-            if (maintenance.Enabled)
-            {
-                throw new InvalidOperationException(
-                    "Maintenance mode is enabled — runbook runs are refused until it is turned " +
-                    "off (Configuration → Settings → Maintenance). Run preparation runbooks " +
-                    "before enabling maintenance."
-                    + (string.IsNullOrWhiteSpace(maintenance.Reason)
-                        ? ""
-                        : $" Reason: {maintenance.Reason}"));
-            }
-        }
+        // BG1/T13 — maintenance CREATION refusal (see MaintenanceCreationGate).
+        // parentTaskId: null — runbook runs are never children, so they are
+        // always gated (zero escape hatch, T-B2); run preparation runbooks
+        // BEFORE enabling maintenance.
+        await MaintenanceCreationGate.EnsureAllowedAsync(
+            db, parentTaskId: null,
+            "Maintenance mode is enabled — runbook runs are refused until it is turned " +
+            "off (Configuration → Settings → Maintenance). Run preparation runbooks " +
+            "before enabling maintenance.",
+            ct).ConfigureAwait(false);
 
         var process = await db.Processes
             .Include(p => p.Steps.OrderBy(s => s.SortOrder))

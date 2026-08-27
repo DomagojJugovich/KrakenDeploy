@@ -37,6 +37,9 @@ public sealed class DeploymentTopologyResolverTests
     [InlineData("MultiNode")]
     [InlineData("2", "numeric values are refused — names only, so a config diff stays readable")]
     [InlineData("99")]
+    [InlineData("+1", "SIGNED numerics pass Enum.TryParse AND a leading-digit check — names only")]
+    [InlineData("+2")]
+    [InlineData("-0")]
     public void Refuses_unrecognised_values_by_name(string raw, string? _ = null)
     {
         var act = () => DeploymentTopologyResolver.Resolve(Config(("Deployment:Topology", raw)));
@@ -44,6 +47,23 @@ public sealed class DeploymentTopologyResolverTests
             .WithMessage("*Deployment:Topology*")
             .WithMessage($"*{raw}*");
     }
+
+    [Theory]
+    [InlineData(" onprembluegreen ", DeploymentTopology.OnPremBlueGreen)]
+    [InlineData("OnPrem", DeploymentTopology.OnPrem)]
+    public void TryParseName_trims_and_matches_names_only(string raw, DeploymentTopology expected)
+    {
+        DeploymentTopologyResolver.TryParseName(raw, out var parsed).Should().BeTrue();
+        parsed.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("+1")]
+    [InlineData("1")]
+    [InlineData("OnPermBlueGreen", "the prompt used to coerce this typo to OnPrem silently")]
+    [InlineData(null)]
+    public void TryParseName_refuses_non_names(string? raw, string? because = null)
+        => DeploymentTopologyResolver.TryParseName(raw, out _).Should().BeFalse(because);
 
     [Theory]
     [InlineData("true")]

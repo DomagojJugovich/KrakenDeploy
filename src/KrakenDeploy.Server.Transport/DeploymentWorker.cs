@@ -399,7 +399,56 @@ public sealed class DeploymentWorker(
             "DeploymentWorker: task {Id} not claimed ({Outcome}) — this instance's release is " +
             "Draining; staying Queued for the Active release's re-signal to pick it up.",
             taskId, ServerTaskClaimResult.DrainBlocked);
+        await RecordDrainHoldAsync(taskId, ct).ConfigureAwait(false);
         return true;
+    }
+
+    /// <summary>Log LEVEL of the one-time drain-hold banner line (BG1) — the
+    /// durable dedup marker, mirroring
+    /// <see cref="ServerTaskTargetExclusion.TargetWaitLogLevel"/>. Unknown levels
+    /// render as plain info in the task-log view.</summary>
+    private const string DrainHoldLogLevel = "drain-hold";
+
+    /// <summary>
+    /// BG1 reason surface for the drain claim gate — mirrors
+    /// <see cref="RecordTargetDeferralAsync"/>: own scope, lock-free fast-path,
+    /// advisory-locked idempotent append, and it must never fail the dispatch
+    /// loop. Without it a drain-refused creation sits Queued with only a server
+    /// log line while the Active release's re-signal takes up to a few minutes.
+    /// The append's still-Queued gate means a drain-refused RESUME (a Paused
+    /// task) writes nothing — its checkpoint banner already explains the park,
+    /// and the Active release resumes it on the same re-signal cadence.
+    /// </summary>
+    private async Task RecordDrainHoldAsync(Guid taskId, CancellationToken ct)
+    {
+        try
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
+
+            if (await ServerTaskTargetExclusion
+                    .FirstDeferralAlreadyLoggedAsync(db, taskId, DrainHoldLogLevel, ct)
+                    .ConfigureAwait(false))
+            {
+                return;
+            }
+
+            await ServerTaskTargetExclusion.TryAppendFirstDeferralLogAsync(
+                    db, taskId, DrainHoldLogLevel,
+                    "Held: this instance's release is draining ahead of an upgrade and no " +
+                    "longer starts new work; the active release picks this task up " +
+                    "automatically, typically within a couple of minutes.",
+                    timeProvider, ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Advisory reason surface — the task stays Queued and is picked up
+            // by the Active release regardless.
+            logger.LogWarning(ex,
+                "DeploymentWorker: failed to record the drain-hold reason for task {Id}.",
+                taskId);
+        }
     }
 
     /// <summary>

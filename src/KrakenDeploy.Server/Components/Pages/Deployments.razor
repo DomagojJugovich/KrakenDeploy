@@ -196,6 +196,12 @@
     // task, so it outranks the per-key serialization rule as the queue-wait reason.
     private MaintenanceState? _maintenanceHold;
 
+    // BG1 — true while THIS instance's release is Draining. The LOWEST-precedence
+    // queue-wait reason (see QueueWaitMessage.DrainHold): it explains only the
+    // rows the resolver left reason-less, during the short gap until the Active
+    // release's re-signal claims them.
+    private bool _drainHold;
+
     // WP3 — task ids with an unanswered manual-intervention gate. One query for the
     // whole page rather than a per-row probe; empty when the user lacks
     // InterruptionView.
@@ -235,6 +241,7 @@
 
         var maintenance = await MaintenanceSvc.GetStateAsync();
         _maintenanceHold = maintenance.Enabled ? maintenance : null;
+        _drainHold = _maintenanceHold is null && await TasksSvc.IsLocalSlotDrainingAsync();
 
         // Only Paused rows can carry a pending gate, so scope the probe to them.
         var pausedIds = _all
@@ -423,7 +430,7 @@
         // target) using the claim's own predicates — so a row and its detail page
         // can never name different constraints, and this template stays a
         // dictionary lookup rather than re-scanning every loaded row per render.
-        return _queueWaits.TryGetValue(d.Id, out var reason)
+        var resolved = _queueWaits.TryGetValue(d.Id, out var reason)
             ? reason.Block switch
             {
                 QueueWaitBlock.InFlightPeer =>
@@ -434,6 +441,9 @@
                 _ => null,
             }
             : null;
+        // BG1 — drain is the fallback, never the override: an F1/F6-blocked row
+        // stays blocked on the Active release too, so its resolved reason wins.
+        return resolved ?? (_drainHold ? QueueWaitMessage.DrainHold() : null);
     }
 
     private string EnvColor(Guid envId)

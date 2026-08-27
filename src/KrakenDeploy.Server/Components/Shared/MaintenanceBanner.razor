@@ -1,12 +1,16 @@
 @using KrakenDeploy.Server.Data.Services
 @inject MaintenanceModeService MaintenanceSvc
+@implements IAsyncDisposable
 
 @* BG1/T13 — layout-level maintenance banner. The Blazor UI rides the /_blazor
    middleware exemption, so without this the interactive surface (ad-hoc pages
    included) gives no hint that task creation is refused. Sits in MainLayout, so
    it renders on every page and every navigation; MaintenanceModeService's 10 s
    cache keeps the DB load negligible. Mirrors LicenseWarningBanner: it must
-   never break the layout. *@
+   never break the layout. Unlike LicenseWarningBanner it POLLS: MainLayout
+   children initialize once per circuit, so a load-time-only read would leave
+   every open circuit blind to a maintenance toggle until F5 — exactly when the
+   operator most needs users to see it. *@
 @if (_enabled)
 {
     <div class="kraken-license-banner kraken-maintenance-banner" role="alert">
@@ -28,23 +32,82 @@
 }
 
 @code {
+    // 15 s poll over the service's 10 s cache: at most one extra DB read per
+    // circuit per cache expiry, and a toggle reaches every open circuit within
+    // ~25 s.
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(15);
+
     private bool _enabled;
     private string? _reason;
+    private readonly CancellationTokenSource _cts = new();
+    private PeriodicTimer? _timer;
+    private Task? _pollLoop;
 
     protected override async Task OnInitializedAsync()
     {
+        await RefreshAsync();
+        _timer = new PeriodicTimer(PollInterval);
+        _pollLoop = PollAsync(_timer);
+    }
+
+    private async Task PollAsync(PeriodicTimer timer)
+    {
         try
         {
-            var state = await MaintenanceSvc.GetStateAsync();
+            while (await timer.WaitForNextTickAsync(_cts.Token))
+            {
+                var wasEnabled = _enabled;
+                var oldReason = _reason;
+                await RefreshAsync();
+                if (_enabled != wasEnabled || _reason != oldReason)
+                {
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Circuit is going away — normal shutdown.
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            var state = await MaintenanceSvc.GetStateAsync(_cts.Token);
             _enabled = state.Enabled;
             _reason = state.Reason;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch
         {
             // Banner must never break the layout (e.g. DB unreachable during
-            // startup) — fail closed to "no banner"; the create-time gate still
-            // refuses authoritatively.
-            _enabled = false;
+            // startup) — keep the last known state (fail closed to "no banner"
+            // on the first read); the create-time gate still refuses
+            // authoritatively, and the next tick retries.
         }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _cts.Cancel();
+        _timer?.Dispose();
+        if (_pollLoop is not null)
+        {
+            try
+            {
+                await _pollLoop;
+            }
+            catch
+            {
+                // Best-effort teardown — nothing to surface from a dying circuit.
+            }
+        }
+
+        _cts.Dispose();
     }
 }

@@ -167,12 +167,14 @@ router behind Caddy. Full design: `docs/blue-green-slot-deployment.md` (§12 for
 the on-prem specifics). Setup with the Docker path:
 
 ```bash
-# .env — all four together:
+# .env — all three together:
 #   COMPOSE_PROFILES=bluegreen
-#   KRAKEN_TOPOLOGY=OnPremBlueGreen
 #   KRAKEN_UPSTREAM=kraken-router:8080
 #   KRAKEN_GRPC_UPSTREAM=kraken-router:8080
 # plus ROUTER_OPS_TOKEN, SLOT1_IMAGE + SLOT1_RELEASE_ID for the first release.
+# Deployment__Topology comes from the profile itself: the bluegreen profile runs
+# its own init service (kraken-init-bluegreen) hardcoding OnPremBlueGreen, so
+# there is no topology variable to forget.
 docker build -t krakendeploy-router:latest -f ../../Dockerfile.router ../..
 docker compose up -d
 docker compose exec kraken-slot-1 dotnet KrakenDeploy.Server.dll releases register \

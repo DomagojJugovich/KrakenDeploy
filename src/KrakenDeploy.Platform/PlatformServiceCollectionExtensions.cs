@@ -33,21 +33,7 @@ public static class PlatformServiceCollectionExtensions
         // Fixed connection for the whole process lifetime → singleton factory is
         // correct (routing metadata only, no per-request connection variance).
         services.AddDbContextFactory<PlatformReleaseDbContext>(options =>
-        {
-            options.UseNpgsql(connectionString, npgsql =>
-            {
-                if (ownSchema)
-                {
-                    npgsql.MigrationsHistoryTable(
-                        PlatformReleaseSchema.MigrationsHistoryTableName,
-                        PlatformReleaseSchema.OnPremSchemaName);
-                }
-            });
-            options.UseSnakeCaseNamingConvention();
-            options.ReplaceService<
-                Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory,
-                PlatformReleaseModelCacheKeyFactory>();
-        });
+            PlatformReleaseDbContext.ConfigureOptions(options, connectionString, ownSchema));
 
         services.AddScoped<ReleaseRegistry>();
 

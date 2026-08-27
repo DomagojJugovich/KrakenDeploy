@@ -138,7 +138,10 @@ internal static class NonAdditiveUpgradeGuard
     /// <summary>Migration id → CLR type map for <paramref name="db"/>'s model.</summary>
     public static IReadOnlyDictionary<string, TypeInfo> GetMigrationTypes(DbContext db)
     {
-#pragma warning disable EF1001 // IMigrationsAssembly is the only id → type source EF exposes.
+#pragma warning disable EF1001 // IMigrationsAssembly.Migrations IS EF's own id → type map — reusing
+        // it can never drift from what MigrateAsync will run, unlike a hand-rolled
+        // public-API scan of the migrations assembly (MigrationAttribute is public,
+        // but the assembly/filtering conventions around it are EF's to change).
         return db.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrationsAssembly>()
             .Migrations
             .ToDictionary(pair => pair.Key, pair => pair.Value);
@@ -148,9 +151,9 @@ internal static class NonAdditiveUpgradeGuard
     private static async Task<IReadOnlyList<string>> GetOtherLiveReleasesAsync(
         DeploymentTopology topology, string krakenConnectionString, IConfiguration configuration)
     {
-        var (connectionString, schema) = topology == DeploymentTopology.Saas
-            ? (configuration.GetConnectionString("Catalog"), (string?)null)
-            : (krakenConnectionString, PlatformReleaseSchema.OnPremSchemaName);
+        var connectionString = topology == DeploymentTopology.Saas
+            ? configuration.GetConnectionString("Catalog")
+            : krakenConnectionString;
         if (string.IsNullOrWhiteSpace(connectionString))
         {
             // Saas without a catalog connection — the CLI can't see the registry.
@@ -159,24 +162,33 @@ internal static class NonAdditiveUpgradeGuard
             return [];
         }
 
-        var options = new DbContextOptionsBuilder<PlatformReleaseDbContext>()
-            .UseNpgsql(connectionString)
-            .UseSnakeCaseNamingConvention()
-            .Options;
+        // Saas: catalog connection, public schema, no own history table (the
+        // catalog migration chain owns DDL there) — hence the parameterized
+        // recipe rather than CreateOnPremOptions.
+        var optionsBuilder = new DbContextOptionsBuilder<PlatformReleaseDbContext>();
+        PlatformReleaseDbContext.ConfigureOptions(
+            optionsBuilder, connectionString, ownSchema: topology != DeploymentTopology.Saas);
         await using var db = new PlatformReleaseDbContext(
-            options, new PlatformReleaseSchema(schema));
+            optionsBuilder.Options,
+            new PlatformReleaseSchema(topology == DeploymentTopology.Saas
+                ? null
+                : PlatformReleaseSchema.OnPremSchemaName));
 
+        // Own-release exclusion is STATUS-AWARE (the shared registry query): the
+        // own Release:Id is exempt only while its row is still Deploying (the
+        // release this upgrade is preparing). An Active/Draining own row is live —
+        // `docker compose exec` into the serving slot must not make the guard
+        // pass in single-live-release steady state.
         var ownReleaseId = configuration["Release:Id"];
         try
         {
-            return await db.AppReleases
-                .AsNoTracking()
-                .Where(r => r.Status != AppReleaseStatus.Retired
-                    && (string.IsNullOrEmpty(ownReleaseId) || r.Id != ownReleaseId))
-                .OrderBy(r => r.SlotNo)
-                .Select(r => $"{r.Id} (slot {r.SlotNo}, {r.Status})")
-                .ToListAsync()
+            var live = await ReleaseRegistry
+                .GetLiveReleasesExceptOwnDeployingAsync(db, ownReleaseId)
                 .ConfigureAwait(false);
+            return live
+                .Select(r => $"{r.Id} (slot {r.SlotNo}, {r.Status}" +
+                    $"{(r.Id == ownReleaseId ? "; this container's own release" : "")})")
+                .ToList();
         }
         catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UndefinedTable)
         {
@@ -234,12 +246,21 @@ internal static partial class HangfireSchemaInspector
     /// <summary>
     /// True when running the installer would CHANGE the shared schema. A schema
     /// that does not exist yet counts as pending (creating it beside a live
-    /// release that predates it would still be a coordinated event).
+    /// release that predates it would still be a coordinated event). A target
+    /// of 0 (the embedded-script discovery matched nothing — a Hangfire.PostgreSql
+    /// packaging change) also counts as pending: unknown must FAIL CLOSED while
+    /// another release is live, never wave the upgrade through.
     /// </summary>
     public static async Task<bool> IsUpgradePendingAsync(string connectionString)
     {
+        var target = GetTargetSchemaVersion();
+        if (target == 0)
+        {
+            return true;
+        }
+
         var installed = await GetInstalledSchemaVersionAsync(connectionString).ConfigureAwait(false);
-        return installed is null || installed.Value < GetTargetSchemaVersion();
+        return installed is null || installed.Value < target;
     }
 
     /// <summary>

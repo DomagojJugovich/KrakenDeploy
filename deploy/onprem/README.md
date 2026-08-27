@@ -46,6 +46,11 @@ Topology chapter) for the setup and BOTH upgrade runbooks (rolling additive and
 stop-the-world non-additive), and `docs/blue-green-slot-deployment.md` for the
 design.
 
+Each profile runs its own init service (`kraken-init` for single,
+`kraken-init-bluegreen` for bluegreen) that hardcodes the matching
+`Deployment__Topology` for `database setup` — the topology is derived from the
+profile, never from a separate variable that could drift.
+
 ## Environment Variables
 
 | Variable | Required | Description |

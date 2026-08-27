@@ -32,9 +32,7 @@ public static class DeploymentTopologyResolver
             return DeploymentTopology.OnPrem;
         }
 
-        if (!Enum.TryParse<DeploymentTopology>(raw, ignoreCase: true, out var topology)
-            || !Enum.IsDefined(topology)
-            || char.IsAsciiDigit(raw.TrimStart()[0]))
+        if (!TryParseName(raw, out var topology))
         {
             throw new InvalidOperationException(
                 $"'{DeploymentOptions.TopologyKey}' has the unrecognised value '{raw}'. " +
@@ -42,6 +40,30 @@ public static class DeploymentTopologyResolver
         }
 
         return topology;
+    }
+
+    /// <summary>
+    /// The ONE topology parser: matches the trimmed value case-insensitively
+    /// against the enum NAMES only. Deliberately not <c>Enum.TryParse</c> —
+    /// that also accepts numeric strings, including SIGNED ones ("+1", "-0")
+    /// that a leading-digit check misses, and three call sites (config, the
+    /// <c>--topology</c> flag, the setup prompt) had grown three divergent rule
+    /// sets. Names-only keeps a config diff readable and refuses everything else.
+    /// </summary>
+    public static bool TryParseName(string? raw, out DeploymentTopology topology)
+    {
+        var trimmed = raw?.Trim();
+        foreach (var name in Enum.GetNames<DeploymentTopology>())
+        {
+            if (string.Equals(trimmed, name, StringComparison.OrdinalIgnoreCase))
+            {
+                topology = Enum.Parse<DeploymentTopology>(name);
+                return true;
+            }
+        }
+
+        topology = default;
+        return false;
     }
 
     private static string ValidValues =>

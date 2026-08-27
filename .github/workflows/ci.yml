@@ -25,7 +25,13 @@ jobs:
   storage-package-watch:
     name: Storage-schema package watch
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    # Runs on PRs (the review-time gate) AND on pushes to main: this repo often
+    # lands work by direct merge-push, which never opens a PR, so without the
+    # push arm the layer-2 guard never fired. On a push it flags AFTER the bump
+    # has landed — still the knowledge-transfer net: the failure is loud on main
+    # and names the missing [stop-the-world] acknowledgement before the release
+    # notes ship.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -34,11 +40,18 @@ jobs:
 
       - name: Flag storage-schema-owning package bumps
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          # PR: base..head of the PR. Push: the pushed range (event.before can be
+          # all-zeros for a brand-new ref — handled below). PR_TITLE is empty on
+          # push, so only the commit-message scan applies there.
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ] && { [ -z "$BASE_SHA" ] || echo "$BASE_SHA" | grep -qE '^0+$'; }; then
+            BASE_SHA=$(git rev-parse "$HEAD_SHA^")
+          fi
           WATCH='Hangfire\.PostgreSql|Hangfire\.AspNetCore|Npgsql|Microsoft\.EntityFrameworkCore'
           changed=$(git diff "$BASE_SHA".."$HEAD_SHA" -- Directory.Packages.props \
             | grep -E '^[+-].*PackageVersion' | grep -E "$WATCH" || true)
@@ -53,7 +66,7 @@ jobs:
             echo "::warning::Storage-schema package bump acknowledged as [stop-the-world] — release notes must declare the stop window (docs/on-prem-guide.md, non-additive runbook)."
             exit 0
           fi
-          echo "::error::This PR bumps a storage-schema-owning package (Hangfire.PostgreSql / Hangfire.AspNetCore / Npgsql / EF Core). For blue-green installs that is a STOP-THE-WORLD upgrade event (BG1/T4/T10): slot boots never auto-migrate shared storage, and 'database upgrade' will refuse while another release is live. Acknowledge it by putting the literal token [stop-the-world] in the PR title or a commit message, and declare the stop window in the release notes."
+          echo "::error::This change bumps a storage-schema-owning package (Hangfire.PostgreSql / Hangfire.AspNetCore / Npgsql / EF Core). For blue-green installs that is a STOP-THE-WORLD upgrade event (BG1/T4/T10): slot boots never auto-migrate shared storage, and 'database upgrade' will refuse while another release is live. Acknowledge it by putting the literal token [stop-the-world] in the PR title or a commit message, and declare the stop window in the release notes."
           exit 1
 
   build-and-test:

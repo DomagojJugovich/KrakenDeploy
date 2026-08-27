@@ -119,6 +119,7 @@ internal static class DatabaseCommands
         string? account = null;
         string? topologyArg = null;
         var stopTheWorld = args.Contains("--stop-the-world");
+        var forceTopology = args.Contains("--force-topology");
 
         for (var i = 0; i < args.Length - 1; i++)
         {
@@ -165,6 +166,32 @@ internal static class DatabaseCommands
         try
         {
             var builder = CliHost.CreateBuilder(contentRoot);
+
+            // BG1 — the target DATABASE outranks a defaulted/mistaken topology:
+            // the `platform` schema exists only on an OnPremBlueGreen install, so
+            // running the OnPrem path against such a database (which would no-op
+            // the non-additive guard and skip the platform/Hangfire schema steps)
+            // is refused, whether OnPrem came from the default or from config.
+            // --force-topology is the explicit operator override.
+            if (topology == DeploymentTopology.OnPrem
+                && !forceTopology
+                && await PlatformSchemaExistsAsync(connectionString).ConfigureAwait(false))
+            {
+                var configuredExplicitly = !string.IsNullOrWhiteSpace(
+                    builder.Configuration[DeploymentOptions.TopologyKey]);
+                Console.Error.WriteLine(
+                    $"REFUSED: the target database already has the " +
+                    $"'{PlatformReleaseSchema.OnPremSchemaName}' schema (blue-green release " +
+                    "registry) — it belongs to an OnPremBlueGreen install, but this command " +
+                    $"resolved Topology=OnPrem{(configuredExplicitly
+                        ? " from the configuration"
+                        : " by DEFAULT (Deployment:Topology is not configured and no --topology was passed)")}. " +
+                    "Proceeding would skip the non-additive upgrade guard and the " +
+                    "platform/Hangfire schema steps. Set Deployment__Topology=OnPremBlueGreen " +
+                    "(or pass --topology OnPremBlueGreen), or pass --force-topology to " +
+                    "proceed as OnPrem anyway.");
+                return 1;
+            }
 
             // BG1/T4 — non-additive guard, BEFORE anything migrates: a
             // [StopTheWorld]-marked pending migration (or a pending Hangfire
@@ -226,14 +253,8 @@ internal static class DatabaseCommands
                 // dedicated `platform` schema with its OWN history table — this
                 // command is its only migration path (never slot boot).
                 Console.Write("Applying platform-schema migrations (release registry)... ");
-                var platformOptions = new DbContextOptionsBuilder<PlatformReleaseDbContext>()
-                    .UseNpgsql(connectionString, npgsql => npgsql.MigrationsHistoryTable(
-                        PlatformReleaseSchema.MigrationsHistoryTableName,
-                        PlatformReleaseSchema.OnPremSchemaName))
-                    .UseSnakeCaseNamingConvention()
-                    .Options;
                 await using (var platformDb = new PlatformReleaseDbContext(
-                    platformOptions,
+                    PlatformReleaseDbContext.CreateOnPremOptions(connectionString),
                     new PlatformReleaseSchema(PlatformReleaseSchema.OnPremSchemaName)))
                 {
                     await platformDb.Database.MigrateAsync().ConfigureAwait(false);
@@ -332,8 +353,9 @@ internal static class DatabaseCommands
         DeploymentTopology? fromArg = null;
         if (topologyArg is not null)
         {
-            if (!Enum.TryParse<DeploymentTopology>(topologyArg, ignoreCase: true, out var parsed)
-                || !Enum.IsDefined(parsed))
+            // The ONE parser (names only, no Enum.TryParse) — the flag must accept
+            // exactly what the configuration accepts, or the two silently diverge.
+            if (!DeploymentTopologyResolver.TryParseName(topologyArg, out var parsed))
             {
                 Console.Error.WriteLine(
                     $"--topology has the unrecognised value '{topologyArg}'. " +
@@ -372,23 +394,57 @@ internal static class DatabaseCommands
             Console.WriteLine("  1) OnPrem          — single instance; upgrades are stop → migrate → start. (default)");
             Console.WriteLine("  2) OnPremBlueGreen — 3 slots + router; zero-downtime rolling upgrades.");
             Console.WriteLine("  3) Saas            — multi-account control plane (requires the catalog).");
-            Console.Write("Topology [1]: ");
-            var answer = Console.ReadLine()?.Trim();
-            var chosen = answer switch
+
+            // An unrecognised answer RE-PROMPTS instead of silently defaulting: a
+            // typo ("OnPermBlueGreen") coerced to OnPrem would install the wrong
+            // topology with zero signal. Empty/EOF still means the offered default.
+            for (var attempt = 1; attempt <= 3; attempt++)
             {
-                null or "" or "1" => DeploymentTopology.OnPrem,
-                "2" => DeploymentTopology.OnPremBlueGreen,
-                "3" => DeploymentTopology.Saas,
-                _ => Enum.TryParse<DeploymentTopology>(answer, ignoreCase: true, out var byName)
-                        && Enum.IsDefined(byName)
-                    ? byName
-                    : DeploymentTopology.OnPrem,
-            };
-            PrintTopologyChoice(chosen);
-            return chosen;
+                Console.Write("Topology [1]: ");
+                var answer = Console.ReadLine()?.Trim();
+                DeploymentTopology? chosen = answer switch
+                {
+                    null or "" or "1" => DeploymentTopology.OnPrem,
+                    "2" => DeploymentTopology.OnPremBlueGreen,
+                    "3" => DeploymentTopology.Saas,
+                    _ => DeploymentTopologyResolver.TryParseName(answer, out var byName)
+                        ? byName
+                        : null,
+                };
+                if (chosen is { } picked)
+                {
+                    PrintTopologyChoice(picked);
+                    return picked;
+                }
+
+                Console.WriteLine(
+                    $"Unrecognised topology '{answer}'. Enter 1, 2, 3, or one of: " +
+                    $"{string.Join(" | ", Enum.GetNames<DeploymentTopology>())}.");
+            }
+
+            Console.Error.WriteLine("No valid topology chosen after 3 attempts — aborting.");
+            return null;
         }
 
         return DeploymentTopology.OnPrem;
+    }
+
+    /// <summary>
+    /// Whether the target database carries the blue-green release registry's
+    /// dedicated schema — the DB-side signal that it belongs to an
+    /// OnPremBlueGreen install (BG1; see the refusal in
+    /// <see cref="SetupAsync"/>). A bare namespace probe on purpose: even an
+    /// empty <c>platform</c> schema in KrakenDeploy's own database is not
+    /// something the OnPrem path should silently run past.
+    /// </summary>
+    private static async Task<bool> PlatformSchemaExistsAsync(string connectionString)
+    {
+        await using var conn = new NpgsqlConnection(connectionString);
+        await conn.OpenAsync().ConfigureAwait(false);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM pg_namespace WHERE nspname = @schema";
+        cmd.Parameters.AddWithValue("schema", PlatformReleaseSchema.OnPremSchemaName);
+        return await cmd.ExecuteScalarAsync().ConfigureAwait(false) is not null;
     }
 
     private static void PrintTopologyChoice(DeploymentTopology topology)
@@ -490,11 +546,13 @@ internal static class DatabaseCommands
         stream.WriteLine("  create   Create the Postgres database (connects to 'postgres' maintenance db).");
         stream.WriteLine("  setup    [--connection-string <cs> | --account <subdomain>] [--topology <t>] [--stop-the-world]");
         stream.WriteLine("           First install: apply migrations + seed data. Idempotent.");
-        stream.WriteLine("  upgrade  [--connection-string <cs> | --account <subdomain>] [--stop-the-world]");
+        stream.WriteLine("  upgrade  [--connection-string <cs> | --account <subdomain>] [--topology <t>] [--stop-the-world]");
         stream.WriteLine("           New release over an existing database — same idempotent body as setup.");
         stream.WriteLine("           Blue-green topologies: refuses a [StopTheWorld]-marked pending migration");
         stream.WriteLine("           (or a pending Hangfire storage upgrade) while another release is live;");
         stream.WriteLine("           --stop-the-world overrides after the documented full-stop runbook.");
+        stream.WriteLine("           Both refuse the OnPrem path against a database that carries the");
+        stream.WriteLine("           blue-green 'platform' schema; --force-topology overrides.");
         stream.WriteLine("  status   [--account <subdomain>]");
         stream.WriteLine("           Check connectivity and pending migrations ([StopTheWorld] flagged).");
         stream.WriteLine();

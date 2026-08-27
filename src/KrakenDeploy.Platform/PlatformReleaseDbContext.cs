@@ -37,6 +37,46 @@ public class PlatformReleaseDbContext(
 
     public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
 
+    /// <summary>
+    /// The ONE OnPremBlueGreen options recipe: Npgsql with the dedicated
+    /// migrations-history table, snake_case naming, and the schema-aware model
+    /// cache key. Every constructor of this context under that topology (DI,
+    /// CLI commands, design time, tests) goes through here so the pieces can
+    /// never drift — pair it with
+    /// <c>new PlatformReleaseSchema(PlatformReleaseSchema.OnPremSchemaName)</c>.
+    /// </summary>
+    public static DbContextOptions<PlatformReleaseDbContext> CreateOnPremOptions(
+        string connectionString)
+    {
+        var builder = new DbContextOptionsBuilder<PlatformReleaseDbContext>();
+        ConfigureOptions(builder, connectionString, ownSchema: true);
+        return builder.Options;
+    }
+
+    /// <summary>
+    /// Options recipe shared by both blue-green topologies.
+    /// <paramref name="ownSchema"/> true → OnPremBlueGreen (dedicated
+    /// <c>platform</c> schema + own history table); false → Saas (catalog
+    /// <c>public</c> schema — the catalog migration chain owns DDL, so no
+    /// history table here). Non-generic builder overload so
+    /// <c>AddDbContextFactory</c> callbacks can use it too.
+    /// </summary>
+    public static void ConfigureOptions(
+        DbContextOptionsBuilder optionsBuilder, string connectionString, bool ownSchema)
+    {
+        optionsBuilder.UseNpgsql(connectionString, npgsql =>
+        {
+            if (ownSchema)
+            {
+                npgsql.MigrationsHistoryTable(
+                    PlatformReleaseSchema.MigrationsHistoryTableName,
+                    PlatformReleaseSchema.OnPremSchemaName);
+            }
+        });
+        optionsBuilder.UseSnakeCaseNamingConvention();
+        optionsBuilder.ReplaceService<IModelCacheKeyFactory, PlatformReleaseModelCacheKeyFactory>();
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

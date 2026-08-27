@@ -286,6 +286,10 @@ else
     // as the state rather than a bool so the banner can quote the operator's reason.
     private MaintenanceState? _maintenanceHold;
 
+    // BG1 — true while THIS instance's release is Draining; the lowest-precedence
+    // queue-wait reason (see QueueWaitMessage.DrainHold).
+    private bool _drainHold;
+
     // Cancel is meaningful only before a deployment reaches a terminal state.
     // WP3: Paused counts. It is non-terminal AND holds the F1 (project, environment,
     // tenant) slot for up to the approval timeout (72 h by default), so if the
@@ -704,6 +708,7 @@ else
         {
             _queueWait = null;
             _maintenanceHold = null;
+            _drainHold = false;
             return;
         }
 
@@ -712,6 +717,7 @@ else
         // hasn't started. Read it first and skip the resolver when it applies.
         var maintenance = await MaintenanceSvc.GetStateAsync();
         _maintenanceHold = maintenance.Enabled ? maintenance : null;
+        _drainHold = _maintenanceHold is null && await TasksSvc.IsLocalSlotDrainingAsync();
         // Everything else comes from the ONE resolver both detail pages and the
         // deployments list share, which applies the claim's own order (F1
         // in-flight → F1 earlier-queued → F6 target) and its own predicates.
@@ -740,7 +746,7 @@ else
         {
             return scheduled;
         }
-        return _queueWait switch
+        var resolved = _queueWait switch
         {
             { Block: QueueWaitBlock.InFlightPeer } => QueueWaitMessage.RunningPeer(
                 Deployment?.Release?.Project?.Name, Deployment?.Environment?.Name),
@@ -750,6 +756,9 @@ else
                 QueueWaitMessage.TargetWait(conflict),
             _ => null,
         };
+        // BG1 — drain is the fallback, never the override (an F1/F6 block persists
+        // on the Active release too, so it stays the truthful reason).
+        return resolved ?? (_drainHold ? QueueWaitMessage.DrainHold() : null);
     }
 
     private string FormatDuration()

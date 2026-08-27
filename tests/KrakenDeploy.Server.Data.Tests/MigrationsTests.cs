@@ -35,15 +35,11 @@ public class MigrationsTests(PostgresFixture postgres) : IClassFixture<PostgresF
     [Fact]
     public void PlatformRelease_model_has_no_pending_changes_against_snapshot()
     {
-        // BG1/T3: the release registry's OnPremBlueGreen shape (platform schema).
-        var options = new DbContextOptionsBuilder<KrakenDeploy.Platform.PlatformReleaseDbContext>()
-            .UseNpgsql(postgres.ConnectionString, npgsql => npgsql.MigrationsHistoryTable(
-                KrakenDeploy.Platform.PlatformReleaseSchema.MigrationsHistoryTableName,
-                KrakenDeploy.Platform.PlatformReleaseSchema.OnPremSchemaName))
-            .UseSnakeCaseNamingConvention()
-            .Options;
+        // BG1/T3: the release registry's OnPremBlueGreen shape (platform schema),
+        // built via the ONE shared options recipe.
         using var context = new KrakenDeploy.Platform.PlatformReleaseDbContext(
-            options,
+            KrakenDeploy.Platform.PlatformReleaseDbContext.CreateOnPremOptions(
+                postgres.ConnectionString),
             new KrakenDeploy.Platform.PlatformReleaseSchema(
                 KrakenDeploy.Platform.PlatformReleaseSchema.OnPremSchemaName));
 

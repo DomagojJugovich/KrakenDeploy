@@ -404,10 +404,17 @@ public static class ServerTaskTargetExclusion
     /// </summary>
     public static Task<bool> FirstDeferralAlreadyLoggedAsync(
         KrakenDbContext db, Guid taskId, CancellationToken ct = default)
+        => FirstDeferralAlreadyLoggedAsync(db, taskId, TargetWaitLogLevel, ct);
+
+    /// <summary>Level-parameterized form: the drain claim gate (BG1) reuses this
+    /// once-per-task banner mechanism under its own dedup level, so its hold
+    /// line can never collide with (or suppress) a target-wait line.</summary>
+    public static Task<bool> FirstDeferralAlreadyLoggedAsync(
+        KrakenDbContext db, Guid taskId, string level, CancellationToken ct = default)
         => db.TaskLogLive
             .AnyAsync(l => l.TaskId == taskId
                         && l.StepIndex == -1
-                        && l.Level == TargetWaitLogLevel, ct);
+                        && l.Level == level, ct);
 
     /// <summary>
     /// Appends the target-wait reason to the task's log ON THE FIRST DEFERRAL
@@ -430,11 +437,23 @@ public static class ServerTaskTargetExclusion
     /// discard it here; this transactional re-probe stays as the race backstop.
     /// </para>
     /// </summary>
-    public static async Task<bool> TryAppendFirstDeferralLogAsync(
+    public static Task<bool> TryAppendFirstDeferralLogAsync(
         KrakenDbContext db, Guid taskId, string message, TimeProvider time,
+        CancellationToken ct = default)
+        => TryAppendFirstDeferralLogAsync(db, taskId, TargetWaitLogLevel, message, time, ct);
+
+    /// <summary>Level-parameterized form of
+    /// <see cref="TryAppendFirstDeferralLogAsync(KrakenDbContext, Guid, string, TimeProvider, CancellationToken)"/>
+    /// — see <see cref="FirstDeferralAlreadyLoggedAsync(KrakenDbContext, Guid, string, CancellationToken)"/>
+    /// for why the drain claim gate passes its own level. The per-task advisory
+    /// lock is shared across levels (worst case two unrelated appends briefly
+    /// serialize).</summary>
+    public static async Task<bool> TryAppendFirstDeferralLogAsync(
+        KrakenDbContext db, Guid taskId, string level, string message, TimeProvider time,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(time);
+        ArgumentException.ThrowIfNullOrEmpty(level);
         ArgumentException.ThrowIfNullOrEmpty(message);
 
         var lockKey = FirstDeferralLockKey(taskId);
@@ -446,7 +465,7 @@ public static class ServerTaskTargetExclusion
                 .ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({lockKey})", ct)
                 .ConfigureAwait(false);
 
-            var alreadyLogged = await FirstDeferralAlreadyLoggedAsync(db, taskId, ct)
+            var alreadyLogged = await FirstDeferralAlreadyLoggedAsync(db, taskId, level, ct)
                 .ConfigureAwait(false);
             if (alreadyLogged)
             {
@@ -469,7 +488,7 @@ public static class ServerTaskTargetExclusion
             }
 
             await TaskLogService.AppendLiveAsync(
-                    db, taskId, stepIndex: -1, targetId: null, level: TargetWaitLogLevel,
+                    db, taskId, stepIndex: -1, targetId: null, level,
                     message, time.GetUtcNow(), ct)
                 .ConfigureAwait(false);
             await tx.CommitAsync(ct).ConfigureAwait(false);

@@ -106,8 +106,22 @@ public sealed class ServerTasksService(
     RunbookService runbooks,
     IDbContextFactory<KrakenDbContext> dbFactory,
     TimeProvider time,
-    ILogger<ServerTasksService> logger)
+    ILogger<ServerTasksService> logger,
+    KrakenDeploy.Platform.Releases.ISlotDrainGuard? slotDrainGuard = null)
 {
+    /// <summary>
+    /// BG1 — whether THIS process's release is Draining, i.e. the worker's drain
+    /// claim gate refuses new claims here and the Active release's re-signal
+    /// picks queued work up. The guard is registered only under the blue-green
+    /// topologies — null (OnPrem, tests) means never draining, mirroring the
+    /// worker's optional injection. The guard's 15 s cache makes this cheap
+    /// enough for page loads. Lives here because every queue-wait surface
+    /// already resolves its reasons through this service.
+    /// </summary>
+    public async Task<bool> IsLocalSlotDrainingAsync(CancellationToken ct = default)
+        => slotDrainGuard is not null
+           && await slotDrainGuard.IsOwnReleaseDrainingAsync(ct);
+
     // ── The queue-reason resolver (kind-agnostic, ONE implementation) ─────────
     //
     // Every surface that explains why a Queued task has not started goes through

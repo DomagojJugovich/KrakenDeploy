@@ -39,16 +39,9 @@ public sealed class ReleaseRegistryTests : IAsyncLifetime, IDbContextFactory<Pla
     public async Task DisposeAsync() => await _container.DisposeAsync();
 
     public PlatformReleaseDbContext CreateDbContext()
-    {
-        var options = new DbContextOptionsBuilder<PlatformReleaseDbContext>()
-            .UseNpgsql(_container.GetConnectionString(), npgsql => npgsql.MigrationsHistoryTable(
-                PlatformReleaseSchema.MigrationsHistoryTableName,
-                PlatformReleaseSchema.OnPremSchemaName))
-            .UseSnakeCaseNamingConvention()
-            .Options;
-        return new PlatformReleaseDbContext(
-            options, new PlatformReleaseSchema(PlatformReleaseSchema.OnPremSchemaName));
-    }
+        => new(
+            PlatformReleaseDbContext.CreateOnPremOptions(_container.GetConnectionString()),
+            new PlatformReleaseSchema(PlatformReleaseSchema.OnPremSchemaName));
 
     [Fact]
     public async Task Full_lifecycle_register_flip_drain_retire()
@@ -135,5 +128,40 @@ public sealed class ReleaseRegistryTests : IAsyncLifetime, IDbContextFactory<Pla
         var snapshot = await _registry.GetSnapshotAsync();
         snapshot.DefaultReleaseId.Should().Be("only");
         snapshot.Releases.Single(r => r.Id == "only").Status.Should().Be(AppReleaseStatus.Active);
+    }
+
+    [Fact]
+    public async Task Live_release_query_excludes_own_release_only_while_deploying()
+    {
+        // The BG1 review fix for the [StopTheWorld] guard: `docker compose exec`
+        // into the SERVING slot puts the serving release's id in Release:Id, and
+        // an unconditional own-id exclusion made the guard pass in
+        // single-live-release steady state. Own is exempt ONLY while Deploying.
+        await _registry.RegisterAsync("own-active", "v1", 8);
+        await _registry.FlipDefaultAsync("own-active", TimeSpan.FromHours(1));
+        await _registry.RegisterAsync("own-deploying", "v2", 9);
+
+        await using var db = CreateDbContext();
+
+        // Own release is ACTIVE (the exec-into-serving-slot case) → still live.
+        (await ReleaseRegistry.GetLiveReleasesExceptOwnDeployingAsync(db, "own-active"))
+            .Select(r => r.Id)
+            .Should().Contain("own-active").And.Contain("own-deploying");
+
+        // Own release is DEPLOYING (the release the upgrade is preparing) → exempt.
+        (await ReleaseRegistry.GetLiveReleasesExceptOwnDeployingAsync(db, "own-deploying"))
+            .Select(r => r.Id)
+            .Should().Contain("own-active").And.NotContain("own-deploying");
+
+        // No own id → no exemption at all (the encryption rotation gate's shape).
+        (await ReleaseRegistry.GetLiveReleasesExceptOwnDeployingAsync(db, ownReleaseId: null))
+            .Select(r => r.Id)
+            .Should().Contain("own-active").And.Contain("own-deploying");
+
+        // A Retired row is never live regardless of the own id.
+        await _registry.RetireAsync("own-deploying");
+        (await ReleaseRegistry.GetLiveReleasesExceptOwnDeployingAsync(db, ownReleaseId: null))
+            .Select(r => r.Id)
+            .Should().NotContain("own-deploying");
     }
 }

@@ -111,7 +111,13 @@ public sealed class ReleaseDrainWatcher(
                 circuits += metrics.ActiveCircuits;
                 inFlight += metrics.InFlightDeployments;
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or UriFormatException)
+            // JsonException/NotSupportedException: a 200 with a non-JSON body —
+            // e.g. an edge proxy's HTML error page answering in the slot's place —
+            // must defer THIS release like any other failed probe (the documented
+            // fail-safe), not escape and kill the whole watch round for every
+            // draining release behind it.
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException
+                or UriFormatException or System.Text.Json.JsonException or NotSupportedException)
             {
                 logger.LogWarning(
                     "Slot probe {Url} failed ({Error}); deferring retire of {ReleaseId}.",

@@ -238,22 +238,27 @@ public sealed class ReleaseRegistry(
     }
 
     /// <summary>
-    /// True when the registry holds a live (non-Retired) release other than
-    /// <paramref name="ownReleaseId"/>. Used by the non-additive migration guard
-    /// (BG1/T4): a [StopTheWorld] migration must not run while another release is
-    /// still serving.
+    /// The releases that are LIVE from an operator command's perspective: every
+    /// non-Retired row, excluding the caller's own release ONLY while that
+    /// release is still <see cref="AppReleaseStatus.Deploying"/> (registered but
+    /// not yet serving — the release the command is preparing). An own release
+    /// that is Active or Draining IS live: running the command via
+    /// <c>docker compose exec</c> into the serving slot must not exempt the very
+    /// release that is serving. Pass <paramref name="ownReleaseId"/> null for no
+    /// exemption at all. Used by the non-additive migration guard (BG1/T4) and
+    /// the encryption rotation gate; static so CLI callers with a hand-built
+    /// context share the one query shape.
     /// </summary>
-    public async Task<IReadOnlyList<AppRelease>> GetLiveReleasesExceptAsync(
-        string? ownReleaseId, CancellationToken ct = default)
+    public static Task<List<AppRelease>> GetLiveReleasesExceptOwnDeployingAsync(
+        PlatformReleaseDbContext db, string? ownReleaseId, CancellationToken ct = default)
     {
-        await using var db = await platformFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        return await db.AppReleases
+        ArgumentNullException.ThrowIfNull(db);
+        return db.AppReleases
             .AsNoTracking()
             .Where(r => r.Status != AppReleaseStatus.Retired
-                && (ownReleaseId == null || r.Id != ownReleaseId))
+                && !(r.Id == ownReleaseId && r.Status == AppReleaseStatus.Deploying))
             .OrderBy(r => r.SlotNo)
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+            .ToListAsync(ct);
     }
 
     private static async Task<string?> GetDefaultReleaseIdAsync(
