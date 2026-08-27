@@ -149,15 +149,88 @@ On Linux:
 
 On Windows, use Task Scheduler to run the backup command nightly.
 
-## Upgrade Procedure
+## Upgrade Procedure (Topology=OnPrem, the default)
 
 1. **Stop the server** (stop the service or `docker compose stop`).
 2. **Install the new version** (new MSI, new Docker image, or new binaries).
-3. **Apply migrations** — run `database setup` (idempotent; applies pending
-   migrations and re-seeds built-ins). Automatic startup migration runs **only**
-   in the `Development` environment, so a production upgrade requires this
-   explicit step.
+3. **Apply migrations** — run `database upgrade` (idempotent; applies pending
+   migrations and re-seeds built-ins; `database setup` is the same body under
+   its first-install name). Automatic startup migration runs **only** in the
+   `Development` environment, so a production upgrade requires this explicit
+   step.
 4. **Start the server.**
+
+## Blue-Green Topology (Deployment:Topology=OnPremBlueGreen)
+
+Zero-downtime rolling upgrades on-prem (BG1): three slots + a per-node YARP
+router behind Caddy. Full design: `docs/blue-green-slot-deployment.md` (§12 for
+the on-prem specifics). Setup with the Docker path:
+
+```bash
+# .env — all four together:
+#   COMPOSE_PROFILES=bluegreen
+#   KRAKEN_TOPOLOGY=OnPremBlueGreen
+#   KRAKEN_UPSTREAM=kraken-router:8080
+#   KRAKEN_GRPC_UPSTREAM=kraken-router:8080
+# plus ROUTER_OPS_TOKEN, SLOT1_IMAGE + SLOT1_RELEASE_ID for the first release.
+docker build -t krakendeploy-router:latest -f ../../Dockerfile.router ../..
+docker compose up -d
+docker compose exec kraken-slot-1 dotnet KrakenDeploy.Server.dll releases register \
+    --id <release-id> --label "v1" --slot 1
+docker compose exec kraken-slot-1 dotnet KrakenDeploy.Server.dll releases flip --id <release-id>
+```
+
+The release registry lives in KrakenDb's dedicated `platform` schema (its own
+migrations-history table); the router reads it via `Search Path=platform` on
+its connection string. Choosing this topology **commits the install to
+additive-only migrations while more than one release is live** — non-additive
+changes carry the `[StopTheWorld]` migration marker and need the stop-the-world
+runbook below. `database status` flags marked pending migrations.
+
+### Rolling upgrade (additive — the normal path)
+
+1. **Prepare** the new image; pick the Retired slot `<n>` (`releases status`).
+2. **Migrate** — `database upgrade` (from the NEW image, e.g.
+   `docker compose run --rm kraken-slot-<n> database upgrade`). A purely
+   additive pending set applies while the old release keeps serving; a
+   `[StopTheWorld]`-marked migration (or a pending Hangfire storage upgrade) is
+   REFUSED by name while another release is live — switch to the stop-the-world
+   runbook.
+3. **Register slot** — set `SLOT<n>_IMAGE` + `SLOT<n>_RELEASE_ID` in `.env`,
+   `docker compose up -d kraken-slot-<n>`, then
+   `releases register --id <new-id> --label <label> --slot <n>`.
+4. **Health-gate** — the Deploying release is reachable only via the
+   `X-KD-Release: <new-id>` header through the router; verify login + a sample
+   run. Do NOT flip until green.
+5. **Flip** — `releases flip --id <new-id>`. New sessions/agents land on the
+   new release; sessions pinned to the old one stay there.
+6. **Drain** — the old release finishes its in-flight work; its Hangfire server
+   stops and its worker stops claiming (`DrainBlocked`), so new work lands on
+   the active release. The drain-watcher retires it at zero circuits + zero
+   in-flight (or past the drain deadline for idle circuits).
+7. **Retire** — automatic via the watcher; `releases retire` is the manual
+   (unverified) fallback. The slot is free for the next release.
+
+### Stop-the-world upgrade (non-additive)
+
+For a `[StopTheWorld]`-marked migration, a Hangfire storage upgrade (flagged in
+CI on `Directory.Packages.props` bumps), or any change the rolling path refuses:
+
+1. **Maintenance ON** (Configuration → Settings → Maintenance). New deployments
+   and runbook runs are refused; queued + scheduled work holds; in-flight work
+   runs to completion. Run any preparation runbooks BEFORE this step — runbooks
+   have no maintenance escape hatch.
+2. **Drain** — wait until every slot's `/slot-metrics` reports zero in-flight
+   deployments.
+3. **Stop all slots** (`docker compose stop kraken-slot-1 kraken-slot-2 kraken-slot-3`).
+4. **Migrate** — `database upgrade --stop-the-world` from the new image.
+5. **Start the new release** into a slot, register + flip it; retire the old
+   releases (`releases retire` — nothing is running, the manual path is safe here).
+6. **Maintenance OFF.** Held queued/scheduled work fires at the first re-signal
+   (within a minute).
+
+This is exactly Octopus's ONLY upgrade mode — here it is the worst case instead
+of the every case.
 
 ## Rollback Procedure
 

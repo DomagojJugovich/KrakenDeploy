@@ -1,10 +1,10 @@
 using global::Hangfire;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Backup;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.Server.Data.Jobs;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Hangfire;
 
@@ -27,7 +27,7 @@ public sealed class BackupScheduler(
     BackupService backupService,
     IRecurringJobManager recurringJobs,
     IAccountContext accountContext,
-    IOptions<MultiAccountOptions> multiAccountOptions,
+    DeploymentOptions deploymentOptions,
     ILogger<BackupScheduler> logger)
 {
     /// <summary>
@@ -41,9 +41,10 @@ public sealed class BackupScheduler(
     {
         var settings = await backupService.GetSettingsAsync(ct).ConfigureAwait(false);
 
-        // Multi-account → a per-account job id + runner (backs up the active account's
-        // tenant DB). Single-instance → the single job running BackupJob directly.
-        var perAccount = multiAccountOptions.Value.Enabled && accountContext.IsResolved;
+        // Saas → a per-account job id + runner (backs up the active account's
+        // tenant DB). Single-tenant topologies → the single job running BackupJob directly.
+        var perAccount = deploymentOptions.Topology == DeploymentTopology.Saas
+            && accountContext.IsResolved;
         var jobId = perAccount
             ? $"{BackupJob.RecurringJobId}:{accountContext.CurrentAccountId}"
             : BackupJob.RecurringJobId;

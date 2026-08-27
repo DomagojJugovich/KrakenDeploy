@@ -1,4 +1,4 @@
-namespace KrakenDeploy.Server.Core.Domain.Security;
+﻿namespace KrakenDeploy.Server.Core.Domain.Security;
 
 /// <summary>
 /// Evicts cached per-account OIDC scheme + options state when an
@@ -11,7 +11,7 @@ namespace KrakenDeploy.Server.Core.Domain.Security;
 /// acceptable, so an edit must evict the stale entry. The no-op default (registered
 /// by <c>AddKrakenDeployData</c>) preserves single-instance behaviour, where the
 /// static startup registration already implies "restart to apply". The Server
-/// replaces it with a real evictor when <c>MultiAccount:Enabled</c> is set.
+/// replaces it with a real evictor under <c>Deployment:Topology=Saas</c>.
 /// </para>
 /// </summary>
 public interface IOidcSchemeCacheInvalidator

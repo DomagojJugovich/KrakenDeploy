@@ -1,4 +1,4 @@
-namespace KrakenDeploy.ControlPlane.Releases;
+namespace KrakenDeploy.Platform.Releases;
 
 /// <summary>
 /// The pure drain-and-retire rule (docs/blue-green-slot-deployment.md §9),

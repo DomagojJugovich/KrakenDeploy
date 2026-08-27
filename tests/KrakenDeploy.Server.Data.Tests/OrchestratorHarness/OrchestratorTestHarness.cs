@@ -82,7 +82,10 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         EngineOptions? engineOptions = null,
         // E2: shorten the in-flight lease-renewal interval so a lease-loss
         // teardown test fires in milliseconds instead of the production minute.
-        TimeSpan? leaseRenewInterval = null)
+        TimeSpan? leaseRenewInterval = null,
+        // BG1 item 10: the worker's drain claim gate. Null (the default)
+        // mirrors the OnPrem topology — gate off.
+        KrakenDeploy.Platform.Releases.ISlotDrainGuard? slotDrainGuard = null)
     {
         ArgumentNullException.ThrowIfNull(postgres);
         _postgres = postgres;
@@ -174,7 +177,8 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             // (wave deadline / disconnect grace scenarios).
             engineOptions:         Microsoft.Extensions.Options.Options.Create(
                                        _engineOptions),
-            logger:                NullLogger<DeploymentWorker>.Instance)
+            logger:                NullLogger<DeploymentWorker>.Instance,
+            slotDrainGuard:        slotDrainGuard)
         {
             LeaseRenewIntervalOverride = leaseRenewInterval,
             EngineSettingsOverride = _ => Task.FromResult(

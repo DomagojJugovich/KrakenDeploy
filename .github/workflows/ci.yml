@@ -12,6 +12,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # BG1/T10 layer 2 — storage-schema package watch: a bump of a package that
+  # OWNS an on-disk storage schema (Hangfire.PostgreSql migrates the shared
+  # `hangfire` schema in place; an EF/Npgsql MAJOR can change migration SQL
+  # semantics) is a stop-the-world event for blue-green installs, because a
+  # slot boot never auto-migrates shared storage (PrepareSchemaIfNecessary=false)
+  # and `database upgrade` refuses it while another release is live. This job
+  # makes that knowledge unmissable at REVIEW time: a PR touching those lines in
+  # Directory.Packages.props fails unless its title or a commit message carries
+  # the literal token [stop-the-world] — acknowledging the release notes must
+  # declare a stop window.
+  storage-package-watch:
+    name: Storage-schema package watch
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Flag storage-schema-owning package bumps
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          WATCH='Hangfire\.PostgreSql|Hangfire\.AspNetCore|Npgsql|Microsoft\.EntityFrameworkCore'
+          changed=$(git diff "$BASE_SHA".."$HEAD_SHA" -- Directory.Packages.props \
+            | grep -E '^[+-].*PackageVersion' | grep -E "$WATCH" || true)
+          if [ -z "$changed" ]; then
+            echo "No storage-schema-owning package changes."
+            exit 0
+          fi
+          echo "Storage-schema-owning package lines changed:"
+          echo "$changed"
+          if echo "$PR_TITLE" | grep -qF '[stop-the-world]' \
+             || git log --format=%B "$BASE_SHA".."$HEAD_SHA" | grep -qF '[stop-the-world]'; then
+            echo "::warning::Storage-schema package bump acknowledged as [stop-the-world] — release notes must declare the stop window (docs/on-prem-guide.md, non-additive runbook)."
+            exit 0
+          fi
+          echo "::error::This PR bumps a storage-schema-owning package (Hangfire.PostgreSql / Hangfire.AspNetCore / Npgsql / EF Core). For blue-green installs that is a STOP-THE-WORLD upgrade event (BG1/T4/T10): slot boots never auto-migrate shared storage, and 'database upgrade' will refuse while another release is live. Acknowledge it by putting the literal token [stop-the-world] in the PR title or a commit message, and declare the stop window in the release notes."
+          exit 1
+
   build-and-test:
     name: Build & Test / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -91,19 +135,18 @@ jobs:
       # (a separate job runs on a fresh runner with no Docker cache, doubling the
       # ~image build cost). Each script tears its own compose stack down on exit.
       #
-      # KNOWN RED — non-blocking on purpose, together with the blue-green step
-      # below. BOTH stacks set MultiAccount__Enabled, and Program.cs fails fast on
-      # it: "Envelope encryption (M13.D.2) does not yet support
-      # MultiAccount:Enabled" — the server exits at boot, so the health probe just
-      # runs out its window ("did not become healthy in time" is the SYMPTOM, not
-      # a flake). Unblocked only by per-account DEK/KEK (WP12, inside D5-FOLD —
-      # POST-go-live). Without continue-on-error this step aborted the whole job,
-      # so the blue-green smoke never ran at all and main sat permanently red,
-      # hiding real regressions in the single-instance smoke and both test legs.
-      # Both steps still surface as red annotations on every run.
-      # REMOVE both continue-on-error lines when WP12 lands (it is in WP12's
-      # acceptance criteria) — otherwise a genuinely fixed SaaS path looks
-      # identical to a broken one.
+      # KNOWN RED — non-blocking on purpose. The stack runs Deployment__Topology=
+      # Saas, and Program.cs fails fast on it: "Envelope encryption (M13.D.2)
+      # does not yet support Deployment:Topology=Saas" — the server exits at
+      # boot, so the health probe just runs out its window ("did not become
+      # healthy in time" is the SYMPTOM, not a flake). Unblocked only by
+      # per-account DEK/KEK (WP12, inside D5-FOLD — POST-go-live). Without
+      # continue-on-error this step would abort the whole job, hiding real
+      # regressions in the other smokes. It still surfaces as a red annotation
+      # on every run. REMOVE this continue-on-error when WP12 lands (it is in
+      # WP12's acceptance criteria) — the blue-green step below no longer
+      # carries one: BG1 re-keyed it to Topology=OnPremBlueGreen, where the DEK
+      # is single-instance and the smoke passes.
       - name: Run smoke test (multi-account SaaS)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         continue-on-error: true
@@ -114,15 +157,11 @@ jobs:
       # (docs/blue-green-slot-deployment.md §8). Reuses the server image layers
       # built above; adds only the small router image.
       #
-      # KNOWN RED for the SAME root cause as the multi-account step above, and
-      # non-blocking for the same reason. Blue-green is multi-account-only BY
-      # DESIGN (decision D-bg-5: single-node installs upgrade stop → migrate →
-      # start; ReleaseRegistry lives in the ControlPlane catalog, which
-      # Program.cs only wires up under MultiAccount, and `releases flip/retire`
-      # refuses with exit 1 without it). So this stack MUST set
-      # MultiAccount__Enabled and therefore MUST hit the M13.D.2 DEK fail-fast —
-      # it cannot be made to pass by reconfiguring it. WP12 unblocks both.
+      # GREEN AND BLOCKING (BG1/T8): the stack runs the ON-PREM blue-green
+      # topology (Deployment__Topology=OnPremBlueGreen — registry + router on
+      # KrakenDb's `platform` schema, no multi-account config, no catalog), so
+      # the M13.D.2 DEK fail-fast no longer applies. A failure here fails the
+      # push — do NOT re-add continue-on-error; fix the regression.
       - name: Run smoke test (blue-green slot router)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        continue-on-error: true
         run: bash scripts/smoke-bluegreen.sh

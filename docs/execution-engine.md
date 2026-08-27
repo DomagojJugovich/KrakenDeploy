@@ -906,7 +906,13 @@ changed in the engine:
   `AgentReconnectPolicy.cs`
 - Domain: `src/KrakenDeploy.Server.Core/Domain/Deployments/ServerTask.cs`,
   `Domain/Processes/ProcessStep.cs`
-- Related docs: `docs/output-variables.md` (output-variable contract)
+- Related docs: `docs/output-variables.md` (output-variable contract);
+  `docs/blue-green-slot-deployment.md` §12 (BG1 — the blue-green drain claim
+  gate: a Draining release's worker pre-checks `ISlotDrainGuard` before every
+  `TryClaimAsync`/`TryResumeAsync` and refuses with `DrainBlocked`, children of
+  a claimed parent exempt via `ServerTaskLease.IsContinuationOfClaimedParent`;
+  the maintenance CREATION refusal lives in `DeploymentService.CreateAsync` +
+  `RunbookService.TriggerAsync`)
 
 ## History
 

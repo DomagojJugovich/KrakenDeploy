@@ -140,7 +140,7 @@ public static class HangfireJobRegistrar
     /// Re-using the ids means <c>AddOrUpdate</c> REPLACES any stale single-tenant
     /// schedule persisted by an earlier single-tenant run — so they stop firing
     /// without an account. Call this instead of <see cref="RegisterRecurringJobs"/>
-    /// when <c>MultiAccount:Enabled</c> is set.
+    /// when <c>Deployment:Topology</c> is <c>Saas</c>.
     /// </summary>
     public static void RegisterPerAccountRecurringJobs()
     {
@@ -165,18 +165,24 @@ public static class HangfireJobRegistrar
         Fanout<SubscriptionPollerJob>(SubscriptionPollerJob.RecurringJobId, Cron.Minutely());
         Fanout<EmailDigestFlushJob>(EmailDigestFlushJob.RecurringJobId, Cron.Minutely());
         Fanout<RetentionSweepJob>(RetentionSweepJob.RecurringJobId, Cron.Daily(3, 30));
+    }
 
-        // Blue-green drain-watcher — PLATFORM-global, not a per-account fan-out:
-        // it reads the control-plane release registry and probes slot instances
-        // over HTTP (no tenant DB). Retires a Draining release once its slots
-        // report zero circuits + zero in-flight work (§5/§9 of the design).
-        // Every slot instance registers this same id against the shared catalog
-        // Hangfire storage, so it runs once per minute fleet-wide regardless of
-        // which instance picks it up.
-        RecurringJob.AddOrUpdate<KrakenDeploy.ControlPlane.Releases.ReleaseDrainWatcher>(
+    /// <summary>
+    /// Blue-green drain-watcher — PLATFORM-global, never a per-account fan-out:
+    /// it reads the release registry and probes slot instances over HTTP (no
+    /// tenant DB). Retires a Draining release once its slots report zero circuits
+    /// + zero in-flight work (§5/§9 of the design). Every slot instance registers
+    /// this same id against the shared Hangfire storage, so it runs once per
+    /// minute fleet-wide regardless of which instance picks it up. Registered
+    /// under both blue-green topologies (BG1 item 4) IN ADDITION to the
+    /// topology's regular job set.
+    /// </summary>
+    public static void RegisterReleaseDrainWatch()
+    {
+        RecurringJob.AddOrUpdate<KrakenDeploy.Platform.Releases.ReleaseDrainWatcher>(
             "kraken.release-drain-watch",
             watcher => watcher.ExecuteAsync(CancellationToken.None),
             Cron.Minutely(),
-            new RecurringJobOptions { TimeZone = utc });
+            new RecurringJobOptions { TimeZone = TimeZoneInfo.Utc });
     }
 }

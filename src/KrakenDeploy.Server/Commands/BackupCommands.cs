@@ -1,6 +1,7 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.Server.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
@@ -42,7 +43,13 @@ internal static class BackupCommands
         }
 
         var builder = CliHost.CreateBuilder(contentRoot);
-        var multiAccount = builder.Configuration.GetValue("MultiAccount:Enabled", false);
+        var topology = CliHost.ResolveTopologyOrError(builder.Configuration);
+        if (topology is null)
+        {
+            return 1;
+        }
+
+        var multiAccount = topology == DeploymentTopology.Saas;
         var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
 
         string connectionString;

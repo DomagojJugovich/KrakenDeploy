@@ -2,7 +2,9 @@
 # Blue-green slot-deployment smoke test (docs/blue-green-slot-deployment.md).
 # ---------------------------------------------------------------------------
 # Boots one app-node slice — the slot ROUTER + two real server instances
-# ("releases" rel-a / rel-b) over one shared catalog + tenant DB set — and
+# ("releases" rel-a / rel-b) over ONE shared KrakenDb, under the ON-PREM
+# blue-green topology (BG1: Deployment__Topology=OnPremBlueGreen, release
+# registry in KrakenDb's `platform` schema, NO multi-account config) — and
 # walks the §8 runbook, asserting the routing contract at every step:
 #
 #   1. cookieless request → default release (rel-a), version cookie issued;
@@ -21,7 +23,6 @@ COMPOSE_FILE="docker-compose.smoke-bluegreen.yml"
 # docker-compose.yml stack or the other smokes.
 COMPOSE="docker compose -p krakendeploy-smoke-bg -f $COMPOSE_FILE"
 BASE="http://localhost:8080"
-HOST_HEADER="Host: acme.kraken.local"
 TIMEOUT_SEC=240
 
 cleanup() {
@@ -33,7 +34,7 @@ trap cleanup EXIT
 
 # Fetch response headers for a GET (drop the body).
 headers() { # $@ = extra curl args
-    curl -s -D - -o /dev/null -H "$HOST_HEADER" "$@"
+    curl -s -D - -o /dev/null "$@"
 }
 
 # Extract a header value (case-insensitive name, trimmed). Emits nothing when
@@ -78,8 +79,12 @@ echo ""
 echo "[1/8] Building images..."
 $COMPOSE build --quiet
 
-echo "[2/8] Starting Postgres + slot-a (seeds catalog + demo accounts)..."
-$COMPOSE up -d postgres slot-a
+echo "[2/8] Initialising the database (kraken-init's job: app schema + platform"
+echo "      schema + Hangfire schema — a blue-green slot boot prepares NONE of"
+echo "      these), then starting slot-a..."
+$COMPOSE up -d postgres
+$COMPOSE run --rm -T slot-a database setup
+$COMPOSE up -d slot-a
 wait_healthy slot-a
 
 echo "[3/8] Registering release rel-a (slot 1) and flipping the default to it..."
@@ -116,7 +121,7 @@ case "$metrics_b" in
     *) echo "ERROR: slot-b slot-metrics unexpected: $metrics_b"; exit 1 ;;
 esac
 # ...and the router must REFUSE to forward it (internet-facing surface).
-metrics_code=$(curl -s -o /dev/null -w '%{http_code}' -H "$HOST_HEADER" "$BASE/slot-metrics")
+metrics_code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/slot-metrics")
 if [ "$metrics_code" != "404" ]; then
     echo "ERROR: router should refuse /slot-metrics (expected 404, got $metrics_code)."; exit 1
 fi

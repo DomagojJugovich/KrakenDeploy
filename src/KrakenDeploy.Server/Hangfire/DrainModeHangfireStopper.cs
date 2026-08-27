@@ -1,4 +1,4 @@
-using KrakenDeploy.ControlPlane.Releases;
+using KrakenDeploy.Platform.Releases;
 
 namespace KrakenDeploy.Server.Hangfire;
 
@@ -12,12 +12,12 @@ namespace KrakenDeploy.Server.Hangfire;
 /// Hangfire) and finishes naturally per §9.
 /// <para>
 /// One-way by design: a release that started draining never becomes the default
-/// again (registry invariant), so there is nothing to restart. Registered in
-/// multi-account mode only.
+/// again (registry invariant), so there is nothing to restart. Registered under
+/// the blue-green topologies only (Saas and OnPremBlueGreen — BG1).
 /// </para>
 /// </summary>
 public sealed class DrainModeHangfireStopper(
-    SlotDrainGuard drainGuard,
+    ISlotDrainGuard drainGuard,
     IServiceProvider services,
     ILogger<DrainModeHangfireStopper> logger) : BackgroundService
 {

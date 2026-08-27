@@ -1,5 +1,6 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using KrakenDeploy.Server.Core.Domain.Licensing;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data;
@@ -81,12 +82,12 @@ public static class OidcRegistrar
     /// </summary>
     public static void RegisterSchemes(WebApplicationBuilder builder, SsrfPolicy oidcSsrfPolicy)
     {
-        // Multi-account: external IdPs are per-tenant (each account's own DB), so they
+        // Saas: external IdPs are per-tenant (each account's own DB), so they
         // cannot be registered as process-wide startup schemes — a scheme is global,
         // tenants/IdPs added after startup wouldn't be picked up, and the startup query
         // has no resolved account. Per-account SSO is a separate Phase-4 design (central
         // auth domain / per-account customer SSO). Skip global registration here.
-        if (builder.Configuration.GetValue("MultiAccount:Enabled", false))
+        if (DeploymentTopologyResolver.Resolve(builder.Configuration) == DeploymentTopology.Saas)
         {
             return;
         }

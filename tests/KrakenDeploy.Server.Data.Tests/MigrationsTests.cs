@@ -33,6 +33,43 @@ public class MigrationsTests(PostgresFixture postgres) : IClassFixture<PostgresF
     }
 
     [Fact]
+    public void PlatformRelease_model_has_no_pending_changes_against_snapshot()
+    {
+        // BG1/T3: the release registry's OnPremBlueGreen shape (platform schema).
+        var options = new DbContextOptionsBuilder<KrakenDeploy.Platform.PlatformReleaseDbContext>()
+            .UseNpgsql(postgres.ConnectionString, npgsql => npgsql.MigrationsHistoryTable(
+                KrakenDeploy.Platform.PlatformReleaseSchema.MigrationsHistoryTableName,
+                KrakenDeploy.Platform.PlatformReleaseSchema.OnPremSchemaName))
+            .UseSnakeCaseNamingConvention()
+            .Options;
+        using var context = new KrakenDeploy.Platform.PlatformReleaseDbContext(
+            options,
+            new KrakenDeploy.Platform.PlatformReleaseSchema(
+                KrakenDeploy.Platform.PlatformReleaseSchema.OnPremSchemaName));
+
+        context.Database.HasPendingModelChanges().Should().BeFalse(
+            because: "PlatformReleaseDbContext's model and its migration snapshot must stay " +
+                     "in sync — if this fails, regenerate the InitialPlatform snapshot/designer.");
+    }
+
+    [Fact]
+    public void Catalog_model_has_no_pending_changes_against_snapshot()
+    {
+        // BG1/T3 removed app_releases/platform_settings from the catalog MODEL
+        // (ownership moved to PlatformReleaseDbContext; the physical tables stay) —
+        // this pins that the hand-edited snapshot matches the model.
+        var options = new DbContextOptionsBuilder<KrakenDeploy.ControlPlane.Catalog.CatalogDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .UseSnakeCaseNamingConvention()
+            .Options;
+        using var context = new KrakenDeploy.ControlPlane.Catalog.CatalogDbContext(options);
+
+        context.Database.HasPendingModelChanges().Should().BeFalse(
+            because: "CatalogDbContext's model and its migration snapshot must stay in sync — " +
+                     "if this fails, run `dotnet ef migrations add <Name>` for the catalog.");
+    }
+
+    [Fact]
     public async Task Project_roundtrips_with_audit_timestamps_set_by_interceptor()
     {
         await using var context = postgres.CreateContext();

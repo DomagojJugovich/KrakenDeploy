@@ -1,4 +1,5 @@
-using System.Net;
+﻿using System.Net;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Net;
@@ -15,7 +16,8 @@ namespace KrakenDeploy.Server.Data.Services;
 public sealed class EffectiveSettingsService(
     SettingsService settings,
     IConfiguration configuration,
-    IEncryptionService encryption)
+    IEncryptionService encryption,
+    DeploymentOptions deploymentOptions)
 {
     public async Task<EffectiveEngineSettings> GetEngineAsync(CancellationToken ct = default)
     {
@@ -258,7 +260,11 @@ public sealed class EffectiveSettingsService(
             : configuration[key] is not null;
     }
 
-    private bool IsMultiAccount => configuration.GetValue("MultiAccount:Enabled", false);
+    // BG1/T2: keyed on the topology, not the removed MultiAccount:Enabled config
+    // key (a config still carrying that key fails boot). The concern is TENANCY —
+    // under Saas one tenant must not change process-wide policy — so only Saas
+    // makes host-wide settings configuration-only.
+    private bool IsMultiAccount => deploymentOptions.Topology == DeploymentTopology.Saas;
 
     private void EnsureHostSettingsEditable()
     {

@@ -1,8 +1,8 @@
-namespace KrakenDeploy.ControlPlane.Catalog;
+namespace KrakenDeploy.Platform.Releases;
 
 /// <summary>
 /// A platform application release deployed to one blue-green <b>slot</b>
-/// (docs/blue-green-slot-deployment.md §2/§4). Control-plane scope — one row per
+/// (docs/blue-green-slot-deployment.md §2/§4). Platform scope — one row per
 /// known release of the KrakenDeploy monolith itself. Deliberately named
 /// <c>AppRelease</c>: the tenant domain already has a <c>Release</c> entity
 /// (a project's release), which is entirely unrelated.

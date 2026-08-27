@@ -1,5 +1,5 @@
-using FluentAssertions;
-using KrakenDeploy.ControlPlane.Releases;
+﻿using FluentAssertions;
+using KrakenDeploy.Platform.Releases;
 
 namespace KrakenDeploy.Server.Data.Tests;
 

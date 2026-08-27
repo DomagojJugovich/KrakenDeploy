@@ -37,6 +37,13 @@ public sealed class MaintenanceMiddlewareTests
     [InlineData("/s/acme/configuration/settings",      true, "space-prefixed for a named account")]
     // ── Non-exempt paths (will be blocked for non-bypass callers) ──
     [InlineData("/api/projects",                       false)]
+    // BG1/T13: the REST creation routes are NOT exempt — a non-bypass caller is
+    // 503'd here; a BypassMaintenance caller passes the middleware and is then
+    // refused by the unconditional service-layer gate (see
+    // MaintenanceCreationRefusalTests in Server.Data.Tests).
+    [InlineData("/api/deployments",                    false, "REST deployment creation stays gated")]
+    [InlineData("/api/runbooks/abc/runs",              false, "REST runbook trigger stays gated")]
+    [InlineData("/mcp",                                false, "MCP mutations (incl. ad-hoc dispatch) stay middleware-gated — T13")]
     [InlineData("/api/audit/export.csv",               false, "audit export is GET so the middleware skips on method anyway, but path-wise non-exempt")]
     [InlineData("/configuration/users",                false)]
     [InlineData("/s/acme/configuration/users",         false, "space-prefixed non-exempt stays blocked")]

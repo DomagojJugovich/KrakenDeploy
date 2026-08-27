@@ -25,13 +25,18 @@
             bypass automatically.
         </li>
         <li>
-            <strong>No new deployment or runbook run starts.</strong> Tasks
-            already queued — including scheduled ones whose time arrives
-            during the window — stay <code>Queued</code> instead of draining,
-            and start on their own once you disable maintenance. Note this
-            gate is <em>not</em> subject to <code>BypassMaintenance</code>:
-            queueing a task is blocked for nobody, but starting one is
-            blocked for everybody.
+            <strong>No new deployment or runbook run is created or starts.</strong>
+            Creating one is refused at the service layer on every surface (UI,
+            REST, MCP, CLI) — this refusal is <em>not</em> subject to
+            <code>BypassMaintenance</code>; only a child task spawned by an
+            in-flight parent deployment may still be created. Tasks already
+            queued — including scheduled ones whose time arrives during the
+            window — stay <code>Queued</code> instead of draining, and start on
+            their own once you disable maintenance; the claim gate is likewise
+            not bypassable. <strong>Run preparation runbooks before enabling
+            maintenance</strong> — runbooks have zero escape hatch during the
+            window. Ad-hoc sessions stay available from the UI for mid-window
+            diagnostics.
         </li>
         <li>
             The backup, subscription-poller and digest-flush jobs pause.

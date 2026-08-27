@@ -55,7 +55,10 @@ services:
       ConnectionStrings__KrakenDb: "Host=postgres;Port=5432;Database=postgres;Username=postgres;Password=postgres"
       ConnectionStrings__Catalog: "Host=postgres;Port=5432;Database=krakendeploy_catalog;Username=postgres;Password=postgres"
       ConnectionStrings__ShardAdmin: "Host=postgres;Port=5432;Database=postgres;Username=postgres;Password=postgres"
-      MultiAccount__Enabled: "true"
+      # BG1/T2: Topology=Saas replaced MultiAccount__Enabled (the old key now
+      # fails boot with a named migration message). This smoke stays advisory-red
+      # until WP12's per-account DEK lands — the M13.D.2 fail-fast is the blocker.
+      Deployment__Topology: "Saas"
       MultiAccount__BaseDomain: "kraken.local"
       Agent__JwtSigningKey: "smoke-test-only-jwt-signing-key-at-least-32-characters-!"
       # FileSecretStore + local artifact/package storage write under Server:DataPath.

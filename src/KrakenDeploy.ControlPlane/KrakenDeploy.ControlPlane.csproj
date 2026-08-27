@@ -27,6 +27,9 @@
          provisioner and fleet migrator drive; Server.Core for IAccountContext. -->
     <ProjectReference Include="..\KrakenDeploy.Server.Core\KrakenDeploy.Server.Core.csproj" />
     <ProjectReference Include="..\KrakenDeploy.Server.Data\KrakenDeploy.Server.Data.csproj" />
+    <!-- Blue-green release registry (PlatformReleaseDbContext + ReleaseRegistry);
+         under Saas it points at the catalog connection (BG1/T3). -->
+    <ProjectReference Include="..\KrakenDeploy.Platform\KrakenDeploy.Platform.csproj" />
   </ItemGroup>
 
   <ItemGroup>

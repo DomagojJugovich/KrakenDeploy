@@ -1,5 +1,6 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Data.Net;
 using KrakenDeploy.Server.Data.Services;
@@ -251,13 +252,16 @@ public sealed class EffectiveSettingsServiceTests(PostgresFixture postgres)
         recorder.BearerTokens.Should().Equal("first-token", "second-token", null);
     }
 
-    private EffectiveSettingsService NewService(Dictionary<string, string?> values)
+    private EffectiveSettingsService NewService(
+        Dictionary<string, string?> values,
+        DeploymentTopology topology = DeploymentTopology.OnPrem)
     {
         var config = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
         return new EffectiveSettingsService(
             new SettingsService(postgres.ScopeFactory, TimeProvider.System),
             config,
-            TestCrypto.Service(Base64Key));
+            TestCrypto.Service(Base64Key),
+            new DeploymentOptions { Topology = topology });
     }
 
     private static CatalogSettingsUpdate SampleCatalogUpdate() => new()
@@ -277,6 +281,46 @@ public sealed class EffectiveSettingsServiceTests(PostgresFixture postgres)
             },
         ],
     };
+
+    // ── BG1/T2: the host-settings tenancy gate keys on the TOPOLOGY ──────────
+    //
+    // F3 made host-wide Engine/operational/SSRF settings configuration-only under
+    // multi-account ("one tenant cannot change process-wide policy"). BG1 re-keyed
+    // that check from the removed MultiAccount:Enabled config value to
+    // DeploymentOptions.Topology, so these pin the mapping — a silent regression
+    // here would either let a tenant rewrite process-wide policy (Saas) or lock an
+    // on-prem operator out of their own settings GUI.
+
+    [Theory]
+    [InlineData(DeploymentTopology.OnPrem)]
+    [InlineData(DeploymentTopology.OnPremBlueGreen)]
+    public async Task Host_settings_are_editable_under_the_single_tenant_topologies(
+        DeploymentTopology topology)
+    {
+        var service = NewService([], topology);
+
+        // Saves go through (no InvalidOperationException from the tenancy gate).
+        await service.SaveEngineAsync(new EngineSettings());
+        await service.SaveOperationalAsync(new OperationalSettings());
+        await service.SaveSsrfAsync(new SsrfSettings());
+    }
+
+    [Fact]
+    public async Task Host_settings_are_configuration_only_under_Saas()
+    {
+        var service = NewService([], DeploymentTopology.Saas);
+
+        var engine = () => service.SaveEngineAsync(new EngineSettings());
+        await engine.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*configuration-only*",
+                "under Saas one tenant must not change process-wide policy");
+
+        var operational = () => service.SaveOperationalAsync(new OperationalSettings());
+        await operational.Should().ThrowAsync<InvalidOperationException>();
+
+        var ssrf = () => service.SaveSsrfAsync(new SsrfSettings());
+        await ssrf.Should().ThrowAsync<InvalidOperationException>();
+    }
 
     private sealed class AuthorizationRecordingHandler : HttpMessageHandler
     {

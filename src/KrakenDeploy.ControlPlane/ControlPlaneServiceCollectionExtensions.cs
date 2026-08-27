@@ -1,8 +1,8 @@
-using KrakenDeploy.ControlPlane.Accounts;
+﻿using KrakenDeploy.ControlPlane.Accounts;
 using KrakenDeploy.ControlPlane.Catalog;
 using KrakenDeploy.ControlPlane.Provisioning;
-using KrakenDeploy.ControlPlane.Releases;
 using KrakenDeploy.ControlPlane.Secrets;
+using KrakenDeploy.Platform;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -16,7 +16,7 @@ public static class ControlPlaneServiceCollectionExtensions
     /// <summary>
     /// Registers the SaaS control plane: the catalog DbContext factory, the
     /// subdomain → account resolver (cached), the secret store, and the provisioning
-    /// + fleet-migration services. Call only when <c>MultiAccount:Enabled</c> is set;
+    /// + fleet-migration services. Call only when <c>Deployment:Topology</c> is <c>Saas</c>;
     /// the request pipeline (account context + middleware) is wired separately in the
     /// Server host.
     /// </summary>
@@ -53,21 +53,12 @@ public static class ControlPlaneServiceCollectionExtensions
         // own per-account scopes via IServiceScopeFactory.
         services.AddTransient<PerAccountRecurringJobRunner>();
 
-        // Blue-green release registry writes (register/flip/retire). TimeProvider
-        // via TryAdd so a host that already registered one (or a test fake) wins.
-        services.TryAddSingleton(TimeProvider.System);
-        services.AddScoped<ReleaseRegistry>();
-
-        // Drain-watcher (kraken.release-drain-watch): transient for Hangfire's
-        // activator; short-timeout named client for the /slot-metrics probes.
-        services.AddTransient<ReleaseDrainWatcher>();
-        // Own-release drain check (singleton: holds a 15s cache over the catalog).
-        services.AddSingleton<SlotDrainGuard>();
-        services.AddHttpClient(ReleaseDrainWatcher.HttpClientName, client =>
-        {
-            client.Timeout = TimeSpan.FromSeconds(5);
-            client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
-        });
+        // Blue-green release registry (register/flip/retire + drain watcher). Under
+        // Saas the two tables physically stay in the catalog (public schema, owned
+        // by the catalog migration chain) — the PlatformReleaseDbContext just maps
+        // them there (BG1/T3). TimeProvider via TryAdd inside so a host that
+        // already registered one (or a test fake) wins.
+        services.AddPlatformReleaseRegistry(catalogConnectionString, ownSchema: false);
 
         return services;
     }

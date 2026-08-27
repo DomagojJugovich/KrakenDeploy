@@ -1,3 +1,5 @@
+using KrakenDeploy.Platform;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Identity;
@@ -12,6 +14,14 @@ namespace KrakenDeploy.Server.Commands;
 /// <summary>
 /// CLI subcommands rooted at <c>database</c>. Invoked by <see cref="Program.Main"/>
 /// when the first argument is <c>database</c>; the web server is not started.
+/// <para>
+/// <c>setup</c> (first install) and <c>upgrade</c> (new release over an existing
+/// database) run the same idempotent body: the non-additive guard (BG1/T4), the
+/// app-schema migrations, the platform-schema migrations (OnPremBlueGreen), the
+/// Hangfire schema (blue-green topologies — slot boot never touches it), and the
+/// seeders. They exist as two verbs so runbooks and error messages can name the
+/// intent.
+/// </para>
 /// </summary>
 internal static class DatabaseCommands
 {
@@ -26,7 +36,8 @@ internal static class DatabaseCommands
         return args[0] switch
         {
             "create" => await CreateAsync(args.AsSpan(1).ToArray()).ConfigureAwait(false),
-            "setup" => await SetupAsync(args.AsSpan(1).ToArray(), contentRoot).ConfigureAwait(false),
+            "setup" => await SetupAsync(args.AsSpan(1).ToArray(), contentRoot, verb: "setup").ConfigureAwait(false),
+            "upgrade" => await SetupAsync(args.AsSpan(1).ToArray(), contentRoot, verb: "upgrade").ConfigureAwait(false),
             "status" => await StatusAsync(args.AsSpan(1).ToArray(), contentRoot).ConfigureAwait(false),
             "--help" or "-h" or "help" => PrintTopLevelUsage(success: true),
             _ => UnknownSubcommand(args[0])
@@ -102,10 +113,12 @@ internal static class DatabaseCommands
         }
     }
 
-    private static async Task<int> SetupAsync(string[] args, string contentRoot)
+    private static async Task<int> SetupAsync(string[] args, string contentRoot, string verb)
     {
         string? connectionString = null;
         string? account = null;
+        string? topologyArg = null;
+        var stopTheWorld = args.Contains("--stop-the-world");
 
         for (var i = 0; i < args.Length - 1; i++)
         {
@@ -117,11 +130,24 @@ internal static class DatabaseCommands
             {
                 account = args[i + 1];
             }
+            else if (args[i] == "--topology")
+            {
+                topologyArg = args[i + 1];
+            }
         }
 
+        var topologyBuilder = CliHost.CreateBuilder(contentRoot);
+        var resolvedTopology = ResolveSetupTopology(topologyBuilder.Configuration, topologyArg, verb);
+        if (resolvedTopology is null)
+        {
+            return 1; // the resolver already printed the reason
+        }
+
+        var topology = resolvedTopology.Value;
+
         // An explicit --connection-string wins in any mode (operator names the exact
-        // DB). Otherwise resolve per mode: single-instance → KrakenDb; multi-account →
-        // the tenant named by --account. NOTE: in multi-account, tenant schemas are
+        // DB). Otherwise resolve per mode: single-tenant topologies → KrakenDb; Saas →
+        // the tenant named by --account. NOTE: under Saas, tenant schemas are
         // normally migrated by provisioning / fleet-migrate — this is the manual
         // per-tenant escape hatch, not the primary path.
         if (connectionString is null)
@@ -139,6 +165,18 @@ internal static class DatabaseCommands
         try
         {
             var builder = CliHost.CreateBuilder(contentRoot);
+
+            // BG1/T4 — non-additive guard, BEFORE anything migrates: a
+            // [StopTheWorld]-marked pending migration (or a pending Hangfire
+            // storage upgrade) is refused while the release registry shows
+            // another live release, unless --stop-the-world asserts the
+            // documented full-stop runbook was followed.
+            if (!await NonAdditiveUpgradeGuard.AllowAsync(
+                    topology, connectionString, builder.Configuration, stopTheWorld)
+                .ConfigureAwait(false))
+            {
+                return 1;
+            }
             // Register envelope encryption (KEK from config) so AddKrakenDeployData
             // services (VariableService, IdentityProviderService, etc.) can resolve
             // IEncryptionService. The DEK is generated + wrapped under this KEK
@@ -182,6 +220,45 @@ internal static class DatabaseCommands
             await db.Database.MigrateAsync().ConfigureAwait(false);
             Console.WriteLine("done.");
 
+            if (topology == DeploymentTopology.OnPremBlueGreen)
+            {
+                // BG1/T3: the release registry lives in KrakenDb under the
+                // dedicated `platform` schema with its OWN history table — this
+                // command is its only migration path (never slot boot).
+                Console.Write("Applying platform-schema migrations (release registry)... ");
+                var platformOptions = new DbContextOptionsBuilder<PlatformReleaseDbContext>()
+                    .UseNpgsql(connectionString, npgsql => npgsql.MigrationsHistoryTable(
+                        PlatformReleaseSchema.MigrationsHistoryTableName,
+                        PlatformReleaseSchema.OnPremSchemaName))
+                    .UseSnakeCaseNamingConvention()
+                    .Options;
+                await using (var platformDb = new PlatformReleaseDbContext(
+                    platformOptions,
+                    new PlatformReleaseSchema(PlatformReleaseSchema.OnPremSchemaName)))
+                {
+                    await platformDb.Database.MigrateAsync().ConfigureAwait(false);
+                }
+
+                Console.WriteLine("done.");
+            }
+
+            if (topology != DeploymentTopology.OnPrem)
+            {
+                // BG1/T4: slot boot has PrepareSchemaIfNecessary=false in the
+                // blue-green topologies, so this command owns the SHARED Hangfire
+                // schema (guard above already version-checked it against live
+                // releases). Saas keeps the job store in the catalog.
+                var hangfireConnection = topology == DeploymentTopology.Saas
+                    ? builder.Configuration.GetConnectionString("Catalog")
+                    : connectionString;
+                if (!string.IsNullOrWhiteSpace(hangfireConnection))
+                {
+                    Console.Write("Ensuring Hangfire storage schema... ");
+                    HangfireSchemaInspector.EnsureSchema(hangfireConnection);
+                    Console.WriteLine("done.");
+                }
+            }
+
             // Envelope encryption: generate + cache the wrapped DEK (idempotent).
             // This is the real prod first-boot path — the web host's prod branch
             // does not migrate/seed.
@@ -215,14 +292,122 @@ internal static class DatabaseCommands
             Console.WriteLine("done.");
 
             Console.WriteLine();
-            Console.WriteLine("Database setup complete.");
+            Console.WriteLine($"Database {verb} complete.");
             return 0;
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Setup failed: {ex.Message}");
+            Console.Error.WriteLine($"{(verb == "upgrade" ? "Upgrade" : "Setup")} failed: {ex.Message}");
             return 1;
         }
+    }
+
+    /// <summary>
+    /// Topology selection for <c>setup</c>/<c>upgrade</c> (BG1 item 6 — the
+    /// kraken-init prompt). Precedence:
+    /// <list type="number">
+    /// <item>Configured <c>Deployment:Topology</c> — authoritative. An explicit
+    /// <c>--topology</c> that CONTRADICTS it is refused (the flag cannot silently
+    /// diverge from what the server will boot with).</item>
+    /// <item><c>--topology &lt;value&gt;</c> — the non-interactive install path
+    /// (kraken-init in docker-compose has no TTY).</item>
+    /// <item>An interactive prompt (default OnPrem) when stdin is a terminal.</item>
+    /// <item>OnPrem otherwise.</item>
+    /// </list>
+    /// </summary>
+    private static DeploymentTopology? ResolveSetupTopology(
+        Microsoft.Extensions.Configuration.ConfigurationManager configuration,
+        string? topologyArg,
+        string verb)
+    {
+        var configured = CliHost.ResolveTopologyOrError(configuration);
+        if (configured is null)
+        {
+            return null; // stale MultiAccount:Enabled or invalid value — already printed
+        }
+
+        var configuredExplicitly =
+            !string.IsNullOrWhiteSpace(configuration[DeploymentOptions.TopologyKey]);
+
+        DeploymentTopology? fromArg = null;
+        if (topologyArg is not null)
+        {
+            if (!Enum.TryParse<DeploymentTopology>(topologyArg, ignoreCase: true, out var parsed)
+                || !Enum.IsDefined(parsed))
+            {
+                Console.Error.WriteLine(
+                    $"--topology has the unrecognised value '{topologyArg}'. " +
+                    $"Valid values: {string.Join(" | ", Enum.GetNames<DeploymentTopology>())}.");
+                return null;
+            }
+
+            fromArg = parsed;
+        }
+
+        if (configuredExplicitly)
+        {
+            if (fromArg is not null && fromArg != configured)
+            {
+                Console.Error.WriteLine(
+                    $"--topology {fromArg} contradicts the configured " +
+                    $"{DeploymentOptions.TopologyKey}={configured}. The configuration is what the " +
+                    "server boots with — change Deployment__Topology there instead.");
+                return null;
+            }
+
+            return configured;
+        }
+
+        if (fromArg is not null)
+        {
+            PrintTopologyChoice(fromArg.Value);
+            return fromArg;
+        }
+
+        // Nothing configured, no flag. Prompt when a human is attached; otherwise
+        // default to OnPrem exactly like the server boot would.
+        if (verb == "setup" && !Console.IsInputRedirected)
+        {
+            Console.WriteLine("Deployment topology (Deployment:Topology) is not configured. Choose one:");
+            Console.WriteLine("  1) OnPrem          — single instance; upgrades are stop → migrate → start. (default)");
+            Console.WriteLine("  2) OnPremBlueGreen — 3 slots + router; zero-downtime rolling upgrades.");
+            Console.WriteLine("  3) Saas            — multi-account control plane (requires the catalog).");
+            Console.Write("Topology [1]: ");
+            var answer = Console.ReadLine()?.Trim();
+            var chosen = answer switch
+            {
+                null or "" or "1" => DeploymentTopology.OnPrem,
+                "2" => DeploymentTopology.OnPremBlueGreen,
+                "3" => DeploymentTopology.Saas,
+                _ => Enum.TryParse<DeploymentTopology>(answer, ignoreCase: true, out var byName)
+                        && Enum.IsDefined(byName)
+                    ? byName
+                    : DeploymentTopology.OnPrem,
+            };
+            PrintTopologyChoice(chosen);
+            return chosen;
+        }
+
+        return DeploymentTopology.OnPrem;
+    }
+
+    private static void PrintTopologyChoice(DeploymentTopology topology)
+    {
+        Console.WriteLine($"Topology: {topology}.");
+        if (topology == DeploymentTopology.OnPremBlueGreen)
+        {
+            Console.WriteLine(
+                "NOTE: OnPremBlueGreen commits you to ADDITIVE-ONLY migrations between live " +
+                "releases; a non-additive upgrade (a [StopTheWorld]-marked migration, or a " +
+                "Hangfire storage upgrade) needs a stop window — the stop-the-world runbook in " +
+                "docs/on-prem-guide.md. In exchange, ordinary upgrades are zero-downtime: " +
+                "register slot → health-check → flip → drain → retire.");
+        }
+
+        Console.WriteLine(
+            $"Persist it as Deployment__Topology={topology} (environment) or " +
+            $"\"Deployment\": {{ \"Topology\": \"{topology}\" }} (appsettings) — the server " +
+            "boots with the configured value, not with this command's choice.");
     }
 
     private static async Task<int> StatusAsync(string[] args, string contentRoot)
@@ -274,10 +459,13 @@ internal static class DatabaseCommands
         }
         else
         {
+            var types = NonAdditiveUpgradeGuard.GetMigrationTypes(db);
             Console.WriteLine($"Pending migrations ({pending.Count}):");
             foreach (var m in pending)
             {
-                Console.WriteLine($"  - {m}");
+                var marked = types.TryGetValue(m, out var type)
+                    && type.GetCustomAttributes(typeof(StopTheWorldAttribute), inherit: false).Length > 0;
+                Console.WriteLine($"  - {m}{(marked ? "  [StopTheWorld]" : "")}");
             }
         }
 
@@ -300,13 +488,18 @@ internal static class DatabaseCommands
         stream.WriteLine();
         stream.WriteLine("Subcommands:");
         stream.WriteLine("  create   Create the Postgres database (connects to 'postgres' maintenance db).");
-        stream.WriteLine("  setup    [--connection-string <cs> | --account <subdomain>]");
-        stream.WriteLine("           Apply migrations + seed data. Idempotent — safe on upgrades.");
+        stream.WriteLine("  setup    [--connection-string <cs> | --account <subdomain>] [--topology <t>] [--stop-the-world]");
+        stream.WriteLine("           First install: apply migrations + seed data. Idempotent.");
+        stream.WriteLine("  upgrade  [--connection-string <cs> | --account <subdomain>] [--stop-the-world]");
+        stream.WriteLine("           New release over an existing database — same idempotent body as setup.");
+        stream.WriteLine("           Blue-green topologies: refuses a [StopTheWorld]-marked pending migration");
+        stream.WriteLine("           (or a pending Hangfire storage upgrade) while another release is live;");
+        stream.WriteLine("           --stop-the-world overrides after the documented full-stop runbook.");
         stream.WriteLine("  status   [--account <subdomain>]");
-        stream.WriteLine("           Check connectivity and pending migrations.");
+        stream.WriteLine("           Check connectivity and pending migrations ([StopTheWorld] flagged).");
         stream.WriteLine();
-        stream.WriteLine("  In multi-account mode --account selects the tenant DB (there is no single");
-        stream.WriteLine("  KrakenDb); tenant schemas are normally migrated by provisioning / fleet-migrate.");
+        stream.WriteLine("  Under Deployment:Topology=Saas, --account selects the tenant DB (there is no");
+        stream.WriteLine("  single KrakenDb); tenant schemas are normally migrated by provisioning / fleet-migrate.");
         return success ? 0 : 1;
     }
 

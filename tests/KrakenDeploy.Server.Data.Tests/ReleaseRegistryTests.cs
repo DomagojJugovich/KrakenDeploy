@@ -1,6 +1,6 @@
-using FluentAssertions;
-using KrakenDeploy.ControlPlane.Catalog;
-using KrakenDeploy.ControlPlane.Releases;
+﻿using FluentAssertions;
+using KrakenDeploy.Platform;
+using KrakenDeploy.Platform.Releases;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Testcontainers.PostgreSql;
@@ -8,13 +8,15 @@ using Testcontainers.PostgreSql;
 namespace KrakenDeploy.Server.Data.Tests;
 
 /// <summary>
-/// Blue-green release-registry lifecycle against a real catalog database
+/// Blue-green release-registry lifecycle against a real database
 /// (docs/blue-green-slot-deployment.md §2/§4/§8): register → flip → drain →
 /// retire, plus the invariants that keep routing sane (one live release per
-/// slot, never retire the default, drained releases never come back).
+/// slot, never retire the default, drained releases never come back). Runs the
+/// OnPremBlueGreen shape (BG1/T3): PlatformReleaseDbContext in the `platform`
+/// schema with its own migrations-history table.
 /// </summary>
 [Trait("Category", "Docker")]
-public sealed class ReleaseRegistryTests : IAsyncLifetime, IDbContextFactory<CatalogDbContext>
+public sealed class ReleaseRegistryTests : IAsyncLifetime, IDbContextFactory<PlatformReleaseDbContext>
 {
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:16-alpine")
         .WithDatabase("kraken_catalog_test")
@@ -28,21 +30,24 @@ public sealed class ReleaseRegistryTests : IAsyncLifetime, IDbContextFactory<Cat
     public async Task InitializeAsync()
     {
         await _container.StartAsync();
-        await using var catalog = CreateDbContext();
-        await catalog.Database.MigrateAsync();
+        await using var db = CreateDbContext();
+        await db.Database.MigrateAsync();
         _registry = new ReleaseRegistry(
             this, TimeProvider.System, NullLogger<ReleaseRegistry>.Instance);
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
 
-    public CatalogDbContext CreateDbContext()
+    public PlatformReleaseDbContext CreateDbContext()
     {
-        var options = new DbContextOptionsBuilder<CatalogDbContext>()
-            .UseNpgsql(_container.GetConnectionString())
+        var options = new DbContextOptionsBuilder<PlatformReleaseDbContext>()
+            .UseNpgsql(_container.GetConnectionString(), npgsql => npgsql.MigrationsHistoryTable(
+                PlatformReleaseSchema.MigrationsHistoryTableName,
+                PlatformReleaseSchema.OnPremSchemaName))
             .UseSnakeCaseNamingConvention()
             .Options;
-        return new CatalogDbContext(options);
+        return new PlatformReleaseDbContext(
+            options, new PlatformReleaseSchema(PlatformReleaseSchema.OnPremSchemaName));
     }
 
     [Fact]

@@ -1,4 +1,4 @@
-using KrakenDeploy.ControlPlane.Catalog;
+﻿using KrakenDeploy.ControlPlane.Catalog;
 using KrakenDeploy.ControlPlane.Provisioning;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Data.Jobs;
@@ -13,7 +13,7 @@ namespace KrakenDeploy.Server.Hangfire;
 /// (<c>kraken.backup:{accountId}</c>). This type is both the job body (resolve the account,
 /// run the backup under <c>WithAccount</c>) and the startup reconciler (register one
 /// per-account job for each active account whose <c>BackupSettings</c> enable a schedule).
-/// Only used when <c>MultiAccount:Enabled</c>; single-instance keeps the single
+/// Only used under <c>Deployment:Topology=Saas</c>; single-tenant topologies keep the single
 /// <c>kraken.backup</c> job that runs <see cref="BackupJob"/> directly.
 /// <para>
 /// Injects only singleton-safe services (<see cref="IServiceScopeFactory"/> + logger) and

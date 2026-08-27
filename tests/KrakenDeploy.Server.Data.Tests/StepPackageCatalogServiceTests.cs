@@ -1,4 +1,5 @@
-using FluentAssertions;
+﻿using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Data.Services;
@@ -214,7 +215,8 @@ public sealed class StepPackageCatalogServiceTests(PostgresFixture postgres)
         var stepPkgSvc = new StepPackageService(
             postgres, config, NullLogger<StepPackageService>.Instance);
         var settings = new SettingsService(postgres.ScopeFactory, TimeProvider.System);
-        var effective = new EffectiveSettingsService(settings, config, TestCrypto.Service(MasterKey));
+        var effective = new EffectiveSettingsService(
+            settings, config, TestCrypto.Service(MasterKey), new DeploymentOptions());
 
         var service = new StepPackageCatalogService(
             postgres,

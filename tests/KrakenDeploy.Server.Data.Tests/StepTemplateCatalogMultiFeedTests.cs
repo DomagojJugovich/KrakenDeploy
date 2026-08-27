@@ -1,6 +1,7 @@
-using System.Net;
+﻿using System.Net;
 using System.Text;
 using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Data.Net;
 using KrakenDeploy.Server.Data.Services;
@@ -200,7 +201,8 @@ public sealed class StepTemplateCatalogMultiFeedTests(PostgresFixture postgres)
             .Build();
 
         var settings = new SettingsService(postgres.ScopeFactory, TimeProvider.System);
-        var effective = new EffectiveSettingsService(settings, config, TestCrypto.Service(MasterKey));
+        var effective = new EffectiveSettingsService(
+            settings, config, TestCrypto.Service(MasterKey), new DeploymentOptions());
         var service = new StepTemplateCatalogService(
             postgres,
             new StubHttpClientFactory(new HttpClient(handler)),

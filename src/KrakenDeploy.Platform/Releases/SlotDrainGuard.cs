@@ -1,28 +1,39 @@
-using KrakenDeploy.ControlPlane.Catalog;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
-namespace KrakenDeploy.ControlPlane.Releases;
+namespace KrakenDeploy.Platform.Releases;
+
+/// <summary>
+/// Answers "is the release THIS instance runs Draining/Retired?" — see
+/// <see cref="SlotDrainGuard"/>. Interface exists so the deployment worker's
+/// drain gate (BG1 item 10) can be unit-tested without a registry database.
+/// </summary>
+public interface ISlotDrainGuard
+{
+    Task<bool> IsOwnReleaseDrainingAsync(CancellationToken ct = default);
+}
 
 /// <summary>
 /// Answers "is the release THIS instance runs Draining/Retired?" from the
-/// catalog (cached), keyed by the instance's own <c>Release:Id</c>. Used to take
-/// a draining slot out of new background work (docs/blue-green-slot-deployment.md
+/// release registry (cached), keyed by the instance's own <c>Release:Id</c>. Used
+/// to take a draining slot out of new background work (docs/blue-green-slot-deployment.md
 /// §8 step 6: a Draining release receives no new work) — all slot instances share
 /// one Hangfire storage, so without this a draining slot keeps competing for new
-/// jobs and can starve its own drain indefinitely.
+/// jobs and can starve its own drain indefinitely. Since BG1 it also gates the
+/// deployment worker's claim loop (a draining slot must stop CLAIMING, not just
+/// stop taking Hangfire jobs).
 /// <para>
 /// Fail-open: with no <c>Release:Id</c> configured (not a slotted deployment) or
-/// an unreadable catalog, the answer is <c>false</c> — running work beats
-/// stalling the fleet on a catalog blip.
+/// an unreadable registry, the answer is <c>false</c> — running work beats
+/// stalling the fleet on a registry blip.
 /// </para>
 /// </summary>
 public sealed class SlotDrainGuard(
-    IDbContextFactory<CatalogDbContext> catalogFactory,
+    IDbContextFactory<PlatformReleaseDbContext> platformFactory,
     IConfiguration configuration,
     TimeProvider timeProvider,
-    ILogger<SlotDrainGuard> logger)
+    ILogger<SlotDrainGuard> logger) : ISlotDrainGuard
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(15);
 
@@ -44,8 +55,8 @@ public sealed class SlotDrainGuard(
 
         try
         {
-            await using var catalog = await catalogFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-            var status = await catalog.AppReleases
+            await using var db = await platformFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+            var status = await db.AppReleases
                 .AsNoTracking()
                 .Where(r => r.Id == releaseId)
                 .Select(r => (AppReleaseStatus?)r.Status)

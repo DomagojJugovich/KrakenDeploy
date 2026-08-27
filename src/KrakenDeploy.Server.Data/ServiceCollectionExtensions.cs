@@ -1,7 +1,8 @@
-using System.Threading.Channels;
+﻿using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Packages;
+using KrakenDeploy.Server.Core.Domain.Platform;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Data.Accounts;
@@ -94,7 +95,7 @@ public static class ServiceCollectionExtensions
         // Default account context: multi-account OFF. Ensures the tenant DbContext
         // always has an IAccountContext to construct against (the EF factory resolves
         // ctor params via the container). The Server replaces this with
-        // HttpAccountContext when MultiAccount:Enabled is set.
+        // HttpAccountContext under Deployment:Topology=Saas.
         services.TryAddScoped<IAccountContext, DisabledAccountContext>();
 
         // Default configuration: data services that read config knobs (WP9
@@ -297,6 +298,17 @@ public static class ServiceCollectionExtensions
         // resolves its own account's DB and the cache is per-request. Single-instance
         // installs keep the shared Singleton cache. DeploymentFreezeService keeps its
         // own cache and rides the same split.
+        // BG1/T2: EffectiveSettingsService gates host-wide settings edits on the
+        // topology. Program.cs registers the authoritative DeploymentOptions
+        // (OnPrem / OnPremBlueGreen / Saas) BEFORE calling this method, so TryAdd
+        // keeps that value; CLI and test hosts that never register it fall back to
+        // the flag driving the lifetimes below (the OnPrem/OnPremBlueGreen
+        // distinction is irrelevant to this gate — only Saas changes behaviour).
+        services.TryAddSingleton(new DeploymentOptions
+        {
+            Topology = multiAccount ? DeploymentTopology.Saas : DeploymentTopology.OnPrem,
+        });
+
         if (multiAccount)
         {
             services.AddScoped<SettingsService>();

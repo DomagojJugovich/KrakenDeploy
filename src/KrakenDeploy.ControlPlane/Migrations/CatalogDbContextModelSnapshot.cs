@@ -22,53 +22,6 @@ namespace KrakenDeploy.ControlPlane.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
-            modelBuilder.Entity("KrakenDeploy.ControlPlane.Catalog.AppRelease", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("id");
-
-                    b.Property<DateTimeOffset>("DeployedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("deployed_at_utc");
-
-                    b.Property<DateTimeOffset?>("DrainDeadlineUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("drain_deadline_utc");
-
-                    b.Property<DateTimeOffset?>("DrainedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("drained_at_utc");
-
-                    b.Property<string>("Label")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("label");
-
-                    b.Property<short>("SlotNo")
-                        .HasColumnType("smallint")
-                        .HasColumnName("slot_no");
-
-                    b.Property<int>("Status")
-                        .HasColumnType("integer")
-                        .HasColumnName("status");
-
-                    b.HasKey("Id")
-                        .HasName("pk_app_releases");
-
-                    b.HasIndex("SlotNo")
-                        .IsUnique()
-                        .HasDatabaseName("ux_app_releases_slot_no_live")
-                        .HasFilter("status <> 3");
-
-                    b.HasIndex("Status")
-                        .HasDatabaseName("ix_app_releases_status");
-
-                    b.ToTable("app_releases", (string)null);
-                });
-
             modelBuilder.Entity("KrakenDeploy.ControlPlane.Catalog.BusinessAccount", b =>
                 {
                     b.Property<Guid>("Id")
@@ -128,29 +81,6 @@ namespace KrakenDeploy.ControlPlane.Migrations
                         .HasDatabaseName("ix_business_accounts_subdomain");
 
                     b.ToTable("business_accounts", (string)null);
-                });
-
-            modelBuilder.Entity("KrakenDeploy.ControlPlane.Catalog.PlatformSetting", b =>
-                {
-                    b.Property<string>("Key")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("key");
-
-                    b.Property<DateTimeOffset>("ModifiedUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("modified_utc");
-
-                    b.Property<string>("Value")
-                        .IsRequired()
-                        .HasMaxLength(2000)
-                        .HasColumnType("character varying(2000)")
-                        .HasColumnName("value");
-
-                    b.HasKey("Key")
-                        .HasName("pk_platform_settings");
-
-                    b.ToTable("platform_settings", (string)null);
                 });
 
             modelBuilder.Entity("KrakenDeploy.ControlPlane.Catalog.Shard", b =>
