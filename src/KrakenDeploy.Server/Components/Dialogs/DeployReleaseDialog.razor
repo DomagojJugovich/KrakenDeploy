@@ -7,6 +7,7 @@
 @using KrakenDeploy.Server.Core.Domain.Targets
 @using KrakenDeploy.Server.Core.Domain.Tenants
 @using KrakenDeploy.Server.Core.Domain.Spaces
+@using KrakenDeploy.Server.Core.Domain.Variables
 @using KrakenDeploy.Server.Spaces
 @using KrakenDeploy.Server.Auth
 @using Microsoft.AspNetCore.Components.Authorization
@@ -19,6 +20,7 @@
 @inject TenantService TenantSvc
 @inject TagService TagSvc
 @inject DeploymentService DeploymentSvc
+@inject VariableService VariableSvc
 @inject DeploymentFreezeService FreezeSvc
 @inject UiActionGuard Guard
 @inject ISpaceContext SpaceCtx
@@ -327,15 +329,41 @@
                         @foreach (var pv in _promptedVars)
                         {
                             <div>
-                                <RadzenLabel Text="@(pv.PromptText ?? pv.Name)" />
+                                <RadzenLabel Text="@pv.Label" />
                                 @if (pv.Required)
                                 {
                                     <RadzenBadge Text="required" BadgeStyle="BadgeStyle.Danger"
                                                  IsPill="true" Style="margin-left: 6px; font-size: 10px;" />
                                 }
-                                <RadzenTextBox @bind-Value="_promptedValues[pv.Name]"
-                                               Placeholder="@($"Enter value for {pv.Name}")"
-                                               Style="width: 100%;" />
+                                @if (pv.Control == PromptControlType.Checkbox)
+                                {
+                                    <RadzenCheckBox TValue="bool" Value="@PromptBool(pv.Name)"
+                                                    Change="@(value => SetPromptBool(pv.Name, value))" />
+                                }
+                                else if (pv.Control == PromptControlType.Select)
+                                {
+                                    <RadzenDropDown TValue="string" @bind-Value="_promptedValues[pv.Name]"
+                                                    Data="@pv.Options" AllowClear="@(!pv.Required)"
+                                                    Style="width: 100%;" />
+                                }
+                                else if (pv.Sensitive)
+                                {
+                                    <RadzenPassword @bind-Value="_promptedValues[pv.Name]"
+                                                    Placeholder="@($"Enter value for {pv.Name}")"
+                                                    Style="width: 100%;" />
+                                }
+                                else
+                                {
+                                    <RadzenTextBox @bind-Value="_promptedValues[pv.Name]"
+                                                   Placeholder="@($"Enter value for {pv.Name}")"
+                                                   Style="width: 100%;" />
+                                }
+                                @if (!string.IsNullOrWhiteSpace(pv.Description))
+                                {
+                                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                                        @pv.Description
+                                    </RadzenText>
+                                }
                             </div>
                         }
                     </RadzenStack>
@@ -421,8 +449,7 @@
     private string? _loadError;   // OnInitialized failure — shown as a full alert
     private string? _error;       // submit failure — pinned under the header
 
-    private sealed record PromptedVar(string Name, string? PromptText, bool Required);
-    private List<PromptedVar> _promptedVars = [];
+    private List<PromptedVariableDefinition> _promptedVars = [];
     private Dictionary<string, string> _promptedValues = [];
 
     // Records (not ValueTuples) so Radzen's reflection-based TextProperty/
@@ -492,17 +519,6 @@
                 return;
             }
 
-            _promptedVars = _release.VariableSnapshot
-                .Where(v => v.PromptText is not null)
-                .GroupBy(v => v.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(g =>
-                {
-                    var first = g.First();
-                    return new PromptedVar(first.Name, first.PromptText, g.Any(v => v.PromptRequired));
-                })
-                .ToList();
-            _promptedValues = _promptedVars.ToDictionary(pv => pv.Name, _ => "", StringComparer.OrdinalIgnoreCase);
-
             _environments = await EnvironmentSvc.GetAllOrderedAsync();
             _allTargets = await TargetSvc.GetAllWithEnvironmentsAsync();
             // Only tenants connected to the release's project — deploying to an
@@ -559,6 +575,7 @@
                 }
             }
 
+            await RefreshPromptsAsync();
             await RefreshFreezeBannerAsync();
         }
         catch (Exception ex)
@@ -625,6 +642,7 @@
         try
         {
             await RefreshFreezeBannerAsync();
+            await RefreshPromptsAsync();
         }
         catch (Exception ex)
         {
@@ -640,6 +658,7 @@
         {
             await LoadGateAsync();
             await RefreshFreezeBannerAsync();
+            await RefreshPromptsAsync();
         }
         catch (Exception ex)
         {
@@ -662,6 +681,95 @@
             return;
         }
         ResetTargetSelections();
+        await RefreshPromptsAsync();
+    }
+
+    private bool PromptBool(string name) =>
+        bool.TryParse(_promptedValues.GetValueOrDefault(name), out var value) && value;
+
+    private void SetPromptBool(string name, bool value) =>
+        _promptedValues[name] = value ? "true" : "false";
+
+    private async Task RefreshPromptsAsync()
+    {
+        if (_release is null || _environmentId is not { } environmentId)
+        {
+            _promptedVars = [];
+            return;
+        }
+
+        var definitions = new List<PromptedVariableDefinition>();
+        var tenants = SelectedTenants;
+        if (tenants.Count == 0)
+        {
+            var selected = (_selectedTargetIds ?? []).ToHashSet();
+            var contexts = _allTargets
+                .Where(t => selected.Contains(t.Id))
+                .Select(t => new PromptedVariableContext(
+                    environmentId, t.Id, t.Roles, null, _release.ChannelId, []))
+                .ToList();
+            definitions.AddRange(PromptedVariableResolver.GetApplicable(
+                _release.VariableSnapshot, contexts, _release.ProcessSnapshot.Select(s => s.Id).ToList()));
+        }
+        else
+        {
+            foreach (var tenant in tenants)
+            {
+                var selected = _tenantTargetIds.GetValueOrDefault(tenant.Id)?.ToHashSet() ?? [];
+                var tags = await VariableSvc.GetTenantTagIdsAsync(tenant.Id);
+                var contexts = _allTargets
+                    .Where(t => selected.Contains(t.Id))
+                    .Select(t => new PromptedVariableContext(
+                        environmentId, t.Id, t.Roles, tenant.Id, _release.ChannelId, tags))
+                    .ToList();
+                definitions.AddRange(PromptedVariableResolver.GetApplicable(
+                    _release.VariableSnapshot, contexts, _release.ProcessSnapshot.Select(s => s.Id).ToList()));
+            }
+        }
+
+        _promptedVars = definitions
+            .GroupBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(g =>
+            {
+                var first = g.First();
+                return first with
+                {
+                    Required = g.Any(d => d.Required),
+                    Sensitive = g.Any(d => d.Sensitive),
+                };
+            })
+            .OrderBy(d => d.Label, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var previous = _promptedValues;
+        _promptedValues = _promptedVars.ToDictionary(
+            d => d.Name,
+            d => previous.GetValueOrDefault(d.Name) ??
+                 (d.Control == PromptControlType.Checkbox ? "false" : ""),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task<IReadOnlyList<PromptedVariableDefinition>> GetPromptDefinitionsAsync(
+        Guid environmentId,
+        Guid? tenantId,
+        IReadOnlyCollection<Guid> targetIds)
+    {
+        if (_release is null)
+        {
+            return [];
+        }
+        var selected = targetIds.ToHashSet();
+        var tags = tenantId.HasValue
+            ? await VariableSvc.GetTenantTagIdsAsync(tenantId.Value)
+            : [];
+        var contexts = _allTargets
+            .Where(t => selected.Contains(t.Id))
+            .Select(t => new PromptedVariableContext(
+                environmentId, t.Id, t.Roles, tenantId, _release.ChannelId, tags))
+            .ToList();
+        return PromptedVariableResolver.GetApplicable(
+            _release.VariableSnapshot,
+            contexts,
+            _release.ProcessSnapshot.Select(s => s.Id).ToList());
     }
 
     private async Task DeployAsync()
@@ -687,6 +795,8 @@
                 return;
             }
 
+            await RefreshPromptsAsync();
+
             // Local pre-check from the loaded gate — CreateAsync re-enforces
             // authoritatively (per tenant), this just fails fast.
             if (SelectedEnv is { Allowed: false } blockedEnv)
@@ -697,7 +807,7 @@
 
             var missingPrompts = _promptedVars
                 .Where(pv => pv.Required && string.IsNullOrWhiteSpace(_promptedValues.GetValueOrDefault(pv.Name)))
-                .Select(pv => pv.PromptText ?? pv.Name)
+                .Select(pv => pv.Label)
                 .ToList();
             if (missingPrompts.Count > 0)
             {

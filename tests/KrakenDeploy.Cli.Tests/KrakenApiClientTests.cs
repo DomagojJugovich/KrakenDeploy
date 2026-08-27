@@ -188,7 +188,9 @@ public sealed class KrakenApiClientTests
         });
 
         using var client = BuildClient(handler);
-        var deployment = await client.CreateDeploymentAsync(releaseId, envId, targetId);
+        var deployment = await client.CreateDeploymentAsync(
+            releaseId, envId, targetId,
+            new Dictionary<string, string> { ["Greeting"] = "hello=world" });
 
         deployment.Status.Should().Be("Queued");
 
@@ -201,6 +203,8 @@ public sealed class KrakenApiClientTests
         // TargetId is mandatory — the 2026-07 fix stopped the CLI from
         // serialising a null that bound as Guid.Empty server-side.
         doc.GetProperty("TargetId").GetGuid().Should().Be(targetId);
+        doc.GetProperty("PromptedValues").GetProperty("Greeting").GetString()
+            .Should().Be("hello=world");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

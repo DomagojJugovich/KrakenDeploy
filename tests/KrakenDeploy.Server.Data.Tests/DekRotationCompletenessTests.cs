@@ -37,6 +37,7 @@ public sealed class DekRotationCompletenessTests
         // so a rotation that skipped it would leave every outstanding approval
         // un-resumable (the decrypt under the new DEK would throw on approve).
         "ServerTask.PauseCheckpointEncrypted",
+        "PromptedVariableFormValues.SensitiveValuesEncrypted",
     ];
 
     [Fact]

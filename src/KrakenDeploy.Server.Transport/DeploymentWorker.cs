@@ -16,6 +16,7 @@ using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Core.Domain.Targets;
+using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.SignalR;
@@ -3818,29 +3819,28 @@ public sealed class DeploymentWorker(
         var stepResolution = await source.ResolveVariablesAsync(
             variableService, target, stepIdsAndNames, tenantTagIds, ct).ConfigureAwait(false);
         var rawVars = stepResolution.DeploymentWide;
+        IReadOnlyCollection<string> sensitiveNames = stepResolution.SensitiveNames;
 
         if (!string.IsNullOrEmpty(deployment.FormValues))
         {
-            var prompted = System.Text.Json.JsonSerializer
-                .Deserialize<Dictionary<string, string>>(deployment.FormValues);
-            if (prompted is { Count: > 0 })
-            {
-                foreach (var (k, v) in prompted)
-                {
-                    rawVars[k] = v;
-                }
-
-                foreach (var (_, delta) in stepResolution.PerStepDelta)
-                {
-                    foreach (var (k, v) in prompted)
-                    {
-                        if (delta.ContainsKey(k))
-                        {
-                            delta[k] = v;
-                        }
-                    }
-                }
-            }
+            var promptSnapshot = source.PromptVariableSnapshot
+                ?? throw new InvalidOperationException("Runbook runs cannot carry prompted-variable values.");
+            var prompted = variableService.DeserializePromptedValues(deployment.FormValues);
+            var promptContext = new PromptedVariableContext(
+                deployment.EnvironmentId,
+                target.Id,
+                target.Roles,
+                deployment.TenantId,
+                source.Kind == ServerTaskKind.Deployment
+                    ? ((Deployment)deployment).Release.ChannelId
+                    : null,
+                tenantTagIds);
+            sensitiveNames = PromptedVariableOverlay.Apply(
+                stepResolution,
+                promptSnapshot,
+                promptContext,
+                stepIdsAndNames.Select(s => s.Id).ToList(),
+                prompted);
         }
 
         var varDict = new VariableDictionary();
@@ -3937,7 +3937,7 @@ public sealed class DeploymentWorker(
             Steps:           steps,
             Variables:       flatVars,
             ArrayVariables:  arrayVars,
-            SensitiveVariableNames: stepResolution.SensitiveNames,
+            SensitiveVariableNames: sensitiveNames,
             // F2 — the target's own concurrency policy, resolved at plan-build time
             // (a flip applies to the next dispatch, not to work already queued on
             // the agent). Never relaxes the F1 (project, env, tenant) serialization.
@@ -3952,7 +3952,7 @@ public sealed class DeploymentWorker(
             Steps:               steps,
             SnapshotByPlanIndex: snapshotByPlanIndex,
             Flatten:             flatten,
-            SensitiveVariableNames: stepResolution.SensitiveNames);
+            SensitiveVariableNames: sensitiveNames);
     }
 
     /// <summary>

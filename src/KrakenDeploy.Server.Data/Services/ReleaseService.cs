@@ -440,8 +440,12 @@ public class ReleaseService(
         Value          = v.Value,
         Type           = v.Type,
         Layer          = layer,
-        PromptText     = v.PromptText,
+        IsPrompted     = v.IsPrompted,
+        PromptLabel    = v.PromptLabel,
+        PromptDescription = v.PromptDescription,
         PromptRequired = v.PromptRequired,
+        PromptControl  = v.PromptControl,
+        PromptOptions  = v.PromptOptions is null ? null : [.. v.PromptOptions],
         Scope = new VariableScope
         {
             EnvironmentId  = v.Scope.EnvironmentId,

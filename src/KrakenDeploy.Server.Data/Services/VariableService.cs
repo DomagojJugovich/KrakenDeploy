@@ -3,6 +3,7 @@ using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Tenants;
 using KrakenDeploy.Server.Core.Domain.Variables;
+using KrakenDeploy.Server.Data.Encryption;
 using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Services;
@@ -15,6 +16,9 @@ public class VariableService(
     IEncryptionService encryption,
     IPermissionEvaluator permissions)
 {
+    public Dictionary<string, string> DeserializePromptedValues(string payload)
+        => PromptedVariableFormValuesCodec.Deserialize(payload, encryption);
+
     // ── T1-8 authoritative scope check ───────────────────────────────────────
     // Project variables are scoped to the owning project (VariableEdit); library
     // sets are Space-level (LibraryVariableSetEdit). Resolve filter-free so a
@@ -121,7 +125,7 @@ public class VariableService(
     /// Creates a new variable in the project's variable set.
     /// Sensitive values are encrypted before storage.
     /// </summary>
-    public async Task<Variable> CreateVariableAsync(
+    public Task<Variable> CreateVariableAsync(
         Guid projectId,
         string name,
         string value,
@@ -129,10 +133,22 @@ public class VariableService(
         VariableScope? scope,
         CallerAuthorization caller,
         CancellationToken ct = default)
+        => CreateVariableAsync(projectId, name, value, type, scope, caller, prompt: null, ct);
+
+    public async Task<Variable> CreateVariableAsync(
+        Guid projectId,
+        string name,
+        string value,
+        VariableType type,
+        VariableScope? scope,
+        CallerAuthorization caller,
+        VariablePromptSettings? prompt,
+        CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(value);
         ArgumentNullException.ThrowIfNull(caller);
+        prompt = NormalizePrompt(prompt);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         await EnsureProjectVariableScopeAsync(db, caller, projectId, ct).ConfigureAwait(false);
@@ -151,6 +167,12 @@ public class VariableService(
             Name = name,
             Value = storedValue,
             Type = type,
+            IsPrompted = prompt.IsPrompted,
+            PromptLabel = prompt.Label,
+            PromptDescription = prompt.Description,
+            PromptRequired = prompt.Required,
+            PromptControl = prompt.Control,
+            PromptOptions = prompt.Options is null ? [] : [.. prompt.Options],
             Scope = scope ?? new VariableScope(),
         };
 
@@ -167,7 +189,7 @@ public class VariableService(
     /// where the form cannot display the current ciphertext.
     /// </para>
     /// </summary>
-    public async Task<Variable?> UpdateVariableAsync(
+    public Task<Variable?> UpdateVariableAsync(
         Guid id,
         string name,
         string? value,
@@ -175,9 +197,21 @@ public class VariableService(
         VariableScope? scope,
         CallerAuthorization caller,
         CancellationToken ct = default)
+        => UpdateVariableAsync(id, name, value, type, scope, caller, prompt: null, ct);
+
+    public async Task<Variable?> UpdateVariableAsync(
+        Guid id,
+        string name,
+        string? value,
+        VariableType type,
+        VariableScope? scope,
+        CallerAuthorization caller,
+        VariablePromptSettings? prompt,
+        CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(caller);
+        prompt = prompt is null ? null : NormalizePrompt(prompt);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
@@ -205,6 +239,15 @@ public class VariableService(
         variable.Name = name;
         variable.Type = type;
         variable.Scope = scope ?? new VariableScope();
+        if (prompt is not null)
+        {
+            variable.IsPrompted = prompt.IsPrompted;
+            variable.PromptLabel = prompt.Label;
+            variable.PromptDescription = prompt.Description;
+            variable.PromptRequired = prompt.Required;
+            variable.PromptControl = prompt.Control;
+            variable.PromptOptions = prompt.Options is null ? [] : [.. prompt.Options];
+        }
 
         if (value is not null)
         {
@@ -281,8 +324,12 @@ public class VariableService(
             Name = variable.Name,
             Value = variable.Value,
             Type = variable.Type,
-            PromptText = variable.PromptText,
+            IsPrompted = variable.IsPrompted,
+            PromptLabel = variable.PromptLabel,
+            PromptDescription = variable.PromptDescription,
             PromptRequired = variable.PromptRequired,
+            PromptControl = variable.PromptControl,
+            PromptOptions = [.. variable.PromptOptions],
             Scope = s,
         }).ToList();
 
@@ -481,7 +528,13 @@ public class VariableService(
         v.Name,
         v.Type == VariableType.Sensitive ? "***" : v.Value,
         v.Type.ToString(),
-        v.Scope);
+        v.Scope,
+        v.IsPrompted,
+        v.PromptLabel,
+        v.PromptDescription,
+        v.PromptRequired,
+        v.PromptControl,
+        v.PromptOptions);
 
     /// <summary>Returns the names of all sensitive variables across the project
     /// and its included library sets (for preview masking).</summary>
@@ -531,7 +584,7 @@ public class VariableService(
     }
 
     /// <summary>Creates a variable directly in a given set (project or library).</summary>
-    public async Task<Variable> CreateVariableInSetAsync(
+    public Task<Variable> CreateVariableInSetAsync(
         Guid setId,
         string name,
         string value,
@@ -539,10 +592,22 @@ public class VariableService(
         VariableScope? scope,
         CallerAuthorization caller,
         CancellationToken ct = default)
+        => CreateVariableInSetAsync(setId, name, value, type, scope, caller, prompt: null, ct);
+
+    public async Task<Variable> CreateVariableInSetAsync(
+        Guid setId,
+        string name,
+        string value,
+        VariableType type,
+        VariableScope? scope,
+        CallerAuthorization caller,
+        VariablePromptSettings? prompt,
+        CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(value);
         ArgumentNullException.ThrowIfNull(caller);
+        prompt = NormalizePrompt(prompt);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         await EnsureSetEditScopeAsync(db, caller, setId, ct).ConfigureAwait(false);
@@ -568,6 +633,12 @@ public class VariableService(
             Name = name,
             Value = storedValue,
             Type = type,
+            IsPrompted = prompt.IsPrompted,
+            PromptLabel = prompt.Label,
+            PromptDescription = prompt.Description,
+            PromptRequired = prompt.Required,
+            PromptControl = prompt.Control,
+            PromptOptions = prompt.Options is null ? [] : [.. prompt.Options],
             Scope = scope ?? new VariableScope(),
         };
 
@@ -1170,6 +1241,36 @@ public class VariableService(
         var items = value.Split(',', StringSplitOptions.TrimEntries);
         return JsonSerializer.Serialize(items);
     }
+
+    private static VariablePromptSettings NormalizePrompt(VariablePromptSettings? prompt)
+    {
+        prompt ??= new VariablePromptSettings();
+        if (!prompt.IsPrompted)
+        {
+            return new VariablePromptSettings();
+        }
+
+        var label = string.IsNullOrWhiteSpace(prompt.Label) ? null : prompt.Label.Trim();
+        var description = string.IsNullOrWhiteSpace(prompt.Description)
+            ? null
+            : prompt.Description.Trim();
+        var options = prompt.Options?
+            .Where(o => !string.IsNullOrWhiteSpace(o))
+            .Select(o => o.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (prompt.Control == PromptControlType.Select && options is not { Count: > 0 })
+        {
+            throw new InvalidOperationException("A select prompt requires at least one option.");
+        }
+        if (prompt.Control != PromptControlType.Select)
+        {
+            options = null;
+        }
+
+        return prompt with { Label = label, Description = description, Options = options };
+    }
 }
 
 // ── DTO ────────────────────────────────────────────────────────────────────────
@@ -1182,7 +1283,13 @@ public sealed record VariableDto(
     string Name,
     string Value,
     string Type,
-    VariableScope Scope);
+    VariableScope Scope,
+    bool IsPrompted,
+    string? PromptLabel,
+    string? PromptDescription,
+    bool PromptRequired,
+    PromptControlType PromptControl,
+    IReadOnlyList<string>? PromptOptions);
 
 /// <summary>
 /// One row of a variable-resolution preview: the winning value for a name plus

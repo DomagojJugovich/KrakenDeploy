@@ -4,6 +4,8 @@ using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Tenants;
+using KrakenDeploy.Server.Core.Domain.Variables;
+using KrakenDeploy.Server.Data.Encryption;
 using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Services;
@@ -25,8 +27,22 @@ public class DeploymentService(
     // CancelAsync records the semantic Deployment.Cancelled audit itself so no
     // cancel surface can omit it. Null in tests → only the interceptor's
     // "Deployment.Updated" row is written, which no test asserts on.
-    IAuditLog? auditLog = null)
+    IAuditLog? auditLog = null,
+    IEncryptionService? encryption = null)
 {
+    /// <summary>Decrypts a source deployment's answers so a retry can revalidate
+    /// them against the frozen release definition before creating a new task.</summary>
+    public IReadOnlyDictionary<string, string>? ReadPromptedValuesForRetry(string? formValues)
+    {
+        if (string.IsNullOrEmpty(formValues))
+        {
+            return null;
+        }
+        return PromptedVariableFormValuesCodec.Deserialize(
+            formValues,
+            encryption ?? throw new InvalidOperationException("Prompted-variable encryption is unavailable."));
+    }
+
     // ── Create ─────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -77,7 +93,7 @@ public class DeploymentService(
         // stamp onto the task at creation (decision 5), and validate it exists.
         var release = await db.Releases
             .Where(r => r.Id == releaseId)
-            .Select(r => new { r.ProjectId, r.ChannelId, r.SpaceId })
+            .AsNoTracking()
             .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Release {releaseId} not found.");
@@ -132,15 +148,43 @@ public class DeploymentService(
         // Validate every target id exists (the set always includes the primary
         // targetId) BEFORE inserting the deployment, so a bogus or cross-Space id
         // fails fast here with a clear message instead of opaquely at dispatch.
-        var existing = await db.DeploymentTargets
+        var targets = await db.DeploymentTargets
             .Where(t => targetIds.Contains(t.Id))
-            .Select(t => t.Id)
+            .Select(t => new { t.Id, t.Roles })
             .ToListAsync(ct).ConfigureAwait(false);
-        var missing = targetIds.Where(id => !existing.Contains(id)).ToList();
+        var missing = targetIds.Where(id => targets.All(t => t.Id != id)).ToList();
         if (missing.Count > 0)
         {
             throw new InvalidOperationException(
                 $"Target(s) not found: {string.Join(", ", missing)}.");
+        }
+
+        var tenantTagIds = tenantId.HasValue
+            ? await TagService.GetTenantTagIdsAsync(db, tenantId.Value, ct).ConfigureAwait(false)
+            : [];
+        var promptContexts = targets.Select(t => new PromptedVariableContext(
+            environmentId,
+            t.Id,
+            t.Roles,
+            tenantId,
+            release.ChannelId,
+            tenantTagIds)).ToList();
+        var promptDefinitions = PromptedVariableResolver.GetApplicable(
+            release.VariableSnapshot, promptContexts, release.ProcessSnapshot.Select(s => s.Id).ToList());
+        var validatedPromptedValues = ValidatePromptedValues(promptDefinitions, promptedValues);
+        string? formValues = null;
+        if (validatedPromptedValues.Count > 0)
+        {
+            if (encryption is null)
+            {
+                throw new InvalidOperationException("Prompted-variable encryption is unavailable.");
+            }
+            var sensitiveNames = promptDefinitions
+                .Where(p => p.Sensitive)
+                .Select(p => p.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            formValues = PromptedVariableFormValuesCodec.Serialize(
+                validatedPromptedValues, sensitiveNames, encryption);
         }
 
         // Enforce lifecycle phase gate (throws if gate not satisfied).
@@ -171,9 +215,7 @@ public class DeploymentService(
             FailureMode = failureMode,
             ScheduledFor = isScheduledForFuture ? scheduledUtc : null,
             ParentTaskId = parentTaskId,
-            FormValues = promptedValues is { Count: > 0 }
-                ? System.Text.Json.JsonSerializer.Serialize(promptedValues)
-                : null,
+            FormValues = formValues,
         };
         initiator.StampOnto(deployment);   // provenance (fix 6)
 
@@ -211,6 +253,52 @@ public class DeploymentService(
         }
 
         return deployment;
+    }
+
+    private static Dictionary<string, string> ValidatePromptedValues(
+        IReadOnlyList<PromptedVariableDefinition> definitions,
+        IReadOnlyDictionary<string, string>? supplied)
+    {
+        var allowed = definitions.ToDictionary(d => d.Name, StringComparer.OrdinalIgnoreCase);
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, value) in supplied ?? new Dictionary<string, string>())
+        {
+            if (!allowed.TryGetValue(name, out var definition))
+            {
+                throw new InvalidOperationException($"Unknown prompted variable '{name}'.");
+            }
+
+            var normalized = value;
+            if (definition.Control == PromptControlType.Checkbox)
+            {
+                if (!bool.TryParse(value, out var checkedValue))
+                {
+                    throw new InvalidOperationException(
+                        $"Prompted variable '{definition.Name}' requires true or false.");
+                }
+                normalized = checkedValue ? "true" : "false";
+            }
+            else if (definition.Control == PromptControlType.Select)
+            {
+                normalized = definition.Options.FirstOrDefault(o =>
+                    string.Equals(o, value, StringComparison.OrdinalIgnoreCase))
+                    ?? throw new InvalidOperationException(
+                        $"Prompted variable '{definition.Name}' has an invalid option.");
+            }
+            values[definition.Name] = normalized;
+        }
+
+        var missing = definitions
+            .Where(d => d.Required &&
+                (!values.TryGetValue(d.Name, out var value) || string.IsNullOrWhiteSpace(value)))
+            .Select(d => d.Label)
+            .ToList();
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "Required prompted variables not filled: " + string.Join(", ", missing));
+        }
+        return values;
     }
 
     // ── Cancel ─────────────────────────────────────────────────────────────

@@ -25,8 +25,15 @@ public class VariableConfiguration : IEntityTypeConfiguration<Variable>
             .HasConversion<string>()
             .IsRequired();
 
-        builder.Property(x => x.PromptText).HasMaxLength(2000);
+        builder.Property(x => x.IsPrompted).HasDefaultValue(false);
+        builder.Property(x => x.PromptLabel).HasMaxLength(200);
+        builder.Property(x => x.PromptDescription).HasMaxLength(2000);
         builder.Property(x => x.PromptRequired).HasDefaultValue(false);
+        builder.Property(x => x.PromptControl)
+            .HasMaxLength(32)
+            .HasConversion<string>()
+            .HasDefaultValue(PromptControlType.Text);
+        builder.Property(x => x.PromptOptions).HasJsonbColumn<List<string>>();
 
         // Scope stored as jsonb for flexible querying / future indexing.
         builder.Property(x => x.Scope)

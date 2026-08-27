@@ -84,9 +84,9 @@ public abstract class ServerTask : AuditableEntity, ISpaceScoped
     public Guid? ParentTaskId { get; set; }
     public ServerTask? ParentTask { get; set; }
 
-    /// <summary>Future prompted-variable values (jsonb). Inert — written
-    /// <c>null</c> today; reserved so provenance can be backfilled once
-    /// prompted variables land.</summary>
+    /// <summary>Prompted-variable values (jsonb). Sensitive values are stored only
+    /// inside <see cref="PromptedVariableFormValues.SensitiveValuesEncrypted"/>.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public string? FormValues { get; set; }
 
     /// <summary>

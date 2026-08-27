@@ -217,6 +217,8 @@ public sealed class DeploymentTools
                 tenantId:            source.TenantId,
                 scheduledFor:        null,
                 additionalTargetIds: targetIds.Skip(1).ToList(),
+                failureMode:         source.FailureMode,
+                promptedValues:      deploymentService.ReadPromptedValuesForRetry(source.FormValues),
                 ct:                  ct).ConfigureAwait(false);
         }
         catch (AuthorizationException ex)

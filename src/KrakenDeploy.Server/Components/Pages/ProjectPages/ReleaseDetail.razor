@@ -206,10 +206,10 @@
                             <tr>
                                 <td class="kraken-matrix-cell mono">
                                     @v.Name
-                                    @if (v.PromptText is not null)
+                                    @if (v.IsPrompted)
                                     {
                                         <RadzenIcon Icon="help_outline" Style="font-size:14px; color:var(--text-3);"
-                                                    title="@($"Prompted: {v.PromptText}")" />
+                                                     title="@($"Prompted: {v.PromptLabel ?? v.Name}")" />
                                     }
                                 </td>
                                 <td class="kraken-matrix-cell mono cell-muted">

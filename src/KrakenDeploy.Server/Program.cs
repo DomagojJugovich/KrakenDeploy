@@ -1870,12 +1870,15 @@ public static class Program
                     ChannelId = req.ScopeChannelId,
                     ProcessStepId = req.ScopeProcessStepId,
                 };
+                var prompt = new VariablePromptSettings(
+                    req.IsPrompted, req.PromptLabel, req.PromptDescription,
+                    req.PromptRequired, req.PromptControl, req.PromptOptions);
 
                 try
                 {
                     var variable = await variableSvc
                         .CreateVariableAsync(projectId, req.Name, req.Value, type, scope,
-                            CallerAuthorization.ForUser(user), ct)
+                            CallerAuthorization.ForUser(user), prompt, ct)
                         .ConfigureAwait(false);
 
                     return Results.Created(
@@ -1913,12 +1916,15 @@ public static class Program
                     ChannelId = req.ScopeChannelId,
                     ProcessStepId = req.ScopeProcessStepId,
                 };
+                var prompt = new VariablePromptSettings(
+                    req.IsPrompted, req.PromptLabel, req.PromptDescription,
+                    req.PromptRequired, req.PromptControl, req.PromptOptions);
 
                 try
                 {
                     var variable = await variableSvc
                         .UpdateVariableAsync(variableId, req.Name, req.Value, type, scope,
-                            CallerAuthorization.ForUser(user), ct)
+                            CallerAuthorization.ForUser(user), prompt, ct)
                         .ConfigureAwait(false);
 
                     return variable is null ? Results.NotFound() : Results.Ok(variable);
@@ -2455,6 +2461,7 @@ public static class Program
                             tenantId:      req.TenantId,
                             scheduledFor:  req.ScheduledFor,
                             failureMode:   req.FailureMode,
+                            promptedValues:req.PromptedValues,
                             ct:            ct)
                         .ConfigureAwait(false);
                     return Results.Created($"/api/deployments/{deployment.Id}", deployment);
