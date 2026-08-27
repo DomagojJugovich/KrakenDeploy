@@ -23,13 +23,28 @@ docker compose exec kraken-server dotnet KrakenDeploy.Server.dll users create-ad
 
 ## Architecture
 
+Two compose profiles (BG1 — select via `COMPOSE_PROFILES` in `.env`):
+
 ```
+single (default):
 Internet → :80/:443 → Caddy → kraken-server:5080 → Postgres:5432
+
+bluegreen:
+Internet → :80/:443 → Caddy → kraken-router:8080 → kraken-slot-{1,2,3}:5080 → Postgres:5432
+                                     └── release registry: KrakenDb `platform` schema
 ```
 
-- **Caddy**: auto-HTTPS via Let's Encrypt, WebSocket upgrade for SignalR/Blazor, HTTP/2 for gRPC
-- **Server**: ASP.NET Core 9 Blazor InteractiveServer, Hangfire background jobs
+- **Caddy**: auto-HTTPS via Let's Encrypt, WebSocket upgrade for SignalR/Blazor, HTTP/2 for gRPC — the TLS front in BOTH profiles (the router never terminates TLS)
+- **Server**: ASP.NET Core Blazor InteractiveServer, Hangfire background jobs
+- **Router** (bluegreen only): YARP slot router — pins sessions to releases by the `kd_ver` cookie / `X-KD-Release` header
 - **Postgres**: PostgreSQL 16 Alpine, persistent named volume
+
+The `bluegreen` profile gives zero-downtime rolling upgrades (register slot →
+health-gate → flip → drain → retire) at the cost of committing to additive-only
+migrations between live releases — see `docs/on-prem-guide.md` (Blue-Green
+Topology chapter) for the setup and BOTH upgrade runbooks (rolling additive and
+stop-the-world non-additive), and `docs/blue-green-slot-deployment.md` for the
+design.
 
 ## Environment Variables
 
@@ -178,7 +193,7 @@ docker compose cp ./backup/kraken-backup-<timestamp> kraken-server:/var/lib/krak
 docker compose exec kraken-server dotnet KrakenDeploy.Server.dll restore --from /var/lib/krakendeploy/restore/kraken-backup-<timestamp>
 ```
 
-## Upgrade
+## Upgrade (single profile)
 
 ```bash
 # 1. Pull or build the new server image
@@ -187,6 +202,10 @@ docker pull your-registry/krakendeploy-server:latest
 # 2. Recreate containers (database migrations run automatically via kraken-init)
 docker compose up -d
 ```
+
+Blue-green profile upgrades follow the runbooks in `docs/on-prem-guide.md`
+(rolling additive via `releases register/flip`, or stop-the-world for
+`[StopTheWorld]`-marked migrations with `database upgrade --stop-the-world`).
 
 ## Rollback
 

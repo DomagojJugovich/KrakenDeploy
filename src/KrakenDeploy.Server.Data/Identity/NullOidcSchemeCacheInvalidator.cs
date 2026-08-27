@@ -1,4 +1,4 @@
-using KrakenDeploy.Server.Core.Domain.Security;
+﻿using KrakenDeploy.Server.Core.Domain.Security;
 
 namespace KrakenDeploy.Server.Data.Identity;
 
@@ -6,7 +6,7 @@ namespace KrakenDeploy.Server.Data.Identity;
 /// No-op <see cref="IOidcSchemeCacheInvalidator"/> for single-instance installs (and
 /// any path with no dynamic per-account OIDC). Registered by <c>AddKrakenDeployData</c>
 /// so <c>IdentityProviderService</c> can depend on the invalidator unconditionally; the
-/// Server replaces it with a real evictor when <c>MultiAccount:Enabled</c> is set.
+/// Server replaces it with a real evictor under <c>Deployment:Topology=Saas</c>.
 /// </summary>
 public sealed class NullOidcSchemeCacheInvalidator : IOidcSchemeCacheInvalidator
 {

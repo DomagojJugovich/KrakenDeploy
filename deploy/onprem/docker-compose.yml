@@ -3,6 +3,18 @@
 # Postgres + KrakenDeploy.Server + Caddy reverse-proxy.
 # One `docker compose up -d` to bring up a full deployment.
 #
+# PROFILES (BG1/T5/T6)
+#   single (default, COMPOSE_PROFILES=single in .env):
+#       Caddy -> kraken-server. Upgrades are stop -> `database upgrade` -> start.
+#   bluegreen (COMPOSE_PROFILES=bluegreen + KRAKEN_TOPOLOGY=OnPremBlueGreen +
+#       KRAKEN_UPSTREAM/KRAKEN_GRPC_UPSTREAM=kraken-router:8080 in .env):
+#       Caddy -> kraken-router -> kraken-slot-{1,2,3}. Zero-downtime rolling
+#       upgrades: set SLOT<n>_IMAGE + SLOT<n>_RELEASE_ID, `releases register`,
+#       health-gate via the X-KD-Release header, `releases flip`, drain, retire.
+#       See deploy/onprem/README.md and docs/on-prem-guide.md (blue-green
+#       chapter) for the full runbooks — including the stop-the-world runbook
+#       for non-additive upgrades.
+#
 # PREREQUISITES
 #   1. Copy .env.example to .env and fill in the required values.
 #   2. Point your DNS A/AAAA record at this host.
@@ -12,6 +24,7 @@
 #   1. The kraken-init service runs database setup automatically.
 #   2. Create the admin user:
 #      docker compose exec kraken-server dotnet KrakenDeploy.Server.dll users create-admin --email admin@example.com --password <password>
+#      (bluegreen profile: exec into kraken-slot-1 instead of kraken-server)
 #   3. Login at https://<your-domain>/
 
 services:
@@ -58,6 +71,11 @@ services:
       # must have been built with the matching PRIVATE key — see
       # Dockerfile.server + deploy/onprem/README.md.
       StepPackages__TrustedPublicKey: /etc/krakendeploy/step-signing.pub.pem
+      # BG1: setup/upgrade behaves per topology — under OnPremBlueGreen it also
+      # creates the `platform` schema (release registry) and the shared Hangfire
+      # schema (slot boots never touch either), and refuses [StopTheWorld]
+      # migrations while another release is live.
+      Deployment__Topology: ${KRAKEN_TOPOLOGY:-OnPrem}
       DOTNET_ENVIRONMENT: Production
     volumes:
       # SC7: step-signing public key (PEM), read-only — same file the
@@ -79,10 +97,15 @@ services:
     image: ${SERVER_IMAGE:-krakendeploy-server:latest}
     container_name: kraken-server
     restart: unless-stopped
+    # Single-instance topology only — the bluegreen profile replaces this
+    # service with kraken-slot-{1,2,3} + kraken-router. COMPOSE_PROFILES in
+    # .env selects which set starts (default: single).
+    profiles: ["single"]
     depends_on:
       kraken-init:
         condition: service_completed_successfully
     environment:
+      Deployment__Topology: ${KRAKEN_TOPOLOGY:-OnPrem}
       ConnectionStrings__KrakenDb: >
         Host=postgres;Port=5432;Database=${POSTGRES_DB:-krakendeploy};
         Username=${POSTGRES_USER:-kraken};Password=${POSTGRES_PASSWORD}
@@ -143,6 +166,204 @@ services:
     networks:
       - kraken-net
 
+  # ── Blue-green slots (bluegreen profile; BG1) ─────────────────────────────
+  # Three slots is the floor (D-bg-4: one drain overlap). Each slot is one full
+  # release of the server; identity comes from SLOT<n>_RELEASE_ID and the image
+  # from SLOT<n>_IMAGE — a rolling upgrade changes only the retired slot's pair,
+  # then `releases register/flip`. All slots SHARE kraken-data (DP key ring,
+  # package/artifact store) and the DP cert — co-located slots MUST share the
+  # DataPath (docs/blue-green-slot-deployment.md, implementation notes).
+  kraken-slot-1:
+    image: ${SLOT1_IMAGE:-krakendeploy-server:latest}
+    container_name: kraken-slot-1
+    restart: unless-stopped
+    profiles: ["bluegreen"]
+    depends_on:
+      kraken-init:
+        condition: service_completed_successfully
+    environment:
+      Deployment__Topology: OnPremBlueGreen
+      Release__Id: ${SLOT1_RELEASE_ID:-}
+      Release__SlotNo: "1"
+      ConnectionStrings__KrakenDb: >
+        Host=postgres;Port=5432;Database=${POSTGRES_DB:-krakendeploy};
+        Username=${POSTGRES_USER:-kraken};Password=${POSTGRES_PASSWORD}
+      Server__DataPath: /var/lib/krakendeploy
+      DataProtection__KeyPath: /var/lib/krakendeploy/dataprotection-keys
+      AgentUpdate__BinariesPath: /var/lib/krakendeploy/agents
+      Agent__JwtSigningKey: ${AGENT_JWT_KEY:?Required — minimum 32 characters}
+      Encryption__MasterKey: ${ENCRYPTION_KEY:?Required — base64-encoded 32 bytes}
+      KRAKEN_LICENSE_KEY: ${KRAKEN_LICENSE_KEY:-}
+      DataProtection__CertificatePath: /etc/krakendeploy/dp-cert.pfx
+      DataProtection__CertificatePassword: ${DP_CERT_PASSWORD:-}
+      StepPackages__TrustedPublicKey: /etc/krakendeploy/step-signing.pub.pem
+      DOTNET_ENVIRONMENT: Production
+      Kestrel__Endpoints__Http__Url: http://0.0.0.0:5080
+      Kestrel__Endpoints__Http__Protocols: Http1
+      Kestrel__Endpoints__Grpc__Url: http://0.0.0.0:5081
+      Kestrel__Endpoints__Grpc__Protocols: Http2
+      # Drain-watcher inventory + router push-invalidation (best-effort).
+      Releases__DrainWatch__SlotUrls__1__0: http://kraken-slot-1:5080
+      Releases__DrainWatch__SlotUrls__2__0: http://kraken-slot-2:5080
+      Releases__DrainWatch__SlotUrls__3__0: http://kraken-slot-3:5080
+      Releases__RouterInvalidateUrls__0: http://kraken-router:8080
+      Releases__RouterOpsToken: ${ROUTER_OPS_TOKEN:-}
+    volumes:
+      - kraken-data:/var/lib/krakendeploy
+      - ${DP_CERT_PATH:?Required — host path to the DataProtection PFX; see deploy/onprem/README.md}:/etc/krakendeploy/dp-cert.pfx:ro
+      - ${STEP_SIGNING_PUBKEY_PATH:?Required — host path to the step-signing public key PEM; see deploy/onprem/README.md}:/etc/krakendeploy/step-signing.pub.pem:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - kraken-net
+
+  # ── Blue-green slots (bluegreen profile; BG1) ─────────────────────────────
+  # Three slots is the floor (D-bg-4: one drain overlap). Each slot is one full
+  # release of the server; identity comes from SLOT<n>_RELEASE_ID and the image
+  # from SLOT<n>_IMAGE — a rolling upgrade changes only the retired slot's pair,
+  # then `releases register/flip`. All slots SHARE kraken-data (DP key ring,
+  # package/artifact store) and the DP cert — co-located slots MUST share the
+  # DataPath (docs/blue-green-slot-deployment.md, implementation notes).
+  kraken-slot-2:
+    image: ${SLOT2_IMAGE:-krakendeploy-server:latest}
+    container_name: kraken-slot-2
+    restart: unless-stopped
+    profiles: ["bluegreen"]
+    depends_on:
+      kraken-init:
+        condition: service_completed_successfully
+    environment:
+      Deployment__Topology: OnPremBlueGreen
+      Release__Id: ${SLOT2_RELEASE_ID:-}
+      Release__SlotNo: "2"
+      ConnectionStrings__KrakenDb: >
+        Host=postgres;Port=5432;Database=${POSTGRES_DB:-krakendeploy};
+        Username=${POSTGRES_USER:-kraken};Password=${POSTGRES_PASSWORD}
+      Server__DataPath: /var/lib/krakendeploy
+      DataProtection__KeyPath: /var/lib/krakendeploy/dataprotection-keys
+      AgentUpdate__BinariesPath: /var/lib/krakendeploy/agents
+      Agent__JwtSigningKey: ${AGENT_JWT_KEY:?Required — minimum 32 characters}
+      Encryption__MasterKey: ${ENCRYPTION_KEY:?Required — base64-encoded 32 bytes}
+      KRAKEN_LICENSE_KEY: ${KRAKEN_LICENSE_KEY:-}
+      DataProtection__CertificatePath: /etc/krakendeploy/dp-cert.pfx
+      DataProtection__CertificatePassword: ${DP_CERT_PASSWORD:-}
+      StepPackages__TrustedPublicKey: /etc/krakendeploy/step-signing.pub.pem
+      DOTNET_ENVIRONMENT: Production
+      Kestrel__Endpoints__Http__Url: http://0.0.0.0:5080
+      Kestrel__Endpoints__Http__Protocols: Http1
+      Kestrel__Endpoints__Grpc__Url: http://0.0.0.0:5081
+      Kestrel__Endpoints__Grpc__Protocols: Http2
+      # Drain-watcher inventory + router push-invalidation (best-effort).
+      Releases__DrainWatch__SlotUrls__1__0: http://kraken-slot-1:5080
+      Releases__DrainWatch__SlotUrls__2__0: http://kraken-slot-2:5080
+      Releases__DrainWatch__SlotUrls__3__0: http://kraken-slot-3:5080
+      Releases__RouterInvalidateUrls__0: http://kraken-router:8080
+      Releases__RouterOpsToken: ${ROUTER_OPS_TOKEN:-}
+    volumes:
+      - kraken-data:/var/lib/krakendeploy
+      - ${DP_CERT_PATH:?Required — host path to the DataProtection PFX; see deploy/onprem/README.md}:/etc/krakendeploy/dp-cert.pfx:ro
+      - ${STEP_SIGNING_PUBKEY_PATH:?Required — host path to the step-signing public key PEM; see deploy/onprem/README.md}:/etc/krakendeploy/step-signing.pub.pem:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - kraken-net
+
+  # ── Blue-green slots (bluegreen profile; BG1) ─────────────────────────────
+  # Three slots is the floor (D-bg-4: one drain overlap). Each slot is one full
+  # release of the server; identity comes from SLOT<n>_RELEASE_ID and the image
+  # from SLOT<n>_IMAGE — a rolling upgrade changes only the retired slot's pair,
+  # then `releases register/flip`. All slots SHARE kraken-data (DP key ring,
+  # package/artifact store) and the DP cert — co-located slots MUST share the
+  # DataPath (docs/blue-green-slot-deployment.md, implementation notes).
+  kraken-slot-3:
+    image: ${SLOT3_IMAGE:-krakendeploy-server:latest}
+    container_name: kraken-slot-3
+    restart: unless-stopped
+    profiles: ["bluegreen"]
+    depends_on:
+      kraken-init:
+        condition: service_completed_successfully
+    environment:
+      Deployment__Topology: OnPremBlueGreen
+      Release__Id: ${SLOT3_RELEASE_ID:-}
+      Release__SlotNo: "3"
+      ConnectionStrings__KrakenDb: >
+        Host=postgres;Port=5432;Database=${POSTGRES_DB:-krakendeploy};
+        Username=${POSTGRES_USER:-kraken};Password=${POSTGRES_PASSWORD}
+      Server__DataPath: /var/lib/krakendeploy
+      DataProtection__KeyPath: /var/lib/krakendeploy/dataprotection-keys
+      AgentUpdate__BinariesPath: /var/lib/krakendeploy/agents
+      Agent__JwtSigningKey: ${AGENT_JWT_KEY:?Required — minimum 32 characters}
+      Encryption__MasterKey: ${ENCRYPTION_KEY:?Required — base64-encoded 32 bytes}
+      KRAKEN_LICENSE_KEY: ${KRAKEN_LICENSE_KEY:-}
+      DataProtection__CertificatePath: /etc/krakendeploy/dp-cert.pfx
+      DataProtection__CertificatePassword: ${DP_CERT_PASSWORD:-}
+      StepPackages__TrustedPublicKey: /etc/krakendeploy/step-signing.pub.pem
+      DOTNET_ENVIRONMENT: Production
+      Kestrel__Endpoints__Http__Url: http://0.0.0.0:5080
+      Kestrel__Endpoints__Http__Protocols: Http1
+      Kestrel__Endpoints__Grpc__Url: http://0.0.0.0:5081
+      Kestrel__Endpoints__Grpc__Protocols: Http2
+      # Drain-watcher inventory + router push-invalidation (best-effort).
+      Releases__DrainWatch__SlotUrls__1__0: http://kraken-slot-1:5080
+      Releases__DrainWatch__SlotUrls__2__0: http://kraken-slot-2:5080
+      Releases__DrainWatch__SlotUrls__3__0: http://kraken-slot-3:5080
+      Releases__RouterInvalidateUrls__0: http://kraken-router:8080
+      Releases__RouterOpsToken: ${ROUTER_OPS_TOKEN:-}
+    volumes:
+      - kraken-data:/var/lib/krakendeploy
+      - ${DP_CERT_PATH:?Required — host path to the DataProtection PFX; see deploy/onprem/README.md}:/etc/krakendeploy/dp-cert.pfx:ro
+      - ${STEP_SIGNING_PUBKEY_PATH:?Required — host path to the step-signing public key PEM; see deploy/onprem/README.md}:/etc/krakendeploy/step-signing.pub.pem:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - kraken-net
+
+  # ── Per-node slot router (bluegreen profile; BG1/T5) ──────────────────────
+  # The node's entry point: Caddy fronts it (TLS stays at Caddy — the router
+  # never terminates TLS) and it pins sessions to releases by the kd_ver
+  # cookie / X-KD-Release header, reading the registry from KrakenDb's
+  # `platform` schema. Search Path resolves the router's unqualified table
+  # names — router code is topology-agnostic.
+  kraken-router:
+    image: ${ROUTER_IMAGE:-krakendeploy-router:latest}
+    container_name: kraken-router
+    restart: unless-stopped
+    profiles: ["bluegreen"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Catalog: >
+        Host=postgres;Port=5432;Database=${POSTGRES_DB:-krakendeploy};
+        Username=${POSTGRES_USER:-kraken};Password=${POSTGRES_PASSWORD};
+        Search Path=platform
+      Router__OpsToken: ${ROUTER_OPS_TOKEN:-}
+      Router__Slots__1: http://kraken-slot-1:5080
+      Router__Slots__2: http://kraken-slot-2:5080
+      Router__Slots__3: http://kraken-slot-3:5080
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/kd-router/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - kraken-net
+
   caddy:
     image: caddy:2-alpine
     container_name: kraken-caddy
@@ -152,6 +373,11 @@ services:
       - "443:443"
     environment:
       DOMAIN: ${DOMAIN:-localhost}
+      # BG1/T5: profile-dependent upstream (see Caddyfile header). Defaults are
+      # the single profile's kraken-server; the bluegreen profile sets both to
+      # kraken-router:8080 in .env.
+      KRAKEN_UPSTREAM: ${KRAKEN_UPSTREAM:-kraken-server:5080}
+      KRAKEN_GRPC_UPSTREAM: ${KRAKEN_GRPC_UPSTREAM:-kraken-server:5080}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

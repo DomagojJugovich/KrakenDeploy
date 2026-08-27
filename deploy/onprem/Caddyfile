@@ -15,6 +15,15 @@
 #  Set the DOMAIN environment variable before starting Caddy:
 #    export DOMAIN=kraken.example.com
 #    docker compose up -d
+#
+# UPSTREAM (BG1/T5)
+#  Caddy is the TLS front in EVERY on-prem install; the upstream differs by
+#  compose profile:
+#    single (default):  kraken-server:5080 (no env needed)
+#    bluegreen:         set in .env —
+#                         KRAKEN_UPSTREAM=kraken-router:8080
+#                         KRAKEN_GRPC_UPSTREAM=kraken-router:8080
+#  The YARP router never terminates TLS; it only pins sessions to releases.
 
 {$DOMAIN:localhost} {
     # ── Compression ─────────────────────────────────────────────────
@@ -32,7 +41,7 @@
 
     # ── SignalR hubs — WebSocket upgrade, long timeouts ─────────────
     handle /hubs/* {
-        reverse_proxy kraken-server:5080 {
+        reverse_proxy {$KRAKEN_UPSTREAM:kraken-server:5080} {
             flush_interval -1
             header_up X-Forwarded-Proto {scheme}
             header_up X-Forwarded-For {remote_host}
@@ -41,7 +50,7 @@
 
     # ── Blazor Server circuits — SignalR WebSocket ──────────────────
     handle /_blazor* {
-        reverse_proxy kraken-server:5080 {
+        reverse_proxy {$KRAKEN_UPSTREAM:kraken-server:5080} {
             flush_interval -1
             header_up X-Forwarded-Proto {scheme}
             header_up X-Forwarded-For {remote_host}
@@ -52,7 +61,7 @@
     # Proto package `krakendeploy.v1` → wire paths /krakendeploy.v1.<Service>/<Method>.
     # (A /kraken.* matcher never matches these and would drop gRPC to the h1 fallback.)
     handle /krakendeploy.v1.* {
-        reverse_proxy h2c://kraken-server:5080 {
+        reverse_proxy h2c://{$KRAKEN_GRPC_UPSTREAM:kraken-server:5080} {
             header_up X-Forwarded-Proto {scheme}
             header_up X-Forwarded-For {remote_host}
         }
@@ -60,7 +69,7 @@
 
     # ── Everything else — standard HTTP reverse-proxy ────────────────
     handle {
-        reverse_proxy kraken-server:5080 {
+        reverse_proxy {$KRAKEN_UPSTREAM:kraken-server:5080} {
             header_up X-Forwarded-Proto {scheme}
             header_up X-Forwarded-For {remote_host}
         }

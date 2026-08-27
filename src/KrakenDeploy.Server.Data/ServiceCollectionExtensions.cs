@@ -1,4 +1,4 @@
-using System.Threading.Channels;
+﻿using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Packages;
@@ -94,7 +94,7 @@ public static class ServiceCollectionExtensions
         // Default account context: multi-account OFF. Ensures the tenant DbContext
         // always has an IAccountContext to construct against (the EF factory resolves
         // ctor params via the container). The Server replaces this with
-        // HttpAccountContext when MultiAccount:Enabled is set.
+        // HttpAccountContext under Deployment:Topology=Saas.
         services.TryAddScoped<IAccountContext, DisabledAccountContext>();
 
         // Default configuration: data services that read config knobs (WP9

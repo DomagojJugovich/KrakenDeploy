@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | `Approved` — implemented 2026-07-02 (registry + per-node router + telemetry + CLI orchestration + drain-watcher + agent pin echo); smoke-verified end-to-end. See [Implementation notes](#implementation-notes). |
-| **Applies to** | SaaS / multi-node HA, pooled app tier (any slot serves any account) |
-| **Scope** | Routine **additive** migrations. Breaking changes use the per-shard `UPGRADING` + queue-quiesce + straddle-release path (see the self-upgrade section); this scheme carries those releases but does not provide their schema safety. |
+| **Status** | `Approved` — implemented 2026-07-02 (registry + per-node router + telemetry + CLI orchestration + drain-watcher + agent pin echo); smoke-verified end-to-end. **Revised 2026-08-27 (BG1):** available ON-PREM (`Deployment:Topology=OnPremBlueGreen`) — see [§12 On-prem blue-green](#12-on-prem-blue-green-bg1); **D-bg-5 superseded** by T1/T2 (master plan §5, 2026-07-28). See [Implementation notes](#implementation-notes). |
+| **Applies to** | Blue-green topologies: `Saas` (pooled app tier — any slot serves any account) and `OnPremBlueGreen` (single tenant, 1..N nodes, 3 slots per node). `OnPrem` uses neither slots nor the router. |
+| **Scope** | Routine **additive** migrations. Non-additive changes: on-prem BG uses the `[StopTheWorld]` marker + stop-the-world runbook (§12); SaaS breaking changes use the per-shard `UPGRADING` + queue-quiesce + straddle-release path (see the self-upgrade section) — this scheme carries those releases but does not provide their schema safety. |
 | **Render mode** | Interactive Server. Monolith (Blazor Server UI **+** orchestrator + Hangfire) is versioned as a single unit — **not** decoupled. |
 
 ## 1. Intent
@@ -150,18 +150,77 @@ They compose, and the design is forgiving because `kd_ver` pins a **release, not
 - **D-bg-2** Cookie keyed on opaque `release_id`, not raw slot number, to stay unambiguous during a slot's fleet rollout.
 - **D-bg-3** The default-version decision lives in the router (YARP) reading the catalog, never in proxy config — so deploys never trigger a config reload, and live WebSockets are never force-closed by a deploy.
 - **D-bg-4** Slot count is a tuning parameter; three is the floor (one drain overlap). Increase if deployments outlive the deploy cadence.
-- **D-bg-5** Single-node local installs need neither slots nor YARP (stop → migrate → start). Slots + YARP are the SaaS / multi-node-HA mechanism.
+- **D-bg-5** ~~Single-node local installs need neither slots nor YARP (stop → migrate → start). Slots + YARP are the SaaS / multi-node-HA mechanism.~~ **SUPERSEDED by BG1/T1+T2 (2026-07-28):** blue-green is available on-prem too — `Deployment:Topology=OnPremBlueGreen`, single box is the supported minimum (§12). `Topology=OnPrem` (the default) keeps stop → migrate → start.
 - **D-bg-6** Front (Caddy) and app tiers are **separate machines**, and **only app nodes hold DB credentials** — the internet-facing front holds none. The front tier must be **HA** (two or more Caddy nodes behind a floating/reserved IP or L4 LB); a single front node is a fleet-wide SPOF.
 - **D-bg-7** Caddy is **version-agnostic** (edge + node affinity only). All release/slot routing lives in a **per-node YARP co-located with the three slots**, so the slot decision is localhost and the front needs no catalog/DB access.
 
+## 12. On-prem blue-green (BG1)
+
+Since BG1 (2026-08-27) the whole scheme runs on-prem: `Deployment:Topology=OnPremBlueGreen`
+(chosen at install — kraken-init/`database setup --topology` prompt). Competitive context:
+Octopus's documented HA upgrade is a full-cluster outage ("All Octopus Server nodes must run
+the same version of Octopus Deploy"); no blue-green of the Octopus Server exists anywhere.
+Ours flips a slot, and the draining release keeps its OWN orchestrator until its in-flight
+deployments finish.
+
+**What changes per topology (T2/T3/T5):**
+
+| | `OnPrem` (default) | `OnPremBlueGreen` | `Saas` |
+|---|---|---|---|
+| Registry (`app_releases` + `platform_settings`) | not registered | KrakenDb, dedicated `platform` schema, own `__EFMigrationsHistory_platform` | catalog DB, `public` schema (catalog migrations own the DDL) |
+| Registry context | — | `PlatformReleaseDbContext` (KrakenDeploy.Platform) | same context, catalog connection |
+| Router | none — Caddy → server | per node: Caddy → router → slots; router's conn string carries `Search Path=platform` (raw reads stay unqualified — code untouched) | per D-bg-6/D-bg-7 |
+| Hangfire schema | auto-migrated at boot | `PrepareSchemaIfNecessary=false` at slot boot; created/upgraded ONLY by `database setup`/`upgrade` | same as OnPremBlueGreen, storage in the catalog |
+| Drain machinery | not registered | `DrainModeHangfireStopper` + `kraken.release-drain-watch` + the worker's drain claim gate | same |
+| Front tier (T5) | Caddy → server | single box: Caddy → router → slots; multi-node: Caddy front (TLS + node distribution + health-drain) → per-node routers | Caddy HA front (D-bg-6) |
+
+The Router is the entry point of a NODE, never of the installation; Caddy is the TLS front in
+every on-prem install and the YARP router never terminates TLS (T5). Single box is the
+supported minimum. Delivery: the `bluegreen` compose profile in `deploy/onprem` (BG1); bare-
+metal Windows-service slots are BG2.
+
+**The expand/contract contract (T4/T10).** Choosing `OnPremBlueGreen` commits the install to
+ADDITIVE-ONLY migrations while more than one release is live:
+
+- A non-additive EF migration carries the `[StopTheWorld]` attribute (Server.Core). The
+  WP-BASELINE lint will enforce markers by operation analysis; until it lands, review is the
+  guard — mark anything with Drop*/Rename*/narrowing Alter.
+- `database upgrade`/`setup` refuse a MARKED pending migration while the registry shows
+  another non-Retired release, naming the migration and the runbook; a purely-additive
+  pending set proceeds — that IS the rolling upgrade. `--stop-the-world` overrides after the
+  documented full-stop runbook (docs/on-prem-guide.md).
+- The SHARED Hangfire storage schema is always treated as marked: its pending state is
+  version-checked (installed `hangfire.schema.version` vs the highest embedded
+  `Install.v{N}.sql` in the loaded Hangfire.PostgreSql assembly), and slot boots never
+  auto-migrate it. CI's storage-package watch flags `Directory.Packages.props` bumps of
+  storage-schema-owning packages so the stop-the-world need is visible at review time.
+
+**Drain gates the claim loop (BG1 item 10 — closes grill B1).** `DrainModeHangfireStopper`
+alone was not enough: a draining slot's DeploymentWorker kept CLAIMING (cookie-pinned users
+create work there; the create-time enqueue wakes THAT process), so a busy instance never
+retired and post-flip work executed on old code. The worker now pre-checks
+`ISlotDrainGuard.IsOwnReleaseDrainingAsync` before every `TryClaimAsync`/`TryResumeAsync`
+(`DrainBlocked`, logged like `MaintenanceBlocked`); refused tasks stay `Queued` and the
+ACTIVE release's minutely re-signal picks them up (its Hangfire server is alive while the
+draining slot's is stopped). Children of a parent already claimed on the draining slot are
+exempt (`ServerTaskLease.IsContinuationOfClaimedParent`). Placement deliberately differs
+from the maintenance gate: drain is per-process identity (registry via `SlotDrainGuard`,
+15 s TTL acceptable — drain is not a correctness switch), maintenance is instance-wide DB
+state (`ServerTaskLease`).
+
+**Maintenance mode composes with this** (T11–T13, landed `e27c89a` + BG1 item 9): the
+stop-the-world runbook turns maintenance ON first — creation refusal (service layer,
+unconditional, `ParentTaskId`-exempt) + the claim gate stop the queue while in-flight work
+completes; queued + scheduled work fires at the first re-signal after maintenance ends.
+
 ## Implementation notes
 
-Implemented 2026-07-02. Component map:
+Implemented 2026-07-02; BG1 topology split 2026-08-27. Component map:
 
 | Design element | Implementation |
 |---|---|
-| §4 release registry + default pointer | Catalog tables `app_releases` + `platform_settings` (`current_default_release`), migration `AddReleaseRegistry`. Entity is `AppRelease` (the tenant domain already has an unrelated `Release`); status stored as int, not text. A filtered unique index enforces at most one non-Retired release per slot at the DB. |
-| §5 orchestration writes | `ReleaseRegistry` (ControlPlane) — register/flip/retire, each transition serialized fleet-wide by a Postgres advisory transaction lock (concurrent CLI/watcher transitions cannot strand a second Active release or point the default at a Retired one). Driven by the `releases register\|flip\|retire\|status` CLI verbs (multi-account only, D-bg-5). |
+| §4 release registry + default pointer | Tables `app_releases` + `platform_settings` (`current_default_release`), owned since BG1 by `PlatformReleaseDbContext` (project `KrakenDeploy.Platform`). Saas: catalog DB `public` schema (catalog migration `AddReleaseRegistry` remains the DDL of record — the model-only `TransferReleaseRegistryToPlatform` migration is deliberately empty). OnPremBlueGreen: KrakenDb `platform` schema, own history table (`InitialPlatform`). Entity is `AppRelease` (the tenant domain already has an unrelated `Release`); status stored as int, not text. A filtered unique index enforces at most one non-Retired release per slot at the DB. |
+| §5 orchestration writes | `ReleaseRegistry` (KrakenDeploy.Platform) — register/flip/retire, each transition serialized fleet-wide by a Postgres advisory transaction lock, key `KDRELREG` unchanged (concurrent CLI/watcher transitions cannot strand a second Active release or point the default at a Retired one). Driven by the `releases register\|flip\|retire\|status` CLI verbs (blue-green topologies; refused under `Topology=OnPrem`). |
 | §6 per-node router | `KrakenDeploy.Router` — YARP **direct forwarding** (`IHttpForwarder`), not a dynamic `IProxyConfigProvider`: no proxy config exists at all, so a flip can never trigger a config reload (strictly stronger than D-bg-3). Preserves the client `Host` (account resolution). Catalog snapshot cached with a short TTL; degrade-stale is non-blocking (try-acquire refresh + failure back-off), so a catalog outage never serializes ingress. |
 | §3 cookie/header | As designed, plus: over plain HTTP (dev/smoke) the cookie degrades to `kd_ver` (browsers refuse `__Host-` without `Secure`); the explicit `X-KD-Release` header outranks a cookie; a **`Deploying` release is reachable via the header only** — a browser cookie can never land on a build that has not passed its health-gate. |
 | §5 slot telemetry | `/slot-metrics` on each slot instance (`{release, activeCircuits, inFlightDeployments}` — `CircuitCounter` + `InFlightWorkGauge`, release id from `Release:Id` stamped per slot at deploy). **Internal-only**: the router refuses to forward it; the drain-watcher probes slot ports directly. |

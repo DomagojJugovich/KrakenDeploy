@@ -1,4 +1,4 @@
-using KrakenDeploy.ControlPlane.Accounts;
+﻿using KrakenDeploy.ControlPlane.Accounts;
 using KrakenDeploy.ControlPlane.Catalog;
 using KrakenDeploy.ControlPlane.Provisioning;
 using KrakenDeploy.ControlPlane.Secrets;
@@ -16,7 +16,7 @@ public static class ControlPlaneServiceCollectionExtensions
     /// <summary>
     /// Registers the SaaS control plane: the catalog DbContext factory, the
     /// subdomain → account resolver (cached), the secret store, and the provisioning
-    /// + fleet-migration services. Call only when <c>MultiAccount:Enabled</c> is set;
+    /// + fleet-migration services. Call only when <c>Deployment:Topology</c> is <c>Saas</c>;
     /// the request pipeline (account context + middleware) is wired separately in the
     /// Server host.
     /// </summary>

@@ -1,4 +1,4 @@
-using KrakenDeploy.Server.Core.Domain.Accounts;
+﻿using KrakenDeploy.Server.Core.Domain.Accounts;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -20,7 +20,7 @@ namespace KrakenDeploy.Server.Transport;
 /// </para>
 /// <para>
 /// Registered as a per-hub filter on <see cref="AgentHub"/> <b>only</b> when
-/// <c>MultiAccount:Enabled</c> is set — single-instance installs never see it and
+/// <c>Deployment:Topology</c> is <c>Saas</c> — single-tenant topologies never see it and
 /// run unchanged. The resolved account is cached on the connection
 /// (<see cref="HubCallerContext.Items"/>), so only the connect event hits the
 /// resolver; later invocations re-apply the cached value. Scoped services are

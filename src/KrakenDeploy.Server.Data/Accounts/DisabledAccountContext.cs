@@ -1,4 +1,4 @@
-using KrakenDeploy.Server.Core.Domain.Accounts;
+﻿using KrakenDeploy.Server.Core.Domain.Accounts;
 
 namespace KrakenDeploy.Server.Data.Accounts;
 
@@ -9,7 +9,7 @@ namespace KrakenDeploy.Server.Data.Accounts;
 /// <para>
 /// Registered by <c>AddKrakenDeployData</c> so the tenant <c>DbContext</c> always has
 /// an <see cref="IAccountContext"/> to construct against; the Server replaces it with
-/// <c>HttpAccountContext</c> when <c>MultiAccount:Enabled</c> is set. The account
+/// <c>HttpAccountContext</c> under <c>Deployment:Topology=Saas</c>. The account
 /// accessors throw — nothing should read them when multi-account is off.
 /// </para>
 /// </summary>
